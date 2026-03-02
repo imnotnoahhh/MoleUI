@@ -277,7 +277,8 @@ final class MetricsModel {
     private func findBinary() -> URL? {
         // Check bundled binary first (inside .app/Contents/Resources/mole/)
         if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("mole/status-go") {
+            .appendingPathComponent("mole/status-go")
+        {
             if FileManager.default.isExecutableFile(atPath: bundled.path) {
                 return bundled
             }

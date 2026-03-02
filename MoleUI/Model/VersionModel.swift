@@ -24,7 +24,8 @@ final class VersionModel {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent(".mole-cli-version") {
+            .appendingPathComponent(".mole-cli-version")
+        {
             if let version = try? String(contentsOf: versionFile, encoding: .utf8) {
                 currentVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
                 return
@@ -74,12 +75,14 @@ final class VersionModel {
         let fm = FileManager.default
         if let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("mole/mole").path,
-            fm.isExecutableFile(atPath: bundled) {
+            fm.isExecutableFile(atPath: bundled)
+        {
             return bundled
         }
         for path in ["/usr/local/bin/mole", "/opt/homebrew/bin/mole",
                      NSHomeDirectory() + "/.config/mole/mole"]
-            where fm.isExecutableFile(atPath: path) {
+            where fm.isExecutableFile(atPath: path)
+        {
             return path
         }
         return nil

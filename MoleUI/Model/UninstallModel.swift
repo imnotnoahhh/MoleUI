@@ -120,13 +120,15 @@ final class AppScanModel {
 
         // 1. Try Spotlight kMDItemLastUsedDate (most accurate when available)
         if let item = MDItemCreateWithURL(nil, url as CFURL),
-           let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date {
+           let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date
+        {
             return date
         }
 
         // 2. Try content modification date from Spotlight
         if let item = MDItemCreateWithURL(nil, url as CFURL),
-           let date = MDItemCopyAttribute(item, kMDItemContentModificationDate) as? Date {
+           let date = MDItemCopyAttribute(item, kMDItemContentModificationDate) as? Date
+        {
             return date
         }
 
@@ -139,7 +141,8 @@ final class AppScanModel {
         // 4. Last resort: Info.plist modification date
         let plistURL = url.appendingPathComponent("Contents/Info.plist")
         if let attrs = try? fm.attributesOfItem(atPath: plistURL.path),
-           let date = attrs[.modificationDate] as? Date {
+           let date = attrs[.modificationDate] as? Date
+        {
             return date
         }
 
