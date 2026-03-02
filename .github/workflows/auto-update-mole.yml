@@ -150,8 +150,21 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           fi
 
+      - name: Update MoleUI version
+        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
+        run: |
+          # Extract version number (remove 'v' prefix if present)
+          NEW_VERSION="${{ steps.latest_release.outputs.version }}"
+          NEW_VERSION="${NEW_VERSION#v}"
+
+          # Update MARKETING_VERSION in project.pbxproj
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $NEW_VERSION/" MoleUI.xcodeproj/project.pbxproj
+
+          echo "Updated MoleUI version to $NEW_VERSION"
+
       - name: Create PR (compatible)
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
+        id: create_pr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -162,10 +175,49 @@ jobs:
           body: |
             Automated update from **${{ steps.current_version.outputs.version }}** to **${{ steps.latest_release.outputs.version }}**.
 
-            Compatibility check passed — all required files present.
+            Compatibility check passed:
+            - ✅ All required files present
+            - ✅ Commands execute successfully
+            - ✅ JSON schema compatible
+            - ✅ MoleUI version synchronized to ${{ steps.latest_release.outputs.version }}
 
             Release notes: https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}
           labels: dependencies,automated
+
+      - name: Auto-merge PR
+        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.create_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.create_pr.outputs.pull-request-number }}"
+
+          # Wait for CI checks to complete
+          echo "Waiting for CI checks on PR #$PR_NUMBER..."
+          gh pr checks "$PR_NUMBER" --watch --interval 30
+
+          # Merge PR
+          gh pr merge "$PR_NUMBER" --squash --auto --delete-branch
+          echo "PR #$PR_NUMBER merged successfully"
+
+      - name: Create release tag
+        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Wait a moment for merge to complete
+          sleep 10
+
+          # Pull latest changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin main
+
+          # Create and push tag
+          TAG_VERSION="${{ steps.latest_release.outputs.version }}"
+          git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION - Auto-updated Mole CLI"
+          git push origin "$TAG_VERSION"
+
+          echo "Created and pushed tag $TAG_VERSION"
 
       - name: Create Issue (breaking)
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'false'
