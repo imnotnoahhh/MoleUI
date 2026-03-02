@@ -79,8 +79,7 @@ struct MoleVersionView: View {
             }
         }
         .padding(.horizontal)
-        .padding(.top)
-        .padding(.bottom, 8)
+        .padding(.vertical, 8)
         .background(Color.secondary.opacity(0.1))
         .cornerRadius(8)
         .task {

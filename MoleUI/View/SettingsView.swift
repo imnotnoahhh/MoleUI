@@ -75,7 +75,7 @@ struct SettingsView: View {
         Section {
             // Mole UI version checker
             MoleVersionView()
-            Divider()
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
             // MoleUI App Version
             HStack {
@@ -161,13 +161,9 @@ struct SettingsView: View {
     }
 
     private func readMoleCLIVersion() -> String? {
-        // Try reading from .mole-cli-version file
-        if let versionFile = Bundle.main.resourceURL?
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".mole-cli-version"),
-            let version = try? String(contentsOf: versionFile, encoding: .utf8)
+        // Read from .mole-cli-version file in app bundle resources
+        if let versionFile = Bundle.main.url(forResource: ".mole-cli-version", withExtension: nil),
+           let version = try? String(contentsOf: versionFile, encoding: .utf8)
         {
             return version.trimmingCharacters(in: .whitespacesAndNewlines)
         }
