@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// Mole 版本信息显示
+/// Mole UI 版本信息显示
 struct MoleVersionView: View {
     @Environment(VersionModel.self) var versionChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("Mole CLI", systemImage: "terminal")
+                Label("Mole UI", systemImage: "app.badge")
                     .font(.headline)
 
                 Spacer()
@@ -56,7 +56,7 @@ struct MoleVersionView: View {
                     Spacer()
 
                     Button("View Release") {
-                        if let url = URL(string: "https://github.com/tw93/Mole/releases/latest") {
+                        if let url = URL(string: "https://github.com/imnotnoahhh/MoleUI/releases/latest") {
                             NSWorkspace.shared.open(url)
                         }
                     }
