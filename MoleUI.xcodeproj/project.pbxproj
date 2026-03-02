@@ -1,0 +1,580 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 63;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		113FB70FCAA54AFDF9BE58B9 /* MoleVersionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D166A995F696C7B00CD5E3 /* MoleVersionView.swift */; };
+		29CB6268C931648AD2B865AF /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB0C4BC3B51B5F199D3A140 /* DashboardView.swift */; };
+		2C817E67A1DE74722B48F95E /* InstallerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43C1897658A5457CF58EF7BD /* InstallerView.swift */; };
+		54506156DDF34D0FED1B3332 /* PurgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4F3BB22047802058591BBF /* PurgeView.swift */; };
+		887C26DC3F0751B05ABAE07F /* CLIExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0FC8E2671003B8A9BAAD02 /* CLIExecutor.swift */; };
+		8A316280BF713757D3BC6275 /* MoleCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3FA1BBA1A27FBCE12FAB812 /* MoleCoreTests.swift */; };
+		97433759C25EA852940B3133 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FE38323311E805E1A7FC867 /* SettingsView.swift */; };
+		9965125018C98EE33BC95D6E /* UninstallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB896B3784B36AEF875BB81C /* UninstallView.swift */; };
+		A469F35E2F80CF947418486C /* DiskAnalyzerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91DD675B485F4BFABAAC40B /* DiskAnalyzerView.swift */; };
+		AA11111111111111AAAAAAAA /* CleanModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB11111111111111BBBBBBBB /* CleanModel.swift */; };
+		AA22222222222222AAAAAAAA /* DiskModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22222222222222BBBBBBBB /* DiskModel.swift */; };
+		AA33333333333333AAAAAAAA /* InstallerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB33333333333333BBBBBBBB /* InstallerModel.swift */; };
+		AA44444444444444AAAAAAAA /* MetricsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB44444444444444BBBBBBBB /* MetricsModel.swift */; };
+		AA55555555555555AAAAAAAA /* OptimizeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB55555555555555BBBBBBBB /* OptimizeModel.swift */; };
+		AA66666666666666AAAAAAAA /* PurgeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB66666666666666BBBBBBBB /* PurgeModel.swift */; };
+		AA77777777777777AAAAAAAA /* SettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB77777777777777BBBBBBBB /* SettingsModel.swift */; };
+		AA88888888888888AAAAAAAA /* UninstallModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB88888888888888BBBBBBBB /* UninstallModel.swift */; };
+		AA99999999999999AAAAAAAA /* VersionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB99999999999999BBBBBBBB /* VersionModel.swift */; };
+		ABB844CFA71DA286E6198BF2 /* SafetyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B5D757BF68A417AB45A5E9F /* SafetyController.swift */; };
+		B10B12EF48384CF315BCF0FD /* SudoHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBD57E8C4DB424E21B6455F8 /* SudoHelper.swift */; };
+		B67F824EB3C3D06706C9EB76 /* MoleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA83B140E1CA8258B27D0DB7 /* MoleApp.swift */; };
+		BCBFFF98F7FF20357C08067B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D318DDC275BE6B3CD128F65C /* ContentView.swift */; };
+		D455E75FE1409E6AB1A61E12 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61CA9DDCC7B13D144300AD0C /* SidebarView.swift */; };
+		E7B5322A3242D44AE9DF7526 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 24C213975ADB4EC643F4BF9D /* Assets.xcassets */; };
+		F32A25D13722F0BA914A232D /* ErrorTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE3A3CCA1B2FB0C00DAD376 /* ErrorTranslator.swift */; };
+		F4589CC8DAEFA56B33CD550D /* OptimizeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44E1B7E83866D954771C6A2 /* OptimizeView.swift */; };
+		FF236E9F77EC3CF3D05AA0E1 /* CleanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E85568217C772E3741C36A21 /* CleanView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A331145FD0602D9856EAD6D4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 992C417319DEEEE2FA4120D6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0E28DBDD7145F9CFEA9B5D9;
+			remoteInfo = MoleUI;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		1BE3A3CCA1B2FB0C00DAD376 /* ErrorTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorTranslator.swift; sourceTree = "<group>"; };
+		24C213975ADB4EC643F4BF9D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2697DDE62676C0815E26BBDB /* Mole UI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Mole UI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D4A2DA29A1920FEC3EECABD /* MoleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MoleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		43C1897658A5457CF58EF7BD /* InstallerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallerView.swift; sourceTree = "<group>"; };
+		54D166A995F696C7B00CD5E3 /* MoleVersionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoleVersionView.swift; sourceTree = "<group>"; };
+		5A4F3BB22047802058591BBF /* PurgeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurgeView.swift; sourceTree = "<group>"; };
+		5F0FC8E2671003B8A9BAAD02 /* CLIExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIExecutor.swift; sourceTree = "<group>"; };
+		5FE38323311E805E1A7FC867 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		61CA9DDCC7B13D144300AD0C /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		8B5D757BF68A417AB45A5E9F /* SafetyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafetyController.swift; sourceTree = "<group>"; };
+		A5E18C42B31B1A28D0F001B8 /* BundledBinaries.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BundledBinaries.entitlements; sourceTree = "<group>"; };
+		BB11111111111111BBBBBBBB /* CleanModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanModel.swift; sourceTree = "<group>"; };
+		BB22222222222222BBBBBBBB /* DiskModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskModel.swift; sourceTree = "<group>"; };
+		BB33333333333333BBBBBBBB /* InstallerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallerModel.swift; sourceTree = "<group>"; };
+		BB44444444444444BBBBBBBB /* MetricsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsModel.swift; sourceTree = "<group>"; };
+		BB55555555555555BBBBBBBB /* OptimizeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptimizeModel.swift; sourceTree = "<group>"; };
+		BB66666666666666BBBBBBBB /* PurgeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurgeModel.swift; sourceTree = "<group>"; };
+		BB77777777777777BBBBBBBB /* SettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModel.swift; sourceTree = "<group>"; };
+		BB87FF57E870C70574208B01 /* MoleUI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MoleUI.entitlements; sourceTree = "<group>"; };
+		BB88888888888888BBBBBBBB /* UninstallModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallModel.swift; sourceTree = "<group>"; };
+		BB99999999999999BBBBBBBB /* VersionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionModel.swift; sourceTree = "<group>"; };
+		CEB0C4BC3B51B5F199D3A140 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		D318DDC275BE6B3CD128F65C /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		D91DD675B485F4BFABAAC40B /* DiskAnalyzerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskAnalyzerView.swift; sourceTree = "<group>"; };
+		E1F3FF625F606A6715FFC5C7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E44E1B7E83866D954771C6A2 /* OptimizeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptimizeView.swift; sourceTree = "<group>"; };
+		E85568217C772E3741C36A21 /* CleanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanView.swift; sourceTree = "<group>"; };
+		EB896B3784B36AEF875BB81C /* UninstallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallView.swift; sourceTree = "<group>"; };
+		F3FA1BBA1A27FBCE12FAB812 /* MoleCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoleCoreTests.swift; sourceTree = "<group>"; };
+		FA83B140E1CA8258B27D0DB7 /* MoleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoleApp.swift; sourceTree = "<group>"; };
+		FBD57E8C4DB424E21B6455F8 /* SudoHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SudoHelper.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1EA75BD21F1E2057809E711F /* MoleUITests */ = {
+			isa = PBXGroup;
+			children = (
+				F3FA1BBA1A27FBCE12FAB812 /* MoleCoreTests.swift */,
+			);
+			path = MoleUITests;
+			sourceTree = "<group>";
+		};
+		73B2452274F0BCDD5161C412 /* View */ = {
+			isa = PBXGroup;
+			children = (
+				E85568217C772E3741C36A21 /* CleanView.swift */,
+				D318DDC275BE6B3CD128F65C /* ContentView.swift */,
+				CEB0C4BC3B51B5F199D3A140 /* DashboardView.swift */,
+				D91DD675B485F4BFABAAC40B /* DiskAnalyzerView.swift */,
+				43C1897658A5457CF58EF7BD /* InstallerView.swift */,
+				FA83B140E1CA8258B27D0DB7 /* MoleApp.swift */,
+				54D166A995F696C7B00CD5E3 /* MoleVersionView.swift */,
+				E44E1B7E83866D954771C6A2 /* OptimizeView.swift */,
+				5A4F3BB22047802058591BBF /* PurgeView.swift */,
+				5FE38323311E805E1A7FC867 /* SettingsView.swift */,
+				61CA9DDCC7B13D144300AD0C /* SidebarView.swift */,
+				EB896B3784B36AEF875BB81C /* UninstallView.swift */,
+			);
+			path = View;
+			sourceTree = "<group>";
+		};
+		8E76565342F4E89743A414CB /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				5F0FC8E2671003B8A9BAAD02 /* CLIExecutor.swift */,
+				BB11111111111111BBBBBBBB /* CleanModel.swift */,
+				BB22222222222222BBBBBBBB /* DiskModel.swift */,
+				1BE3A3CCA1B2FB0C00DAD376 /* ErrorTranslator.swift */,
+				BB33333333333333BBBBBBBB /* InstallerModel.swift */,
+				BB44444444444444BBBBBBBB /* MetricsModel.swift */,
+				BB55555555555555BBBBBBBB /* OptimizeModel.swift */,
+				BB66666666666666BBBBBBBB /* PurgeModel.swift */,
+				8B5D757BF68A417AB45A5E9F /* SafetyController.swift */,
+				BB77777777777777BBBBBBBB /* SettingsModel.swift */,
+				FBD57E8C4DB424E21B6455F8 /* SudoHelper.swift */,
+				BB88888888888888BBBBBBBB /* UninstallModel.swift */,
+				BB99999999999999BBBBBBBB /* VersionModel.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		9646630512C737DF4EC1CC93 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2697DDE62676C0815E26BBDB /* Mole UI.app */,
+				3D4A2DA29A1920FEC3EECABD /* MoleUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AC2EF9D6AC8B8A1419BCF1C4 /* MoleUI */ = {
+			isa = PBXGroup;
+			children = (
+				24C213975ADB4EC643F4BF9D /* Assets.xcassets */,
+				A5E18C42B31B1A28D0F001B8 /* BundledBinaries.entitlements */,
+				E1F3FF625F606A6715FFC5C7 /* Info.plist */,
+				BB87FF57E870C70574208B01 /* MoleUI.entitlements */,
+				73B2452274F0BCDD5161C412 /* View */,
+				8E76565342F4E89743A414CB /* Model */,
+			);
+			path = MoleUI;
+			sourceTree = "<group>";
+		};
+		E109190315663E6EDA56C08A = {
+			isa = PBXGroup;
+			children = (
+				AC2EF9D6AC8B8A1419BCF1C4 /* MoleUI */,
+				1EA75BD21F1E2057809E711F /* MoleUITests */,
+				9646630512C737DF4EC1CC93 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D0E28DBDD7145F9CFEA9B5D9 /* MoleUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 613AF449066A25E72576101C /* Build configuration list for PBXNativeTarget "MoleUI" */;
+			buildPhases = (
+				412AA1AC0EDE3E68D4EFBD77 /* Copy Mole CLI */,
+				E0E1F03D7A6B19692D494387 /* Sources */,
+				3A2DF482894C973B4D8CE6C0 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MoleUI;
+			packageProductDependencies = (
+			);
+			productName = MoleUI;
+			productReference = 2697DDE62676C0815E26BBDB /* Mole UI.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D48E894ECAC1CFA1D2DA4B23 /* MoleUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D101A8C384BD377C0E7651DD /* Build configuration list for PBXNativeTarget "MoleUITests" */;
+			buildPhases = (
+				269312DD32DB757E79DFB9A9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9CD8EF1A4147A85B31405007 /* PBXTargetDependency */,
+			);
+			name = MoleUITests;
+			packageProductDependencies = (
+			);
+			productName = MoleUITests;
+			productReference = 3D4A2DA29A1920FEC3EECABD /* MoleUITests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		992C417319DEEEE2FA4120D6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					D0E28DBDD7145F9CFEA9B5D9 = {
+						DevelopmentTeam = 646VSJ9K5F;
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 0CCB46927B529273DC8FDF43 /* Build configuration list for PBXProject "MoleUI" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E109190315663E6EDA56C08A;
+			minimizedProjectReferenceProxies = 1;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D0E28DBDD7145F9CFEA9B5D9 /* MoleUI */,
+				D48E894ECAC1CFA1D2DA4B23 /* MoleUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3A2DF482894C973B4D8CE6C0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7B5322A3242D44AE9DF7526 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		412AA1AC0EDE3E68D4EFBD77 /* Copy Mole CLI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Mole CLI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copy Mole CLI to app bundle\nMOLE_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/mole\"\nmkdir -p \"$MOLE_DIR\"\n\n# Copy from project Resources directory\nif [ -d \"${PROJECT_DIR}/Resources/mole/bin\" ]; then\n  cp -R \"${PROJECT_DIR}/Resources/mole/\"* \"$MOLE_DIR/\"\n  echo \"Mole CLI copied to app bundle\"\nelse\n  echo \"WARNING: Resources/mole not found\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		269312DD32DB757E79DFB9A9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8A316280BF713757D3BC6275 /* MoleCoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E0E1F03D7A6B19692D494387 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				887C26DC3F0751B05ABAE07F /* CLIExecutor.swift in Sources */,
+				AA11111111111111AAAAAAAA /* CleanModel.swift in Sources */,
+				FF236E9F77EC3CF3D05AA0E1 /* CleanView.swift in Sources */,
+				BCBFFF98F7FF20357C08067B /* ContentView.swift in Sources */,
+				29CB6268C931648AD2B865AF /* DashboardView.swift in Sources */,
+				A469F35E2F80CF947418486C /* DiskAnalyzerView.swift in Sources */,
+				AA22222222222222AAAAAAAA /* DiskModel.swift in Sources */,
+				F32A25D13722F0BA914A232D /* ErrorTranslator.swift in Sources */,
+				AA33333333333333AAAAAAAA /* InstallerModel.swift in Sources */,
+				2C817E67A1DE74722B48F95E /* InstallerView.swift in Sources */,
+				AA44444444444444AAAAAAAA /* MetricsModel.swift in Sources */,
+				B67F824EB3C3D06706C9EB76 /* MoleApp.swift in Sources */,
+				113FB70FCAA54AFDF9BE58B9 /* MoleVersionView.swift in Sources */,
+				AA55555555555555AAAAAAAA /* OptimizeModel.swift in Sources */,
+				F4589CC8DAEFA56B33CD550D /* OptimizeView.swift in Sources */,
+				AA66666666666666AAAAAAAA /* PurgeModel.swift in Sources */,
+				54506156DDF34D0FED1B3332 /* PurgeView.swift in Sources */,
+				ABB844CFA71DA286E6198BF2 /* SafetyController.swift in Sources */,
+				AA77777777777777AAAAAAAA /* SettingsModel.swift in Sources */,
+				97433759C25EA852940B3133 /* SettingsView.swift in Sources */,
+				D455E75FE1409E6AB1A61E12 /* SidebarView.swift in Sources */,
+				B10B12EF48384CF315BCF0FD /* SudoHelper.swift in Sources */,
+				AA88888888888888AAAAAAAA /* UninstallModel.swift in Sources */,
+				9965125018C98EE33BC95D6E /* UninstallView.swift in Sources */,
+				AA99999999999999AAAAAAAA /* VersionModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9CD8EF1A4147A85B31405007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0E28DBDD7145F9CFEA9B5D9 /* MoleUI */;
+			targetProxy = A331145FD0602D9856EAD6D4 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1C2093F1CC51E7860FA0D88C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = 646VSJ9K5F;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUITests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mole UI.app/Contents/MacOS/Mole UI";
+			};
+			name = Release;
+		};
+		2C7F4FEFC752EAC2E99DADB3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = 646VSJ9K5F;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUITests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mole UI.app/Contents/MacOS/Mole UI";
+			};
+			name = Debug;
+		};
+		557040828438B68E134DD6A0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MoleUI/MoleUI.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 646VSJ9K5F;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = MoleUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUI;
+				PRODUCT_NAME = "Mole UI";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		71E79319463B60C48064597C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		76B05F5EF392A298EBEBCC87 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MoleUI/MoleUI.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 646VSJ9K5F;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = MoleUI/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUI;
+				PRODUCT_NAME = "Mole UI";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		BC5B3243402E61AF4DC4AC70 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0CCB46927B529273DC8FDF43 /* Build configuration list for PBXProject "MoleUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC5B3243402E61AF4DC4AC70 /* Debug */,
+				71E79319463B60C48064597C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		613AF449066A25E72576101C /* Build configuration list for PBXNativeTarget "MoleUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				557040828438B68E134DD6A0 /* Debug */,
+				76B05F5EF392A298EBEBCC87 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D101A8C384BD377C0E7651DD /* Build configuration list for PBXNativeTarget "MoleUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2C7F4FEFC752EAC2E99DADB3 /* Debug */,
+				1C2093F1CC51E7860FA0D88C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 992C417319DEEEE2FA4120D6 /* Project object */;
+}
