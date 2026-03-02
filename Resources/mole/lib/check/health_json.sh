@@ -1,0 +1,184 @@
+#!/bin/bash
+# System Health Check - JSON Generator
+# Extracted from tasks.sh
+
+set -euo pipefail
+
+# Ensure dependencies are loaded (only if running standalone)
+if [[ -z "${MOLE_FILE_OPS_LOADED:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    source "$SCRIPT_DIR/lib/core/file_ops.sh"
+fi
+
+# Get memory info in GB
+get_memory_info() {
+    local total_bytes used_gb total_gb
+
+    # Total memory
+    total_bytes=$(sysctl -n hw.memsize 2> /dev/null || echo "0")
+    total_gb=$(LC_ALL=C awk "BEGIN {printf \"%.2f\", $total_bytes / (1024*1024*1024)}" 2> /dev/null || echo "0")
+    [[ -z "$total_gb" || "$total_gb" == "" ]] && total_gb="0"
+
+    # Used memory from vm_stat
+    local vm_output active wired compressed page_size
+    vm_output=$(vm_stat 2> /dev/null || echo "")
+    page_size=4096
+
+    active=$(echo "$vm_output" | LC_ALL=C awk '/Pages active:/ {print $NF}' | tr -d '.\n' 2> /dev/null)
+    wired=$(echo "$vm_output" | LC_ALL=C awk '/Pages wired down:/ {print $NF}' | tr -d '.\n' 2> /dev/null)
+    compressed=$(echo "$vm_output" | LC_ALL=C awk '/Pages occupied by compressor:/ {print $NF}' | tr -d '.\n' 2> /dev/null)
+
+    active=${active:-0}
+    wired=${wired:-0}
+    compressed=${compressed:-0}
+
+    local used_bytes=$(((active + wired + compressed) * page_size))
+    used_gb=$(LC_ALL=C awk "BEGIN {printf \"%.2f\", $used_bytes / (1024*1024*1024)}" 2> /dev/null || echo "0")
+    [[ -z "$used_gb" || "$used_gb" == "" ]] && used_gb="0"
+
+    echo "$used_gb $total_gb"
+}
+
+# Get disk info
+get_disk_info() {
+    local home="${HOME:-/}"
+    local df_output total_gb used_gb used_percent
+
+    df_output=$(command df -k "$home" 2> /dev/null | tail -1)
+
+    local total_kb used_kb
+    total_kb=$(echo "$df_output" | LC_ALL=C awk 'NR==1{print $2}' 2> /dev/null)
+    used_kb=$(echo "$df_output" | LC_ALL=C awk 'NR==1{print $3}' 2> /dev/null)
+
+    total_kb=${total_kb:-0}
+    used_kb=${used_kb:-0}
+    [[ "$total_kb" == "0" ]] && total_kb=1 # Avoid division by zero
+
+    total_gb=$(LC_ALL=C awk "BEGIN {printf \"%.2f\", $total_kb / (1024*1024)}" 2> /dev/null || echo "0")
+    used_gb=$(LC_ALL=C awk "BEGIN {printf \"%.2f\", $used_kb / (1024*1024)}" 2> /dev/null || echo "0")
+    used_percent=$(LC_ALL=C awk "BEGIN {printf \"%.1f\", ($used_kb / $total_kb) * 100}" 2> /dev/null || echo "0")
+
+    [[ -z "$total_gb" || "$total_gb" == "" ]] && total_gb="0"
+    [[ -z "$used_gb" || "$used_gb" == "" ]] && used_gb="0"
+    [[ -z "$used_percent" || "$used_percent" == "" ]] && used_percent="0"
+
+    echo "$used_gb $total_gb $used_percent"
+}
+
+# Get uptime in days
+get_uptime_days() {
+    local boot_output boot_time uptime_days
+
+    boot_output=$(sysctl -n kern.boottime 2> /dev/null || echo "")
+    boot_time=$(echo "$boot_output" | awk -F 'sec = |, usec' '{print $2}' 2> /dev/null || echo "")
+
+    if [[ -n "$boot_time" && "$boot_time" =~ ^[0-9]+$ ]]; then
+        local now
+        now=$(get_epoch_seconds)
+        local uptime_sec=$((now - boot_time))
+        uptime_days=$(LC_ALL=C awk "BEGIN {printf \"%.1f\", $uptime_sec / 86400}" 2> /dev/null || echo "0")
+    else
+        uptime_days="0"
+    fi
+
+    [[ -z "$uptime_days" || "$uptime_days" == "" ]] && uptime_days="0"
+    echo "$uptime_days"
+}
+
+# JSON escape helper
+json_escape() {
+    # Escape backslash, double quote, tab, and newline
+    local escaped
+    escaped=$(echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' ')
+    echo -n "${escaped% }"
+}
+
+# Generate JSON output
+generate_health_json() {
+    # System info
+    read -r mem_used mem_total <<< "$(get_memory_info)"
+    read -r disk_used disk_total disk_percent <<< "$(get_disk_info)"
+    local uptime=$(get_uptime_days)
+
+    # Ensure all values are valid numbers (fallback to 0)
+    mem_used=${mem_used:-0}
+    mem_total=${mem_total:-0}
+    disk_used=${disk_used:-0}
+    disk_total=${disk_total:-0}
+    disk_percent=${disk_percent:-0}
+    uptime=${uptime:-0}
+
+    # Start JSON
+    cat << EOF
+{
+  "memory_used_gb": $mem_used,
+  "memory_total_gb": $mem_total,
+  "disk_used_gb": $disk_used,
+  "disk_total_gb": $disk_total,
+  "disk_used_percent": $disk_percent,
+  "uptime_days": $uptime,
+  "optimizations": [
+EOF
+
+    # Collect all optimization items
+    local -a items=()
+
+    # Core optimizations (safe and valuable)
+    items+=('system_maintenance|DNS & Spotlight Check|Refresh DNS cache & verify Spotlight status|true')
+    items+=('cache_refresh|Finder Cache Refresh|Refresh QuickLook thumbnails & icon services cache|true')
+    items+=('saved_state_cleanup|App State Cleanup|Remove old saved application states (30+ days)|true')
+    items+=('fix_broken_configs|Broken Config Repair|Fix corrupted preferences files|true')
+    items+=('network_optimization|Network Cache Refresh|Optimize DNS cache & restart mDNSResponder|true')
+
+    # Advanced optimizations (high value, auto-run with safety checks)
+    items+=('sqlite_vacuum|Database Optimization|Compress SQLite databases for Mail, Safari & Messages (skips if apps are running)|true')
+    items+=('launch_services_rebuild|LaunchServices Repair|Repair "Open with" menu & file associations|true')
+    items+=('font_cache_rebuild|Font Cache Rebuild|Rebuild font database to fix rendering issues (skips if browsers are running)|true')
+    items+=('dock_refresh|Dock Refresh|Fix broken icons and visual glitches in the Dock|true')
+
+    # System performance optimizations (new)
+    items+=('memory_pressure_relief|Memory Optimization|Release inactive memory to improve system responsiveness|true')
+    items+=('network_stack_optimize|Network Stack Refresh|Flush routing table and ARP cache to resolve network issues|true')
+    items+=('disk_permissions_repair|Permission Repair|Fix user directory permission issues|true')
+    items+=('bluetooth_reset|Bluetooth Refresh|Restart Bluetooth module to fix connectivity (skips if in use)|true')
+    items+=('spotlight_index_optimize|Spotlight Optimization|Rebuild index if search is slow (smart detection)|true')
+
+    # Removed high-risk optimizations:
+    # - startup_items_cleanup: Risk of deleting legitimate app helpers
+    # - system_services_refresh: Risk of data loss when killing system services
+    # - dyld_cache_update: Low benefit, time-consuming, auto-managed by macOS
+
+    # Output items as JSON
+    local first=true
+    for item in "${items[@]}"; do
+        IFS='|' read -r action name desc safe <<< "$item"
+
+        # Escape strings
+        action=$(json_escape "$action")
+        name=$(json_escape "$name")
+        desc=$(json_escape "$desc")
+
+        [[ "$first" == "true" ]] && first=false || echo ","
+
+        cat << EOF
+    {
+      "category": "system",
+      "name": "$name",
+      "description": "$desc",
+      "action": "$action",
+      "safe": $safe
+    }
+EOF
+    done
+
+    # Close JSON
+    cat << 'EOF'
+  ]
+}
+EOF
+}
+
+# Main execution (for testing)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    generate_health_json
+fi
