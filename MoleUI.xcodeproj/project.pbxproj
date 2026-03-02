@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D1DAA37991814AAF828486BE /* .mole-cli-version in Resources */ = {isa = PBXBuildFile; fileRef = 21135F31A2FE41B5815A138C /* .mole-cli-version */; };
 		113FB70FCAA54AFDF9BE58B9 /* MoleVersionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D166A995F696C7B00CD5E3 /* MoleVersionView.swift */; };
 		29CB6268C931648AD2B865AF /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB0C4BC3B51B5F199D3A140 /* DashboardView.swift */; };
 		2C817E67A1DE74722B48F95E /* InstallerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43C1897658A5457CF58EF7BD /* InstallerView.swift */; };
@@ -47,6 +48,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		21135F31A2FE41B5815A138C /* .mole-cli-version */ = {isa = PBXFileReference; lastKnownFileType = text; path = ".mole-cli-version"; sourceTree = "<group>"; };
 		1BE3A3CCA1B2FB0C00DAD376 /* ErrorTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorTranslator.swift; sourceTree = "<group>"; };
 		24C213975ADB4EC643F4BF9D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2697DDE62676C0815E26BBDB /* Mole UI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Mole UI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -147,7 +149,8 @@
 				BB87FF57E870C70574208B01 /* MoleUI.entitlements */,
 				73B2452274F0BCDD5161C412 /* View */,
 				8E76565342F4E89743A414CB /* Model */,
-			);
+			
+				21135F31A2FE41B5815A138C /* .mole-cli-version */,);
 			path = MoleUI;
 			sourceTree = "<group>";
 		};
@@ -240,7 +243,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				E7B5322A3242D44AE9DF7526 /* Assets.xcassets in Resources */,
-			);
+			
+				D1DAA37991814AAF828486BE /* .mole-cli-version in Resources */,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
@@ -383,7 +387,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUI;
 				PRODUCT_NAME = "Mole UI";
 				SDKROOT = macosx;
@@ -470,7 +474,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.qinfuyao.MoleUI;
 				PRODUCT_NAME = "Mole UI";
 				SDKROOT = macosx;

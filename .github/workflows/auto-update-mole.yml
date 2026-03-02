@@ -60,6 +60,7 @@ jobs:
           cp "$MOLE_ROOT/bin/mole" Resources/mole/
           sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" \&\& pwd)\"|" Resources/mole/mole
           echo "${{ steps.latest_release.outputs.version }}" > .mole-cli-version
+          echo "${{ steps.latest_release.outputs.version }}" > MoleUI/.mole-cli-version
 
       - name: Compatibility check
         if: steps.check_update.outputs.update_needed == 'true'
