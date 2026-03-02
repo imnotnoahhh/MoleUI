@@ -1,0 +1,36 @@
+import SwiftUI
+
+@main
+struct MoleApp: App {
+    @State private var metricsModel = MetricsModel()
+    @State private var cleanModel = CleanModel()
+    @State private var optimizeModel = OptimizeModel()
+    @State private var purgeModel = PurgeModel()
+    @State private var installerModel = InstallerModel()
+    @State private var diskModel = DiskModel()
+    @State private var appScanModel = AppScanModel()
+    @State private var uninstallModel = UninstallModel()
+    @State private var settingsModel = SettingsModel()
+    @State private var safetyController = SafetyController()
+    @State private var versionModel = VersionModel()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(metricsModel)
+                .environment(cleanModel)
+                .environment(optimizeModel)
+                .environment(purgeModel)
+                .environment(installerModel)
+                .environment(diskModel)
+                .environment(appScanModel)
+                .environment(uninstallModel)
+                .environment(settingsModel)
+                .environment(safetyController)
+                .environment(versionModel)
+                .frame(width: 904, height: 580)
+        }
+        .defaultSize(width: 904, height: 580)
+        .windowResizability(.contentSize)
+    }
+}
