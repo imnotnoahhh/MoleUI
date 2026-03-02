@@ -61,7 +61,7 @@ struct SettingsView: View {
     private var preferencesSection: some View {
         Section {
             Toggle("Confirm before cleaning", isOn: $confirmBeforeClean)
-            Toggle("Dry run mode (Clean/Optimize preview only)", isOn: $dryRunMode)
+            Toggle("Dry run mode", isOn: $dryRunMode)
             Toggle("Show hidden files in Disk Analyzer", isOn: $showHiddenFiles)
         } header: {
             Label("Preferences", systemImage: "slider.horizontal.3")
