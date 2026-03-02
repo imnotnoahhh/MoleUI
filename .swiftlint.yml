@@ -1,0 +1,23 @@
+excluded:
+  - MoleUI.xcodeproj
+  - MoleUITests
+  - .build
+
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+  - type_body_length
+  - file_length
+  - function_body_length
+  - large_tuple
+  - cyclomatic_complexity
+  - inclusive_language
+  - trailing_comma  # SwiftFormat adds trailing commas
+  - nesting  # Allow nested types for organization
+
+identifier_name:
+  min_length: 1
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
