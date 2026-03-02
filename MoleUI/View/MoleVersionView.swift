@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Mole UI 版本信息显示
+/// Mole UI version information display
 struct MoleVersionView: View {
     @Environment(VersionModel.self) var versionChecker
 
@@ -14,7 +14,7 @@ struct MoleVersionView: View {
 
                 if versionChecker.isChecking {
                     ProgressView()
-                        .scaleEffect(0.7)
+                        .controlSize(.small)
                 }
             }
 
@@ -78,7 +78,9 @@ struct MoleVersionView: View {
                 .buttonStyle(.link)
             }
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.top)
+        .padding(.bottom, 8)
         .background(Color.secondary.opacity(0.1))
         .cornerRadius(8)
         .task {
