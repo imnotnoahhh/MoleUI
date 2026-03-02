@@ -248,35 +248,9 @@ swiftlint --fix
 ```
 
 **Configuration**: `.swiftlint.yml` - customized rules for MoleUI:
-- Disabled: `trailing_comma` (SwiftFormat adds them), `nesting` (allows nested types)
+- Disabled: `trailing_comma` (SwiftFormat adds them), `nesting` (allows nested types), `opening_brace` (SwiftFormat handles it)
 - Line length, file length, complexity limits disabled for flexibility
 - Opt-in rules: `empty_count`, `closure_spacing`, etc.
-
-### Periphery
-
-Periphery detects unused code (dead code) in Swift projects.
-
-**Installation**:
-```bash
-brew install peripheryapp/periphery/periphery
-```
-
-**Usage**:
-```bash
-# Scan for unused code
-periphery scan --project MoleUI.xcodeproj --schemes MoleUI
-
-# Clean build before scanning (recommended)
-xcodebuild clean
-periphery scan --project MoleUI.xcodeproj --schemes MoleUI --clean-build
-```
-
-**Note**: Periphery may report false positives for:
-- SwiftUI views (used via reflection)
-- `@Observable` properties (accessed via key paths)
-- Public APIs intended for external use
-
-Review results carefully before removing code.
 
 ### Pre-Commit Checklist
 
@@ -295,9 +269,6 @@ just build
 # 4. Run tests
 xcodebuild -scheme MoleUITests test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-
-# 5. (Optional) Check for dead code
-periphery scan --project MoleUI.xcodeproj --schemes MoleUI
 ```
 
 All checks must pass before opening a PR.

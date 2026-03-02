@@ -198,7 +198,8 @@ final class CLIExecutor {
         // 检查 bundle 内
         if let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("mole/mole").path,
-            fm.isExecutableFile(atPath: bundled) {
+            fm.isExecutableFile(atPath: bundled)
+        {
             return bundled
         }
 
@@ -287,7 +288,8 @@ final class CLIExecutor {
             if parts.count == 2,
                let current = Double(parts[0]),
                let total = Double(parts[1]),
-               total > 0 {
+               total > 0
+            {
                 onProgress?(current / total, line)
                 return
             }
@@ -296,7 +298,8 @@ final class CLIExecutor {
         // 进度条格式 [=====>    ]
         if line.contains("["), line.contains("]") {
             if let start = line.firstIndex(of: "["),
-               let end = line.firstIndex(of: "]") {
+               let end = line.firstIndex(of: "]")
+            {
                 let bar = line[line.index(after: start) ..< end]
                 let filled = bar.filter { $0 == "=" || $0 == ">" }.count
                 let total = bar.count

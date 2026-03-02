@@ -120,7 +120,8 @@ enum ErrorTranslator {
 
         // 权限错误
         if stderrLower.contains("permission denied") ||
-            stderrLower.contains("operation not permitted") {
+            stderrLower.contains("operation not permitted")
+        {
             return UserFriendlyError(
                 title: "权限不足",
                 message: "没有足够的权限执行此操作",
@@ -136,7 +137,8 @@ enum ErrorTranslator {
 
         // 磁盘空间不足
         if stderrLower.contains("no space left") ||
-            stderrLower.contains("disk full") {
+            stderrLower.contains("disk full")
+        {
             return UserFriendlyError(
                 title: "磁盘空间不足",
                 message: "磁盘空间已满，无法完成操作",
@@ -153,7 +155,8 @@ enum ErrorTranslator {
 
         // 文件不存在
         if stderrLower.contains("no such file") ||
-            stderrLower.contains("not found") {
+            stderrLower.contains("not found")
+        {
             return UserFriendlyError(
                 title: "文件不存在",
                 message: "要操作的文件或目录不存在",
@@ -170,7 +173,8 @@ enum ErrorTranslator {
 
         // 文件正在使用
         if stderrLower.contains("resource busy") ||
-            stderrLower.contains("file is in use") {
+            stderrLower.contains("file is in use")
+        {
             return UserFriendlyError(
                 title: "文件正在使用",
                 message: "某些文件正在被其他程序使用",
@@ -187,7 +191,8 @@ enum ErrorTranslator {
 
         // SIP 保护
         if stderrLower.contains("system integrity protection") ||
-            stderrLower.contains("sip") {
+            stderrLower.contains("sip")
+        {
             return UserFriendlyError(
                 title: "系统保护",
                 message: "此文件受 macOS 系统完整性保护 (SIP)",
@@ -203,7 +208,8 @@ enum ErrorTranslator {
 
         // 网络错误
         if stderrLower.contains("network") ||
-            stderrLower.contains("connection") {
+            stderrLower.contains("connection")
+        {
             return UserFriendlyError(
                 title: "网络错误",
                 message: "网络连接出现问题",
