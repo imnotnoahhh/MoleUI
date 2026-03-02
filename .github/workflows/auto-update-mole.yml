@@ -152,15 +152,24 @@ jobs:
 
       - name: Update MoleUI version
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
+        id: version_update
         run: |
-          # Extract version number (remove 'v' prefix if present)
-          NEW_VERSION="${{ steps.latest_release.outputs.version }}"
-          NEW_VERSION="${NEW_VERSION#v}"
+          # Read current MoleUI version from project.pbxproj
+          CURRENT_VERSION=$(grep "MARKETING_VERSION = " MoleUI.xcodeproj/project.pbxproj | head -1 | sed 's/.*MARKETING_VERSION = \(.*\);/\1/')
+          echo "Current MoleUI version: $CURRENT_VERSION"
+
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          # Increment patch version
+          NEW_PATCH=$((PATCH + 1))
+          NEW_MOLEUI_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
 
           # Update MARKETING_VERSION in project.pbxproj
-          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $NEW_VERSION/" MoleUI.xcodeproj/project.pbxproj
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $NEW_MOLEUI_VERSION/" MoleUI.xcodeproj/project.pbxproj
 
-          echo "Updated MoleUI version to $NEW_VERSION"
+          echo "Updated MoleUI version: $CURRENT_VERSION → $NEW_MOLEUI_VERSION"
+          echo "moleui_version=$NEW_MOLEUI_VERSION" >> $GITHUB_OUTPUT
 
       - name: Create PR (compatible)
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
@@ -171,17 +180,21 @@ jobs:
           commit-message: "chore: update Mole CLI to ${{ steps.latest_release.outputs.version }}"
           branch: auto-update-mole-${{ steps.latest_release.outputs.version }}
           delete-branch: true
-          title: "Update Mole CLI to ${{ steps.latest_release.outputs.version }}"
+          title: "Update Mole CLI to ${{ steps.latest_release.outputs.version }} (MoleUI ${{ steps.version_update.outputs.moleui_version }})"
           body: |
-            Automated update from **${{ steps.current_version.outputs.version }}** to **${{ steps.latest_release.outputs.version }}**.
+            Automated Mole CLI update with compatibility verification.
 
-            Compatibility check passed:
+            **Version Changes:**
+            - MoleUI: ${{ steps.version_update.outputs.moleui_version }}
+            - Bundled Mole CLI: ${{ steps.current_version.outputs.version }} → ${{ steps.latest_release.outputs.version }}
+
+            **Compatibility Checks:**
             - ✅ All required files present
             - ✅ Commands execute successfully
             - ✅ JSON schema compatible
-            - ✅ MoleUI version synchronized to ${{ steps.latest_release.outputs.version }}
 
-            Release notes: https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}
+            **Upstream Release Notes:**
+            https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}
           labels: dependencies,automated
 
       - name: Auto-merge PR
@@ -212,9 +225,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git pull origin main
 
-          # Create and push tag
-          TAG_VERSION="${{ steps.latest_release.outputs.version }}"
-          git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION - Auto-updated Mole CLI"
+          # Create and push tag with MoleUI version
+          TAG_VERSION="v${{ steps.version_update.outputs.moleui_version }}"
+          git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION
+
+          MoleUI version: ${{ steps.version_update.outputs.moleui_version }}
+          Bundled Mole CLI: ${{ steps.latest_release.outputs.version }}
+          Auto-updated from upstream Mole CLI release"
           git push origin "$TAG_VERSION"
 
           echo "Created and pushed tag $TAG_VERSION"

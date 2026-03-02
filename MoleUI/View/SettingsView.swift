@@ -73,22 +73,39 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            // Mole 版本信息
+            // Mole UI version checker
             MoleVersionView()
 
             Divider()
 
+            // MoleUI App Version
             HStack {
-                Text("App Version")
+                Text("MoleUI Version")
                 Spacer()
                 Text(MoleVersion.current)
                     .foregroundStyle(.secondary)
                     .font(.system(.caption, design: .monospaced))
             }
+
+            // Bundled Mole CLI Version
+            HStack {
+                Text("Bundled Mole CLI")
+                Spacer()
+                if let cliVersion = readMoleCLIVersion() {
+                    Text(cliVersion)
+                        .foregroundStyle(.secondary)
+                        .font(.system(.caption, design: .monospaced))
+                } else {
+                    Text("Unknown")
+                        .foregroundStyle(.secondary)
+                        .font(.system(.caption, design: .monospaced))
+                }
+            }
+
             HStack {
                 Text("GitHub")
                 Spacer()
-                Text("https://github.com/tw93/Mole")
+                Text("https://github.com/imnotnoahhh/MoleUI")
                     .foregroundStyle(.secondary)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
@@ -142,5 +159,19 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             whitelist.addToWhitelist(path: url.path)
         }
+    }
+
+    private func readMoleCLIVersion() -> String? {
+        // Try reading from .mole-cli-version file
+        if let versionFile = Bundle.main.resourceURL?
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(".mole-cli-version"),
+            let version = try? String(contentsOf: versionFile, encoding: .utf8)
+        {
+            return version.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
     }
 }
