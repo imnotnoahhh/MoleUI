@@ -1,0 +1,859 @@
+#!/bin/bash
+# Mole - Main CLI entrypoint.
+# Routes subcommands and interactive menu.
+# Handles update/remove flows.
+
+set -euo pipefail
+
+# Auto-detect SCRIPT_DIR based on where this script is located
+# This allows it to work both in Homebrew and bundled in app
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/lib/core/common.sh"
+source "$SCRIPT_DIR/lib/core/commands.sh"
+
+trap cleanup_temp_files EXIT INT TERM
+
+# Version and update helpers
+VERSION="1.28.1"
+MOLE_TAGLINE="Deep clean and optimize your Mac."
+
+is_touchid_configured() {
+    local pam_sudo_file="/etc/pam.d/sudo"
+    [[ -f "$pam_sudo_file" ]] && grep -q "pam_tid.so" "$pam_sudo_file" 2> /dev/null
+}
+
+get_latest_version() {
+    curl -fsSL --connect-timeout 2 --max-time 3 -H "Cache-Control: no-cache" \
+        "https://raw.githubusercontent.com/tw93/mole/main/mole" 2> /dev/null |
+        grep '^VERSION=' | head -1 | sed 's/VERSION="\(.*\)"/\1/'
+}
+
+get_latest_version_from_github() {
+    local version
+    version=$(curl -fsSL --connect-timeout 2 --max-time 3 \
+        "https://api.github.com/repos/tw93/mole/releases/latest" 2> /dev/null |
+        grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    version="${version#v}"
+    version="${version#V}"
+    echo "$version"
+}
+
+# Install detection (Homebrew vs manual).
+is_homebrew_install() {
+    local mole_path
+    mole_path=$(command -v mole 2> /dev/null) || return 1
+
+    if [[ -L "$mole_path" ]] && readlink "$mole_path" | grep -q "Cellar/mole"; then
+        if command -v brew > /dev/null 2>&1; then
+            brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
+        else
+            return 1
+        fi
+    fi
+
+    if [[ -f "$mole_path" ]]; then
+        case "$mole_path" in
+            /opt/homebrew/bin/mole | /usr/local/bin/mole)
+                if [[ -d /opt/homebrew/Cellar/mole ]] || [[ -d /usr/local/Cellar/mole ]]; then
+                    if command -v brew > /dev/null 2>&1; then
+                        brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
+                    else
+                        return 0 # Cellar exists, probably Homebrew install
+                    fi
+                fi
+                ;;
+        esac
+    fi
+
+    if command -v brew > /dev/null 2>&1; then
+        local brew_prefix
+        brew_prefix=$(brew --prefix 2> /dev/null)
+        if [[ -n "$brew_prefix" && "$mole_path" == "$brew_prefix/bin/mole" && -d "$brew_prefix/Cellar/mole" ]]; then
+            brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Background update notice
+check_for_updates() {
+    local msg_cache="$HOME/.cache/mole/update_message"
+    ensure_user_dir "$(dirname "$msg_cache")"
+    ensure_user_file "$msg_cache"
+
+    (
+        (
+            local latest
+
+            latest=$(get_latest_version_from_github)
+            if [[ -z "$latest" ]]; then
+                latest=$(get_latest_version)
+            fi
+
+            if [[ -n "$latest" && "$VERSION" != "$latest" && "$(printf '%s\n' "$VERSION" "$latest" | sort -V | head -1)" == "$VERSION" ]]; then
+                printf "\nUpdate available: %s → %s, run %smo update%s\n\n" "$VERSION" "$latest" "$GREEN" "$NC" > "$msg_cache"
+            else
+                echo -n > "$msg_cache"
+            fi
+        ) > /dev/null 2>&1 < /dev/null &
+    )
+}
+
+show_update_notification() {
+    local msg_cache="$HOME/.cache/mole/update_message"
+    if [[ -f "$msg_cache" && -s "$msg_cache" ]]; then
+        cat "$msg_cache"
+        echo
+    fi
+}
+
+# UI helpers
+show_brand_banner() {
+    cat << EOF
+${GREEN} __  __       _      ${NC}
+${GREEN}|  \/  | ___ | | ___ ${NC}
+${GREEN}| |\/| |/ _ \| |/ _ \\${NC}
+${GREEN}| |  | | (_) | |  __/${NC}  ${BLUE}https://github.com/tw93/mole${NC}
+${GREEN}|_|  |_|\___/|_|\___|${NC}  ${GREEN}${MOLE_TAGLINE}${NC}
+
+EOF
+}
+
+animate_mole_intro() {
+    if [[ ! -t 1 ]]; then
+        return
+    fi
+
+    clear_screen
+    printf '\n'
+    hide_cursor
+
+    local -a mole_lines=()
+
+    while IFS= read -r line; do
+        mole_lines+=("$line")
+    done << 'EOF'
+        /\_/\
+   ____/ o o \
+ /~____  =o= /
+(______)__m_m)
+        /   \
+     __/ /\ \__
+    /__/  \__\_
+EOF
+
+    local idx
+    local body_cutoff=4
+    local body_color="${PURPLE}"
+    local ground_color="${GREEN}"
+
+    for idx in "${!mole_lines[@]}"; do
+        if ((idx < body_cutoff)); then
+            printf "%s\n" "${body_color}${mole_lines[$idx]}${NC}"
+        else
+            printf "%s\n" "${ground_color}${mole_lines[$idx]}${NC}"
+        fi
+        sleep 0.1
+    done
+
+    printf '\n'
+    sleep 0.5
+
+    printf '\033[2J\033[H'
+    show_cursor
+}
+
+show_version() {
+    local os_ver
+    if command -v sw_vers > /dev/null; then
+        os_ver=$(sw_vers -productVersion)
+    else
+        os_ver="Unknown"
+    fi
+
+    local arch
+    arch=$(uname -m)
+
+    local kernel
+    kernel=$(uname -r)
+
+    local sip_status
+    if command -v csrutil > /dev/null; then
+        sip_status=$(csrutil status 2> /dev/null | grep -o "enabled\|disabled" || echo "Unknown")
+        sip_status="$(LC_ALL=C tr '[:lower:]' '[:upper:]' <<< "${sip_status:0:1}")${sip_status:1}"
+    else
+        sip_status="Unknown"
+    fi
+
+    local disk_free
+    disk_free=$(df -h / 2> /dev/null | awk 'NR==2 {print $4}' || echo "Unknown")
+
+    local install_method="Manual"
+    if is_homebrew_install; then
+        install_method="Homebrew"
+    fi
+
+    printf '\nMole version %s\n' "$VERSION"
+    printf 'macOS: %s\n' "$os_ver"
+    printf 'Architecture: %s\n' "$arch"
+    printf 'Kernel: %s\n' "$kernel"
+    printf 'SIP: %s\n' "$sip_status"
+    printf 'Disk Free: %s\n' "$disk_free"
+    printf 'Install: %s\n' "$install_method"
+    printf 'Shell: %s\n\n' "${SHELL:-Unknown}"
+}
+
+show_help() {
+    show_brand_banner
+    echo
+    printf "%s%s%s\n" "$BLUE" "COMMANDS" "$NC"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo" "$NC" "Main menu"
+    for entry in "${MOLE_COMMANDS[@]}"; do
+        local name="${entry%%:*}"
+        local desc="${entry#*:}"
+        local display="mo $name"
+        [[ "$name" == "help" ]] && display="mo --help"
+        [[ "$name" == "version" ]] && display="mo --version"
+        printf "  %s%-28s%s %s\n" "$GREEN" "$display" "$NC" "$desc"
+    done
+    echo
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo clean --dry-run" "$NC" "Preview cleanup"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo clean --whitelist" "$NC" "Manage protected caches"
+
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo optimize --dry-run" "$NC" "Preview optimization"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo optimize --whitelist" "$NC" "Manage protected items"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo purge --paths" "$NC" "Configure scan directories"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo analyze /Volumes" "$NC" "Analyze external drives only"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo update --force" "$NC" "Force reinstall latest stable version"
+    printf "  %s%-28s%s %s\n" "$GREEN" "mo update --nightly" "$NC" "Install latest unreleased main branch build"
+    echo
+    printf "%s%s%s\n" "$BLUE" "OPTIONS" "$NC"
+    printf "  %s%-28s%s %s\n" "$GREEN" "--debug" "$NC" "Show detailed operation logs"
+    echo
+}
+
+# Update flow (Homebrew or installer).
+update_mole() {
+    local force_update="${1:-false}"
+    local nightly_update="${2:-false}"
+    local update_interrupted=false
+    trap 'update_interrupted=true; echo ""; exit 130' INT TERM
+
+    if is_homebrew_install; then
+        if [[ "$nightly_update" == "true" ]]; then
+            log_error "Nightly update is only available for script installations"
+            echo -e "${ICON_REVIEW} Homebrew installs follow stable releases."
+            echo -e "${ICON_REVIEW} Reinstall via script to use: ${GRAY}mo update --nightly${NC}"
+            exit 1
+        fi
+        update_via_homebrew "$VERSION"
+        exit 0
+    fi
+
+    local latest=""
+    local download_label="Downloading latest version..."
+    local install_label="Installing update..."
+    local final_success_label="latest version"
+
+    if [[ "$nightly_update" == "true" ]]; then
+        latest="main"
+        download_label="Downloading nightly installer..."
+        install_label="Installing nightly update..."
+        final_success_label="nightly build (main)"
+    else
+        latest=$(get_latest_version_from_github)
+        [[ -z "$latest" ]] && latest=$(get_latest_version)
+
+        if [[ -z "$latest" ]]; then
+            log_error "Unable to check for updates. Check network connection."
+            echo -e "${ICON_REVIEW} Check if you can access GitHub, https://github.com"
+            echo -e "${ICON_REVIEW} Try again with: ${GRAY}mo update${NC}"
+            exit 1
+        fi
+
+        if [[ "$VERSION" == "$latest" && "$force_update" != "true" ]]; then
+            echo ""
+            echo -e "${GREEN}${ICON_SUCCESS}${NC} Already on latest version, ${VERSION}"
+            echo ""
+            exit 0
+        fi
+    fi
+
+    if [[ -t 1 ]]; then
+        start_inline_spinner "$download_label"
+    else
+        echo "${download_label%...}"
+    fi
+
+    local installer_url="https://raw.githubusercontent.com/tw93/mole/main/install.sh"
+    local tmp_installer
+    tmp_installer="$(mktemp_file)" || {
+        log_error "Update failed"
+        exit 1
+    }
+
+    local download_error=""
+    if command -v curl > /dev/null 2>&1; then
+        download_error=$(curl -fsSL --connect-timeout 10 --max-time 60 "$installer_url" -o "$tmp_installer" 2>&1) || {
+            local curl_exit=$?
+            if [[ -t 1 ]]; then stop_inline_spinner; fi
+            rm -f "$tmp_installer"
+            log_error "Update failed, curl error: $curl_exit"
+
+            case $curl_exit in
+                6) echo -e "${ICON_REVIEW} Could not resolve host. Check DNS or network connection." ;;
+                7) echo -e "${ICON_REVIEW} Failed to connect. Check network or proxy settings." ;;
+                22) echo -e "${ICON_REVIEW} HTTP 404 Not Found. The installer may have moved." ;;
+                28) echo -e "${ICON_REVIEW} Connection timed out. Try again or check firewall." ;;
+                *) echo -e "${ICON_REVIEW} Check network connection and try again." ;;
+            esac
+            echo -e "${ICON_REVIEW} URL: $installer_url"
+            exit 1
+        }
+    elif command -v wget > /dev/null 2>&1; then
+        download_error=$(wget --timeout=10 --tries=3 -qO "$tmp_installer" "$installer_url" 2>&1) || {
+            if [[ -t 1 ]]; then stop_inline_spinner; fi
+            rm -f "$tmp_installer"
+            log_error "Update failed, wget error"
+            echo -e "${ICON_REVIEW} Check network connection and try again."
+            echo -e "${ICON_REVIEW} URL: $installer_url"
+            exit 1
+        }
+    else
+        if [[ -t 1 ]]; then stop_inline_spinner; fi
+        rm -f "$tmp_installer"
+        log_error "curl or wget required"
+        echo -e "${ICON_REVIEW} Install curl with: ${GRAY}brew install curl${NC}"
+        exit 1
+    fi
+
+    if [[ -t 1 ]]; then stop_inline_spinner; fi
+    chmod +x "$tmp_installer"
+
+    local mole_path
+    mole_path="$(command -v mole 2> /dev/null || echo "$0")"
+    local install_dir
+    install_dir="$(cd "$(dirname "$mole_path")" && pwd)"
+
+    local requires_sudo="false"
+    if [[ ! -w "$install_dir" ]]; then
+        requires_sudo="true"
+    elif [[ -e "$install_dir/mole" && ! -w "$install_dir/mole" ]]; then
+        requires_sudo="true"
+    fi
+
+    if [[ "$requires_sudo" == "true" ]]; then
+        if ! request_sudo_access "Mole update requires admin access"; then
+            log_error "Update aborted, admin access denied"
+            rm -f "$tmp_installer"
+            exit 1
+        fi
+    fi
+
+    if [[ -t 1 ]]; then
+        start_inline_spinner "$install_label"
+    else
+        echo "${install_label%...}"
+    fi
+
+    process_install_output() {
+        local output="$1"
+        local fallback_version="$2"
+        local success_label="$3"
+        if [[ -t 1 ]]; then stop_inline_spinner; fi
+
+        local filtered_output
+        filtered_output=$(printf '%s\n' "$output" | sed '/^$/d')
+        if [[ -n "$filtered_output" ]]; then
+            printf '\n%s\n' "$filtered_output"
+        fi
+
+        if ! printf '%s\n' "$output" | grep -Eq "Updated to latest version|Already on latest version"; then
+            local new_version
+            new_version=$(printf '%s\n' "$output" | sed -n 's/.*-> \([^[:space:]]\{1,\}\).*/\1/p' | head -1)
+            if [[ -z "$new_version" ]]; then
+                new_version=$(printf '%s\n' "$output" | sed -n 's/.*version[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' | head -1)
+            fi
+            if [[ -z "$new_version" ]]; then
+                new_version=$("$mole_path" --version 2> /dev/null | awk 'NR==1 && NF {print $NF}' || echo "")
+            fi
+            if [[ -z "$new_version" ]]; then
+                new_version="$fallback_version"
+            fi
+            printf '\n%s\n\n' "${GREEN}${ICON_SUCCESS}${NC} Updated to ${success_label}, ${new_version:-unknown}"
+        else
+            printf '\n'
+        fi
+    }
+
+    local install_output
+    local update_tag="V${latest#V}"
+    local config_dir="${MOLE_CONFIG_DIR:-$SCRIPT_DIR}"
+    if [[ ! -f "$config_dir/lib/core/common.sh" ]]; then
+        config_dir="$HOME/.config/mole"
+    fi
+
+    if [[ "$nightly_update" == "true" ]]; then
+        if install_output=$(MOLE_VERSION="main" "$tmp_installer" --prefix "$install_dir" --config "$config_dir" 2>&1); then
+            process_install_output "$install_output" "$latest" "$final_success_label"
+        else
+            if [[ -t 1 ]]; then stop_inline_spinner; fi
+            rm -f "$tmp_installer"
+            log_error "Nightly update failed"
+            echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
+            exit 1
+        fi
+    elif [[ "$force_update" == "true" ]]; then
+        if install_output=$(MOLE_VERSION="$update_tag" "$tmp_installer" --prefix "$install_dir" --config "$config_dir" 2>&1); then
+            process_install_output "$install_output" "$latest" "$final_success_label"
+        else
+            if [[ -t 1 ]]; then stop_inline_spinner; fi
+            rm -f "$tmp_installer"
+            log_error "Update failed"
+            echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
+            exit 1
+        fi
+    else
+        if install_output=$(MOLE_VERSION="$update_tag" "$tmp_installer" --prefix "$install_dir" --config "$config_dir" --update 2>&1); then
+            process_install_output "$install_output" "$latest" "$final_success_label"
+        else
+            if install_output=$(MOLE_VERSION="$update_tag" "$tmp_installer" --prefix "$install_dir" --config "$config_dir" 2>&1); then
+                process_install_output "$install_output" "$latest" "$final_success_label"
+            else
+                if [[ -t 1 ]]; then stop_inline_spinner; fi
+                rm -f "$tmp_installer"
+                log_error "Update failed"
+                echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
+                exit 1
+            fi
+        fi
+    fi
+
+    rm -f "$tmp_installer"
+    rm -f "$HOME/.cache/mole/update_message"
+}
+
+# Remove flow (Homebrew + manual + config/cache).
+remove_mole() {
+    if [[ -t 1 ]]; then
+        start_inline_spinner "Detecting Mole installations..."
+    else
+        echo "Detecting installations..."
+    fi
+
+    local is_homebrew=false
+    local brew_cmd=""
+    local brew_has_mole="false"
+    local -a manual_installs=()
+    local -a alias_installs=()
+
+    if command -v brew > /dev/null 2>&1; then
+        brew_cmd="brew"
+    elif [[ -x "/opt/homebrew/bin/brew" ]]; then
+        brew_cmd="/opt/homebrew/bin/brew"
+    elif [[ -x "/usr/local/bin/brew" ]]; then
+        brew_cmd="/usr/local/bin/brew"
+    fi
+
+    if [[ -n "$brew_cmd" ]]; then
+        if "$brew_cmd" list --formula 2> /dev/null | grep -q "^mole$"; then
+            brew_has_mole="true"
+        fi
+    fi
+
+    if [[ "$brew_has_mole" == "true" ]] || is_homebrew_install; then
+        is_homebrew=true
+    fi
+
+    local found_mole
+    found_mole=$(command -v mole 2> /dev/null || true)
+    if [[ -n "$found_mole" && -f "$found_mole" ]]; then
+        if [[ ! -L "$found_mole" ]] || ! readlink "$found_mole" | grep -q "Cellar/mole"; then
+            manual_installs+=("$found_mole")
+        fi
+    fi
+
+    local -a fallback_paths=(
+        "/usr/local/bin/mole"
+        "$HOME/.local/bin/mole"
+        "/opt/local/bin/mole"
+    )
+
+    for path in "${fallback_paths[@]}"; do
+        if [[ -f "$path" && "$path" != "$found_mole" ]]; then
+            if [[ ! -L "$path" ]] || ! readlink "$path" | grep -q "Cellar/mole"; then
+                manual_installs+=("$path")
+            fi
+        fi
+    done
+
+    local found_mo
+    found_mo=$(command -v mo 2> /dev/null || true)
+    if [[ -n "$found_mo" && -f "$found_mo" ]]; then
+        alias_installs+=("$found_mo")
+    fi
+
+    local -a alias_fallback=(
+        "/usr/local/bin/mo"
+        "$HOME/.local/bin/mo"
+        "/opt/local/bin/mo"
+    )
+
+    for alias in "${alias_fallback[@]}"; do
+        if [[ -f "$alias" && "$alias" != "$found_mo" ]]; then
+            alias_installs+=("$alias")
+        fi
+    done
+
+    if [[ -t 1 ]]; then
+        stop_inline_spinner
+    fi
+
+    printf '\n'
+
+    local manual_count=${#manual_installs[@]}
+    local alias_count=${#alias_installs[@]}
+    if [[ "$is_homebrew" == "false" && ${manual_count:-0} -eq 0 && ${alias_count:-0} -eq 0 ]]; then
+        printf '%s\n\n' "${YELLOW}No Mole installation detected${NC}"
+        exit 0
+    fi
+
+    echo -e "${YELLOW}Remove Mole${NC}, will delete the following:"
+    if [[ "$is_homebrew" == "true" ]]; then
+        echo "  ${ICON_LIST} Mole via Homebrew"
+    fi
+    for install in ${manual_installs[@]+"${manual_installs[@]}"} ${alias_installs[@]+"${alias_installs[@]}"}; do
+        echo "  ${ICON_LIST} $install"
+    done
+    echo "  ${ICON_LIST} ~/.config/mole"
+    echo "  ${ICON_LIST} ~/.cache/mole"
+    echo -ne "${PURPLE}${ICON_ARROW}${NC} Press ${GREEN}Enter${NC} to confirm, ${GRAY}ESC${NC} to cancel: "
+
+    IFS= read -r -s -n1 key || key=""
+    drain_pending_input # Clean up any escape sequence remnants
+    case "$key" in
+        $'\e')
+            exit 0
+            ;;
+        "" | $'\n' | $'\r')
+            printf "\r\033[K" # Clear the prompt line
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+
+    local has_error=false
+    if [[ "$is_homebrew" == "true" ]]; then
+        if [[ -z "$brew_cmd" ]]; then
+            log_error "Homebrew command not found. Please ensure Homebrew is installed and in your PATH."
+            log_warning "Manual step: brew uninstall --force mole"
+            exit 1
+        fi
+
+        log_info "Attempting to uninstall Mole via Homebrew..."
+        local brew_uninstall_output
+        if ! brew_uninstall_output=$("$brew_cmd" uninstall --force mole 2>&1); then
+            has_error=true
+            log_error "Homebrew uninstallation failed:"
+            printf "%s\n" "$brew_uninstall_output" | sed "s/^/${RED}  | ${NC}/" >&2
+            log_warning "Manual step: ${YELLOW}brew uninstall --force mole${NC}"
+            echo "" # Add a blank line for readability
+        else
+            log_success "Mole uninstalled via Homebrew."
+        fi
+    fi
+    if [[ ${manual_count:-0} -gt 0 ]]; then
+        for install in "${manual_installs[@]}"; do
+            if [[ -f "$install" ]]; then
+                if [[ ! -w "$(dirname "$install")" ]]; then
+                    if ! sudo rm -f "$install" 2> /dev/null; then
+                        has_error=true
+                    fi
+                else
+                    if ! rm -f "$install" 2> /dev/null; then
+                        has_error=true
+                    fi
+                fi
+            fi
+        done
+    fi
+    if [[ ${alias_count:-0} -gt 0 ]]; then
+        for alias in "${alias_installs[@]}"; do
+            if [[ -f "$alias" ]]; then
+                if [[ ! -w "$(dirname "$alias")" ]]; then
+                    if ! sudo rm -f "$alias" 2> /dev/null; then
+                        has_error=true
+                    fi
+                else
+                    if ! rm -f "$alias" 2> /dev/null; then
+                        has_error=true
+                    fi
+                fi
+            fi
+        done
+    fi
+    if [[ -d "$HOME/.cache/mole" ]]; then
+        rm -rf "$HOME/.cache/mole" 2> /dev/null || true
+    fi
+    if [[ -d "$HOME/.config/mole" ]]; then
+        rm -rf "$HOME/.config/mole" 2> /dev/null || true
+    fi
+
+    local final_message
+    if [[ "$has_error" == "true" ]]; then
+        final_message="${YELLOW}${ICON_ERROR} Mole uninstalled with some errors, thank you for using Mole!${NC}"
+    else
+        final_message="${GREEN}${ICON_SUCCESS} Mole uninstalled successfully, thank you for using Mole!${NC}"
+    fi
+    printf '\n%s\n\n' "$final_message"
+
+    exit 0
+}
+
+# Menu UI
+show_main_menu() {
+    local selected="${1:-1}"
+    local _full_draw="${2:-true}" # Kept for compatibility (unused)
+    local banner="${MAIN_MENU_BANNER:-}"
+    local update_message="${MAIN_MENU_UPDATE_MESSAGE:-}"
+
+    if [[ -z "$banner" ]]; then
+        banner="$(show_brand_banner)"
+        MAIN_MENU_BANNER="$banner"
+    fi
+
+    printf '\033[H'
+
+    local line=""
+    printf '\r\033[2K\n'
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        printf '\r\033[2K%s\n' "$line"
+    done <<< "$banner"
+
+    if [[ -n "$update_message" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            printf '\r\033[2K%s\n' "$line"
+        done <<< "$update_message"
+    fi
+
+    printf '\r\033[2K\n'
+
+    printf '\r\033[2K%s\n' "$(show_menu_option 1 "Clean        Free up disk space" "$([[ $selected -eq 1 ]] && echo true || echo false)")"
+    printf '\r\033[2K%s\n' "$(show_menu_option 2 "Uninstall    Remove apps completely" "$([[ $selected -eq 2 ]] && echo true || echo false)")"
+    printf '\r\033[2K%s\n' "$(show_menu_option 3 "Optimize     Check and maintain system" "$([[ $selected -eq 3 ]] && echo true || echo false)")"
+    printf '\r\033[2K%s\n' "$(show_menu_option 4 "Analyze      Explore disk usage" "$([[ $selected -eq 4 ]] && echo true || echo false)")"
+    printf '\r\033[2K%s\n' "$(show_menu_option 5 "Status       Monitor system health" "$([[ $selected -eq 5 ]] && echo true || echo false)")"
+
+    if [[ -t 0 ]]; then
+        printf '\r\033[2K\n'
+        local controls="${GRAY}↑↓  |  Enter  |  M More  |  "
+        if ! is_touchid_configured; then
+            controls="${controls}T TouchID"
+        else
+            controls="${controls}U Update"
+        fi
+        controls="${controls}  |  Q Quit${NC}"
+        printf '\r\033[2K%s\n' "$controls"
+        printf '\r\033[2K\n'
+    fi
+
+    printf '\033[J'
+}
+
+interactive_main_menu() {
+    if [[ -t 1 ]]; then
+        local tty_name
+        tty_name=$(tty 2> /dev/null || echo "")
+        if [[ -n "$tty_name" ]]; then
+            local flag_file
+            local cache_dir="$HOME/.cache/mole"
+            ensure_user_dir "$cache_dir"
+            flag_file="$cache_dir/intro_$(echo "$tty_name" | LC_ALL=C tr -c '[:alnum:]_' '_')"
+            if [[ ! -f "$flag_file" ]]; then
+                animate_mole_intro
+                ensure_user_file "$flag_file"
+            fi
+        fi
+    fi
+    local current_option=1
+    local first_draw=true
+    local brand_banner=""
+    local msg_cache="$HOME/.cache/mole/update_message"
+    local update_message=""
+
+    brand_banner="$(show_brand_banner)"
+    MAIN_MENU_BANNER="$brand_banner"
+
+    if [[ -f "$msg_cache" && -s "$msg_cache" ]]; then
+        update_message="$(cat "$msg_cache" 2> /dev/null || echo "")"
+    fi
+    MAIN_MENU_UPDATE_MESSAGE="$update_message"
+
+    cleanup_and_exit() {
+        show_cursor
+        exit 0
+    }
+
+    trap cleanup_and_exit INT
+    hide_cursor
+
+    while true; do
+        show_main_menu $current_option "$first_draw"
+        if [[ "$first_draw" == "true" ]]; then
+            first_draw=false
+        fi
+
+        local key
+        if ! key=$(read_key); then
+            continue
+        fi
+
+        case "$key" in
+            "UP") ((current_option > 1)) && ((current_option--)) ;;
+            "DOWN") ((current_option < 5)) && ((current_option++)) ;;
+            "ENTER")
+                show_cursor
+                case $current_option in
+                    1) exec "$SCRIPT_DIR/bin/clean.sh" ;;
+                    2) exec "$SCRIPT_DIR/bin/uninstall.sh" ;;
+                    3) exec "$SCRIPT_DIR/bin/optimize.sh" ;;
+                    4) exec "$SCRIPT_DIR/bin/analyze.sh" ;;
+                    5) exec "$SCRIPT_DIR/bin/status.sh" ;;
+                esac
+                ;;
+            "CHAR:1")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/clean.sh"
+                ;;
+            "CHAR:2")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/uninstall.sh"
+                ;;
+            "CHAR:3")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/optimize.sh"
+                ;;
+            "CHAR:4")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/analyze.sh"
+                ;;
+            "CHAR:5")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/status.sh"
+                ;;
+            "MORE")
+                show_cursor
+                clear
+                show_help
+                exit 0
+                ;;
+            "VERSION")
+                show_cursor
+                clear
+                show_version
+                exit 0
+                ;;
+            "TOUCHID")
+                show_cursor
+                exec "$SCRIPT_DIR/bin/touchid.sh"
+                ;;
+            "UPDATE")
+                show_cursor
+                clear
+                update_mole
+                exit 0
+                ;;
+            "QUIT") cleanup_and_exit ;;
+        esac
+
+        drain_pending_input
+    done
+}
+
+# CLI dispatch
+main() {
+    local -a args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --debug)
+                export MO_DEBUG=1
+                ;;
+            *)
+                args+=("$arg")
+                ;;
+        esac
+    done
+
+    case "${args[0]:-""}" in
+        "optimize")
+            exec "$SCRIPT_DIR/bin/optimize.sh" "${args[@]:1}"
+            ;;
+        "clean")
+            exec "$SCRIPT_DIR/bin/clean.sh" "${args[@]:1}"
+            ;;
+        "uninstall")
+            exec "$SCRIPT_DIR/bin/uninstall.sh" "${args[@]:1}"
+            ;;
+        "analyze")
+            exec "$SCRIPT_DIR/bin/analyze.sh" "${args[@]:1}"
+            ;;
+        "status")
+            exec "$SCRIPT_DIR/bin/status.sh" "${args[@]:1}"
+            ;;
+        "purge")
+            exec "$SCRIPT_DIR/bin/purge.sh" "${args[@]:1}"
+            ;;
+        "installer")
+            exec "$SCRIPT_DIR/bin/installer.sh" "${args[@]:1}"
+            ;;
+        "touchid")
+            exec "$SCRIPT_DIR/bin/touchid.sh" "${args[@]:1}"
+            ;;
+        "completion")
+            exec "$SCRIPT_DIR/bin/completion.sh" "${args[@]:1}"
+            ;;
+        "update")
+            local force_update=false
+            local nightly_update=false
+            for arg in "${args[@]:1}"; do
+                case "$arg" in
+                    --force | -f) force_update=true ;;
+                    --nightly) nightly_update=true ;;
+                    *)
+                        echo "Unknown update option: $arg"
+                        echo "Use 'mole update [--force] [--nightly]' for supported options."
+                        exit 1
+                        ;;
+                esac
+            done
+            update_mole "$force_update" "$nightly_update"
+            exit 0
+            ;;
+        "remove")
+            remove_mole
+            ;;
+        "help" | "--help" | "-h")
+            show_help
+            exit 0
+            ;;
+        "version" | "--version" | "-V")
+            show_version
+            exit 0
+            ;;
+        "")
+            check_for_updates
+            interactive_main_menu
+            ;;
+        *)
+            echo "Unknown command: ${args[0]}"
+            echo "Use 'mole --help' for usage information."
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
