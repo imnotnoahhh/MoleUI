@@ -60,6 +60,7 @@ jobs:
           cp "$MOLE_ROOT/bin/mole" Resources/mole/
           sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" \&\& pwd)\"|" Resources/mole/mole
           echo "${{ steps.latest_release.outputs.version }}" > .mole-cli-version
+          echo "${{ steps.latest_release.outputs.version }}" > MoleUI/.mole-cli-version
 
       - name: Compatibility check
         if: steps.check_update.outputs.update_needed == 'true'
@@ -67,10 +68,9 @@ jobs:
         run: |
           ERRORS=""
 
-          # 1. Required files exist
+          # 1. Required files exist (excluding status-go since we use native Swift implementation)
           for f in \
             Resources/mole/mole \
-            Resources/mole/bin/status-go \
             Resources/mole/bin/analyze-go \
             Resources/mole/bin/clean.sh \
             Resources/mole/bin/optimize.sh \
@@ -87,59 +87,29 @@ jobs:
             ERRORS="$ERRORS\n- 'mole version' failed to execute"
           fi
 
-          # 3. Subcommand --help check
-          for cmd in clean optimize status analyze purge installer uninstall; do
+          # 3. Subcommand --help check (excluding status since we use native implementation)
+          for cmd in clean optimize analyze purge installer uninstall; do
             if ! bash Resources/mole/mole $cmd --help >/dev/null 2>&1; then
               ERRORS="$ERRORS\n- Subcommand '$cmd --help' failed"
             fi
           done
 
-          # 4. status-go JSON schema check (decode with actual Swift Codable structs)
-          if [ -x Resources/mole/bin/status-go ]; then
-            # Capture one JSON line from status-go (it streams continuously)
-            JSON_LINE=$(timeout 5 Resources/mole/bin/status-go 2>/dev/null | head -1 || true)
-            if [ -n "$JSON_LINE" ]; then
-              # Write a minimal Swift script that imports the project's Codable types
-              cat > /tmp/schema_check.swift << 'SWIFT_EOF'
-          import Foundation
-
-          // Minimal subset of MetricsSnapshot to validate schema
-          struct SchemaCheck: Codable {
-              let collectedAt: String
-              let host: String
-              let platform: String
-              let uptime: String
-              let healthScore: Int
-              let cpu: CPU
-              let memory: Mem
-              struct CPU: Codable { let usage: Double; let coreCount: Int }
-              struct Mem: Codable { let used: UInt64; let total: UInt64; let usedPercent: Double }
-          }
-
-          guard let data = CommandLine.arguments.dropFirst().first?.data(using: .utf8) else {
-              print("FAIL: no input")
-              exit(1)
-          }
-          do {
-              let s = try JSONDecoder().decode(SchemaCheck.self, from: data)
-              guard s.cpu.coreCount > 0, s.memory.total > 0 else {
-                  print("FAIL: invalid values")
-                  exit(1)
-              }
-              print("OK: schema compatible")
-          } catch {
-              print("FAIL: \(error)")
-              exit(1)
-          }
-          SWIFT_EOF
-              RESULT=$(swift /tmp/schema_check.swift "$JSON_LINE" 2>&1)
-              if [ $? -ne 0 ]; then
-                ERRORS="$ERRORS\n- status-go JSON schema incompatible: $RESULT"
-              fi
-            else
-              ERRORS="$ERRORS\n- status-go produced no output"
-            fi
+          # 4. Check if status-go exists (optional, we don't use it but good to know)
+          if [ -f Resources/mole/bin/status-go ]; then
+            echo "Note: status-go binary found but not used (MoleUI uses native Swift implementation)"
           fi
+
+          # 5. Verify critical scripts are executable
+          for script in \
+            Resources/mole/bin/clean.sh \
+            Resources/mole/bin/optimize.sh \
+            Resources/mole/bin/purge.sh \
+            Resources/mole/bin/installer.sh \
+            Resources/mole/bin/uninstall.sh; do
+            if [ -f "$script" ] && [ ! -x "$script" ]; then
+              ERRORS="$ERRORS\n- Script not executable: $script"
+            fi
+          done
 
           if [ -z "$ERRORS" ]; then
             echo "compatible=true" >> $GITHUB_OUTPUT
@@ -191,7 +161,9 @@ jobs:
             **Compatibility Checks:**
             - ✅ All required files present
             - ✅ Commands execute successfully
-            - ✅ JSON schema compatible
+            - ℹ️ status-go not tested (MoleUI uses native Swift implementation)
+
+            **Note:** MoleUI uses a native Swift implementation for system monitoring instead of calling `status-go` due to TTY dependency issues. See [NATIVE_IMPLEMENTATION.md](https://github.com/imnotnoahhh/MoleUI/blob/main/NATIVE_IMPLEMENTATION.md) for details.
 
             **Upstream Release Notes:**
             https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}

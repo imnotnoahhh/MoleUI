@@ -54,7 +54,13 @@ enum PurgeConstants {
     }
 
     static var customScanPaths: [String] {
-        let configPath = NSHomeDirectory() + "/.config/mole/purge_paths"
+        // Use Application Support directory instead of ~/.config/mole
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return [] }
+
+        let configPath = appSupport.appendingPathComponent("MoleUI/purge_paths").path
         guard let content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return [] }
         let home = NSHomeDirectory()
         return content.components(separatedBy: .newlines)
