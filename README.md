@@ -6,6 +6,14 @@ Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, w
 
 ![screenshot](./Resources/screenshot.png)
 
+## 📚 Documentation
+
+- **[NATIVE_IMPLEMENTATION.md](NATIVE_IMPLEMENTATION.md)** - Why we use Swift instead of status-go (TTY dependency issues)
+- **[TODO.md](TODO.md)** - Implementation roadmap and task list
+- **[AUTO_UPDATE.md](AUTO_UPDATE.md)** - Auto-update workflow documentation
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history
+
 ## Features
 
 | Feature | CLI Command | GUI Support |

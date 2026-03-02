@@ -189,8 +189,6 @@ struct DashboardView: View {
                 Text("\(snap.healthScore)")
                     .fontWeight(.bold)
                     .foregroundStyle(snap.healthScore >= 75 ? .green : snap.healthScore >= 60 ? .yellow : .red)
-                Text(snap.healthScoreMsg)
-                    .foregroundStyle(.secondary)
 
                 Spacer()
 
@@ -326,16 +324,8 @@ struct DashboardView: View {
                         Text(String(format: "%.0f%%", bat.percent)).monospacedDigit()
                     }
                     HStack {
-                        Text("Health").frame(width: 50, alignment: .leading)
-                        UsageBar(Double(bat.capacity), color: .green, autoThreshold: false)
-                        Text("\(bat.capacity)%").monospacedDigit()
-                    }
-                    HStack {
                         Text(bat.status.capitalized)
-                            .foregroundStyle(bat.status == "charging" ? .green : .secondary)
-                        if !bat.timeLeft.isEmpty {
-                            Text("· \(bat.timeLeft)")
-                        }
+                            .foregroundStyle(bat.status.lowercased() == "charging" ? .green : .secondary)
                         if thermal.adapterPower > 0 {
                             Text(String(format: "· %.0fW Adapter ⚡", thermal.adapterPower))
                         }
@@ -406,10 +396,22 @@ struct DashboardView: View {
                     let totalTx = nets.reduce(0.0) { $0 + $1.txRateMBs }
                     Text(MetricsFormatter.formatRate(totalTx)).monospacedDigit()
                 }
-                if proxy.enabled {
-                    Text("Proxy \(proxy.type) · \(proxy.host)")
-                        .foregroundStyle(.secondary)
+                // Show proxy and IP on same line
+                HStack(spacing: 4) {
+                    if proxy.enabled {
+                        Text("Proxy \(proxy.type) · \(proxy.host)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let primaryNet = nets.first(where: { !$0.ip.isEmpty }) {
+                        if proxy.enabled {
+                            Text("·")
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(primaryNet.ip)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .font(.system(size: 9, design: .monospaced))
                 Spacer(minLength: 0)
             }
             .font(.system(.caption, design: .monospaced))

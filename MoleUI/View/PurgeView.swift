@@ -5,6 +5,7 @@ struct PurgeView: View {
     @Environment(PurgeModel.self) var service
     @State private var selectedTargets: Set<String> = []
     @State private var showConfirmation = false
+    @State private var showPathsEditor = false
 
     private var totalReclaimable: UInt64 {
         service.targets.reduce(0) { $0 + $1.sizeBytes }
@@ -29,6 +30,9 @@ struct PurgeView: View {
         } message: {
             Text("Delete \(selectedTargets.count) build artifact directories? This cannot be undone.")
         }
+        .sheet(isPresented: $showPathsEditor) {
+            PurgePathsEditorView()
+        }
     }
 
     // MARK: - Header
@@ -47,7 +51,7 @@ struct PurgeView: View {
                 Spacer()
 
                 Button {
-                    openPurgePathsConfig()
+                    showPathsEditor = true
                 } label: {
                     Label("Edit Paths", systemImage: "slider.horizontal.3")
                 }
@@ -228,15 +232,90 @@ struct PurgeView: View {
             .padding(.vertical, 2)
         }
     }
+}
 
-    private func openPurgePathsConfig() {
-        let configDir = NSHomeDirectory() + "/.config/mole"
-        let configPath = configDir + "/purge_paths"
-        let fm = FileManager.default
-        try? fm.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        if !fm.fileExists(atPath: configPath) {
-            try? "".write(toFile: configPath, atomically: true, encoding: .utf8)
+// MARK: - Purge Paths Editor
+
+struct PurgePathsEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var pathsText: String = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Edit Scan Paths")
+                    .font(.headline)
+                Spacer()
+                Button("Done") {
+                    savePaths()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding()
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+
+            // Editor
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Add one path per line. Use ~ for home directory.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $pathsText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 300)
+                    .border(Color.secondary.opacity(0.2))
+
+                if let error = errorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+
+                Text("Default paths: ~/www, ~/dev, ~/Projects, ~/GitHub, ~/Code, ~/Workspace, ~/Repos, ~/Development")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding()
         }
-        NSWorkspace.shared.open(URL(fileURLWithPath: configPath))
+        .frame(width: 600, height: 500)
+        .onAppear {
+            loadPaths()
+        }
+    }
+
+    private func loadPaths() {
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return }
+
+        let configPath = appSupport.appendingPathComponent("MoleUI/purge_paths")
+        pathsText = (try? String(contentsOf: configPath, encoding: .utf8)) ?? ""
+    }
+
+    private func savePaths() {
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            errorMessage = "Failed to access Application Support directory"
+            return
+        }
+
+        let moleUIDir = appSupport.appendingPathComponent("MoleUI")
+        let configPath = moleUIDir.appendingPathComponent("purge_paths")
+
+        do {
+            try FileManager.default.createDirectory(at: moleUIDir, withIntermediateDirectories: true)
+            try pathsText.write(to: configPath, atomically: true, encoding: .utf8)
+            errorMessage = nil
+        } catch {
+            errorMessage = "Failed to save: \(error.localizedDescription)"
+        }
     }
 }
