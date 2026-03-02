@@ -20,43 +20,16 @@ final class VersionModel {
     }
 
     func loadCurrentVersion() async {
-        if let versionFile = Bundle.main.resourceURL?
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".mole-cli-version")
-        {
-            if let version = try? String(contentsOf: versionFile, encoding: .utf8) {
-                currentVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
-                return
-            }
-        }
-
-        if let molePath = findMoleBinary() {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: molePath)
-            task.arguments = ["version"]
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            try? task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                if let match = output.range(of: #"version\s+(\S+)"#, options: .regularExpression) {
-                    let versionStr = output[match]
-                        .replacingOccurrences(of: "version", with: "")
-                        .trimmingCharacters(in: .whitespaces)
-                    currentVersion = versionStr
-                }
-            }
-        }
+        // Read MoleUI version from Info.plist
+        currentVersion = MoleVersion.current
     }
 
     func checkForUpdates() async {
         isChecking = true
         defer { isChecking = false }
 
-        guard let url = URL(string: "https://api.github.com/repos/tw93/Mole/releases/latest") else { return }
+        // Check MoleUI releases instead of Mole CLI
+        guard let url = URL(string: "https://api.github.com/repos/imnotnoahhh/MoleUI/releases/latest") else { return }
 
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
