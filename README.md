@@ -81,6 +81,14 @@ Quick start:
 3. Run `just fmt && just lint` before committing
 4. Open a PR against `main`
 
+## Auto-Update System
+
+MoleUI implements a complete auto-update workflow that automatically detects, validates, and releases new versions when upstream Mole CLI updates. See [AUTO_UPDATE.md](AUTO_UPDATE.md) for details on:
+- Automatic compatibility checking
+- Auto-merge and auto-release workflow
+- Version number synchronization
+- User-facing update notifications
+
 ## Architecture
 
 Pure MV (Model-View) architecture with Swift's `@Observable` macro:
