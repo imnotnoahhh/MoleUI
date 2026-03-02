@@ -113,18 +113,16 @@ jobs:
             --team-id "$TEAM_ID"
 
       - name: Notarize app via ZIP
-        timeout-minutes: 20
         run: |
           APP="$RUNNER_TEMP/export/$PRODUCT_NAME.app"
 
           # Create ZIP for notarization (ditto preserves signatures)
           /usr/bin/ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/MoleUI.zip"
 
-          # Submit and wait (Apple says 98% complete within 15 min)
+          # Submit and wait (no timeout - Apple notarization can take a while)
           xcrun notarytool submit "$RUNNER_TEMP/MoleUI.zip" \
             --keychain-profile "notary-profile" \
-            --wait \
-            --timeout 15m
+            --wait
 
           echo "Notarization completed"
 
