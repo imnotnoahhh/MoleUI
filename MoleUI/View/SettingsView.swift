@@ -75,7 +75,6 @@ struct SettingsView: View {
         Section {
             // Mole UI version checker
             MoleVersionView()
-
             Divider()
 
             // MoleUI App Version
