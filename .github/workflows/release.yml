@@ -1,0 +1,166 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SCHEME: MoleUI
+  PRODUCT_NAME: "Mole UI"
+  APP_BUNDLE_ID: com.qinfuyao.MoleUI
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install create-dmg mole
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 12)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$CERTIFICATE_P12" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Archive app
+        run: |
+          xcodebuild -scheme "$SCHEME" \
+            -configuration Release \
+            -archivePath $RUNNER_TEMP/MoleUI.xcarchive \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+            archive
+
+      - name: Export app from archive
+        run: |
+          mkdir -p $RUNNER_TEMP/export
+          cp -R "$RUNNER_TEMP/MoleUI.xcarchive/Products/Applications/$PRODUCT_NAME.app" \
+            "$RUNNER_TEMP/export/$PRODUCT_NAME.app"
+
+      - name: Bundle Mole CLI into app
+        run: |
+          APP="$RUNNER_TEMP/export/$PRODUCT_NAME.app"
+          MOLE_DIR="$APP/Contents/Resources/mole"
+          mkdir -p "$MOLE_DIR"
+
+          # Copy from project Resources
+          cp -R Resources/mole/* "$MOLE_DIR/"
+
+          echo "Mole CLI bundled into app"
+          ls -la "$MOLE_DIR/"
+
+      - name: Sign all binaries (inside-out)
+        run: |
+          SIGN_ID="Developer ID Application: Fuyao Qin (646VSJ9K5F)"
+          APP="$RUNNER_TEMP/export/$PRODUCT_NAME.app"
+          MOLE_DIR="$APP/Contents/Resources/mole"
+
+          # 1. Sign each nested Go binary with hardened runtime + timestamp
+          for bin in "$MOLE_DIR/bin/"*; do
+            if [ -f "$bin" ] && file "$bin" | grep -q "Mach-O"; then
+              echo "Signing nested binary: $bin"
+              codesign --force --timestamp --options runtime \
+                --entitlements MoleUI/BundledBinaries.entitlements \
+                --sign "$SIGN_ID" "$bin"
+            fi
+          done
+
+          # 2. Sign the mole shell script wrapper if executable
+          if [ -f "$MOLE_DIR/mole" ]; then
+            codesign --force --timestamp --options runtime \
+              --sign "$SIGN_ID" "$MOLE_DIR/mole" 2>/dev/null || true
+          fi
+
+          # 3. Sign the main app bundle last
+          codesign --force --timestamp --options runtime \
+            --entitlements MoleUI/MoleUI.entitlements \
+            --sign "$SIGN_ID" "$APP"
+
+          # 4. Verify with Apple's recommended flags
+          codesign -vvv --deep --strict "$APP"
+          echo "All signatures verified OK"
+
+      - name: Setup notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          xcrun notarytool store-credentials "notary-profile" \
+            --apple-id "$APPLE_ID" \
+            --password "$APP_PASSWORD" \
+            --team-id "$TEAM_ID"
+
+      - name: Notarize app via ZIP
+        timeout-minutes: 20
+        run: |
+          APP="$RUNNER_TEMP/export/$PRODUCT_NAME.app"
+
+          # Create ZIP for notarization (ditto preserves signatures)
+          /usr/bin/ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/MoleUI.zip"
+
+          # Submit and wait (Apple says 98% complete within 15 min)
+          xcrun notarytool submit "$RUNNER_TEMP/MoleUI.zip" \
+            --keychain-profile "notary-profile" \
+            --wait \
+            --timeout 15m
+
+          echo "Notarization completed"
+
+      - name: Staple notarization ticket
+        run: |
+          APP="$RUNNER_TEMP/export/$PRODUCT_NAME.app"
+
+          # Staple ticket to the .app (not the ZIP)
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          echo "Ticket stapled"
+
+      - name: Create DMG
+        run: |
+          create-dmg \
+            --volname "$PRODUCT_NAME" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "$PRODUCT_NAME.app" 150 185 \
+            --app-drop-link 450 185 \
+            "$RUNNER_TEMP/MoleUI.dmg" \
+            "$RUNNER_TEMP/export/"
+
+      - name: Rename DMG with version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cp "$RUNNER_TEMP/MoleUI.dmg" "$RUNNER_TEMP/MoleUI-${VERSION}.dmg"
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/MoleUI-*.dmg
+          generate_release_notes: true
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true

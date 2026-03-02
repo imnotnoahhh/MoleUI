@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+jobs:
+  code-quality:
+    name: Code Quality
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Install SwiftFormat
+        run: brew install swiftformat
+
+      - name: Check code formatting
+        run: |
+          swiftformat --lint MoleUI/
+          if [ $? -ne 0 ]; then
+            echo "❌ Code formatting issues found. Run 'just fmt' to fix."
+            exit 1
+          fi
+
+      - name: Run SwiftLint
+        run: |
+          swiftlint lint --strict
+          if [ $? -ne 0 ]; then
+            echo "❌ SwiftLint violations found. Run 'just lint' and fix issues."
+            exit 1
+          fi
+
+  build-and-test:
+    name: Build & Test
+    runs-on: macos-15
+    needs: code-quality
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          xcodebuild -scheme MoleUI \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run tests
+        run: |
+          xcodebuild -scheme MoleUITests \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+  security-scan:
+    name: Security Scan
+    runs-on: macos-15
+    needs: code-quality
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run security checks
+        run: |
+          # Check for hardcoded secrets
+          if grep -r "AKIA\|sk_live_\|sk_test_\|ghp_\|gho_" MoleUI/ --exclude-dir=.git; then
+            echo "❌ Potential hardcoded secrets found"
+            exit 1
+          fi
+
+          # Check for unsafe Swift patterns
+          if grep -r "unsafeBitCast\|unsafeDowncast" MoleUI/ --include="*.swift"; then
+            echo "⚠️  Unsafe Swift patterns detected"
+          fi
+
+          echo "✅ Security scan passed"
