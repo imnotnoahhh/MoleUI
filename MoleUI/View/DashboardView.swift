@@ -149,7 +149,11 @@ struct DashboardView: View {
                     }
                     equalHeightRow {
                         processCard(snap.topProcesses)
-                        networkCard(snap.network, history: snap.networkHistory, proxy: snap.proxy)
+                        networkCard(
+                            snap.network,
+                            history: service.networkHistoryForDisplay(from: snap.networkHistory),
+                            proxy: snap.proxy
+                        )
                     }
                 }
                 .padding()
