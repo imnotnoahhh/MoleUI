@@ -207,18 +207,9 @@ private let sampleMetricsJSON = """
     #expect(MetricsFormatter.formatRate(10.5) == "10.50 MB/s")
 }
 
-@Test func healthEmoji() {
-    #expect(MetricsFormatter.healthEmoji(score: 90) == "💚")
-    #expect(MetricsFormatter.healthEmoji(score: 75) == "💛")
-    #expect(MetricsFormatter.healthEmoji(score: 70) == "🧡")
-    #expect(MetricsFormatter.healthEmoji(score: 60) == "🧡")
-    #expect(MetricsFormatter.healthEmoji(score: 50) == "❤️")
-}
-
 // MARK: - SafetyController Parsing
 
 @Test func parseSizeStringBytes() async {
-    let controller = await SafetyController()
     // Access private method via reflection isn't possible, test via executeClean flow
     // Instead test the formattedSize computed property
     let preview = SafetyController.CleanPreview(

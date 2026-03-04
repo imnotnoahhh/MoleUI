@@ -2,7 +2,7 @@
 
 > **⚠️ Early Development** — This project is in active development and has not been extensively tested. Use Dry Run mode for cleanup operations and please [report any issues](https://github.com/imnotnoahhh/MoleUI/issues).
 
-Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, wrapping tw93's Mole CLI tool.
+Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, with Mole Go+Shell as the core kernel.
 
 ![screenshot](./Resources/screenshot.png)
 
@@ -70,7 +70,7 @@ just info             # Show Swift/Xcode/Mole versions
 Run tests from Xcode (Cmd+U) or command line:
 
 ```bash
-xcodebuild -scheme MoleUITests test \
+xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -98,7 +98,7 @@ MoleUI implements a complete auto-update workflow that automatically detects, va
 
 ## Architecture
 
-Pure MV (Model-View) architecture with Swift's `@Observable` macro:
+MV (Model-View) architecture with Swift's `@Observable` macro, acting primarily as a UI wrapper over the Mole CLI, with some native bridging:
 
 ```
 MoleUI/
@@ -131,7 +131,7 @@ MoleUI/
     └── SidebarView.swift       # Navigation sidebar
 ```
 
-- Model: `@Observable @MainActor` classes, injected via `.environment()`
+- Model: `@Observable @MainActor` classes, injected via `.environment()`. Performs CLI orchestration and native JSON/FileSystem bridging where needed.
 - View: reads Model state through `@Environment(XxxModel.self)`
 - Swift 6 strict concurrency
 

@@ -224,7 +224,7 @@ struct PurgeView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Text("Default paths plus ~/.config/mole/purge_paths are used, same as CLI.")
+                Text("Default paths plus ~/Library/Application Support/MoleUI/purge_paths are used.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

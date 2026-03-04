@@ -205,7 +205,6 @@ struct DashboardView: View {
                     .fontWeight(.bold)
                 Text("Health")
                     .foregroundStyle(.secondary)
-                Text(MetricsFormatter.healthEmoji(score: snap.healthScore))
                 Text("\(snap.healthScore)")
                     .fontWeight(.bold)
                     .foregroundStyle(snap.healthScore >= 75 ? .green : snap.healthScore >= 60 ? .yellow : .red)

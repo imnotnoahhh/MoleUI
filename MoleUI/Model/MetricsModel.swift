@@ -293,15 +293,6 @@ enum MetricsFormatter {
             String(format: "%.2f MB/s", mbps)
         }
     }
-
-    static func healthEmoji(score: Int) -> String {
-        switch score {
-        case 90 ... 100: "💚"
-        case 75 ..< 90: "💛"
-        case 60 ..< 75: "🧡"
-        default: "❤️"
-        }
-    }
 }
 
 // MARK: - MetricsModel (JSON-based)

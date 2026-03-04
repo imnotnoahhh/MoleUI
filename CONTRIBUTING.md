@@ -60,15 +60,15 @@ Mole UI wraps the [Mole CLI tool](https://github.com/tw93/Mole). When Mole CLI u
 
 1. **Update bundled CLI**: `just update-mole`
 2. **Verify all features work**:
-   - Dashboard shows real-time metrics (status-go binary)
-   - Disk Analyzer scans directories (analyze-go binary)
+   - Dashboard shows real-time metrics (`mole status --json`)
+   - Disk Analyzer scans directories (`mole analyze --json <path>`)
    - Clean/Optimize/Purge/Installer/Uninstall execute correctly
    - Dry-run mode works for destructive operations
 3. **Check for breaking changes**:
-   - Does `status-go --json` output match `MetricsSnapshot` struct?
+   - Does `mole status --json` output match `MetricsSnapshot` parsing contract?
    - Do shell scripts in `Resources/mole/bin/` still exist?
    - Are new subcommands added that GUI should support?
-4. **Run automated tests**: `xcodebuild -scheme MoleUITests test CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`
+4. **Run automated tests**: `xcodebuild -scheme MoleUI -destination 'platform=macOS' -derivedDataPath /tmp/MoleUI-DerivedData test CODE_SIGN_IDENTITY='Apple Development' CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES`
 5. **Report issues**: If tests fail or features break, create an issue with:
    - Mole CLI version (check `.mole-cli-version`)
    - Error messages or unexpected behavior
@@ -103,7 +103,7 @@ Help make Mole UI more robust and reliable.
 - What happens when Mole CLI binary is missing?
 - How does the app behave with no disk space?
 - Does it handle permission errors gracefully?
-- What if `status-go` crashes or returns invalid JSON?
+- What if `mole status --json` returns invalid JSON?
 
 **Memory Management**
 - Check for retain cycles in `@Observable` models
@@ -141,7 +141,7 @@ Help make Mole UI faster and more responsive.
 - Consider: parallel scanning, incremental updates, caching
 
 **Metrics Streaming (MetricsModel.swift)**
-- `status-go --json` streams JSON every 2 seconds
+- `mole status --json` streams JSON data every 2 seconds
 - Parsing and UI updates happen on main thread
 - Consider: background parsing, throttling updates
 
@@ -267,7 +267,7 @@ just lint
 just build
 
 # 4. Run tests
-xcodebuild -scheme MoleUITests test \
+xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -284,7 +284,7 @@ Run tests before submitting PR:
 just fmt && just lint
 
 # Run tests
-xcodebuild -scheme MoleUITests test \
+xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -310,7 +310,7 @@ just build            # Verify it compiles
 **Testing**
 ```bash
 # Run all tests
-xcodebuild -scheme MoleUITests test \
+xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
 # All 24 tests must pass

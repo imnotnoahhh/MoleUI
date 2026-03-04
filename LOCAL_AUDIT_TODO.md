@@ -20,23 +20,23 @@ Workflow: `.github/workflows/auto-update-mole.yml`
 
 ### P0 - Must fix first
 
-- [ ] `CleanModel` still does native scan/delete instead of Mole kernel commands.
+- [x] `CleanModel` still does native scan/delete instead of Mole kernel commands.
   - Evidence: local `FileManager` traversal + `find ... rm -rf` in `MoleUI/Model/CleanModel.swift`
   - Action: move to Mole command orchestration only (`mole clean ... --json` for preview, `mole clean ...` for execution)
 
-- [ ] `PurgeModel` still does native scan/delete.
+- [x] `PurgeModel` still does native scan/delete.
   - Evidence: local artifact discovery + `rm -rf` in `MoleUI/Model/PurgeModel.swift`
   - Action: delegate scan and execute to Mole purge command output contract
 
-- [ ] `InstallerModel` is native scanner, not Mole-driven.
+- [x] `InstallerModel` is native scanner, not Mole-driven.
   - Evidence: local recursive scanning in `MoleUI/Model/InstallerModel.swift`
   - Action: consume Mole installer output and operate through Mole command path
 
-- [ ] `UninstallModel/AppScanModel` is native scan + native uninstall flow.
+- [x] `UninstallModel/AppScanModel` is native scan + native uninstall flow.
   - Evidence: app discovery/uninstall logic in `MoleUI/Model/UninstallModel.swift`
   - Action: move uninstall domain behavior to Mole core command flow
 
-- [ ] `SafetyController` is not wired into primary Clean action path.
+- [x] `SafetyController` is not wired into primary Clean action path.
   - Evidence: `CleanView` calls `service.cleanSelected(...)` directly
   - Action: route destructive clean path through `SafetyController.executeClean(...)`
 
@@ -56,11 +56,11 @@ Workflow: `.github/workflows/auto-update-mole.yml`
 
 ### P0
 
-- [ ] Update compatibility checks to match actual runtime dependencies.
+- [x] Update compatibility checks to match actual runtime dependencies.
   - Current workflow skips `analyze` check with outdated note, but app uses `mole analyze --json` in `DiskModel`.
   - Action: add real smoke check for `mole analyze --json <path>` (non-TTY path used by GUI)
 
-- [ ] Remove stale "native implementation/status-go not tested" notes from workflow PR body.
+- [x] Remove stale "native implementation/status-go not tested" notes from workflow PR body.
   - Evidence: `.github/workflows/auto-update-mole.yml` contains stale statements and missing `NATIVE_IMPLEMENTATION.md` link
   - Action: rewrite PR body based on current architecture
 
@@ -83,7 +83,7 @@ Workflow: `.github/workflows/auto-update-mole.yml`
 
 ### P0
 
-- [ ] Fix local test execution baseline in Xcode (code-sign conflict for test target).
+- [x] Fix local test execution baseline in Xcode (code-sign conflict for test target).
   - Observed: test run reported all 23 tests "Not run" due signing conflict in current environment
   - Action: align test target signing config for local Xcode test runs
 
@@ -108,13 +108,13 @@ Workflow: `.github/workflows/auto-update-mole.yml`
 
 ### P0
 
-- [ ] Remove/replace missing document references.
+- [x] Remove/replace missing document references.
   - `NATIVE_IMPLEMENTATION.md` is referenced by workflow, but file is missing
 
-- [ ] Fix invalid test commands in docs.
+- [x] Fix invalid test commands in docs.
   - `README.md`/`CONTRIBUTING.md` use `-scheme MoleUITests`, but project scheme is `MoleUI`
 
-- [ ] Update architecture claims to match real code state.
+- [x] Update architecture claims to match real code state.
   - Current docs imply full CLI wrapping; code still has significant native business logic in multiple models
 
 ### P1
@@ -134,4 +134,3 @@ Workflow: `.github/workflows/auto-update-mole.yml`
 - [ ] Step 2: Repair CI P0 checks and stale messaging
 - [ ] Step 3: Fix doc P0 issues (wrong commands, missing links, architecture claims)
 - [ ] Step 4: Expand tests (integration + UI), then refresh CI quality gates
-

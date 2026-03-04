@@ -50,7 +50,6 @@ mole version        # Version info
 mole status --help  # System monitoring help
 mole clean --help   # Cleanup help
 mole optimize --help
-mole analyze --help
 mole purge --help
 mole installer --help
 mole uninstall --help
@@ -67,19 +66,13 @@ Resources/mole/bin/installer.sh
 Resources/mole/bin/uninstall.sh
 ```
 
-### 2.4 JSON Schema Validation
+### 2.4 JSON Smoke Validation
 
-Validates that `status-go --json` output matches expected structure:
+Validates that Mole JSON commands execute successfully in GUI-relevant paths:
 ```bash
-mole status --json | jq '.cpu.usage, .memory.used, .health_score'
+mole status --json
+mole analyze --json "$HOME"
 ```
-
-Verifies key fields exist and have reasonable values:
-- CPU usage (0-100%)
-- Memory usage (bytes)
-- Health score (0-100)
-- Disk information
-- Network interfaces
 
 ## 3. Auto-merge and Release
 
