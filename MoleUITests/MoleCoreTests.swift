@@ -317,6 +317,12 @@ struct CLIIntegrationTests {
 
     @Test("CLIExecutor can execute mole version")
     func testExecuteMoleVersion() async throws {
+        // Debug: print paths to understand the issue
+        print("Bundle.main.bundleURL: \(Bundle.main.bundleURL)")
+        print("Bundle.main.resourceURL: \(String(describing: Bundle.main.resourceURL))")
+        print("findMoleRoot: \(String(describing: CLIExecutor.findMoleRoot()))")
+        print("findMoleBinary: \(String(describing: CLIExecutor.findMoleBinary()))")
+
         let executor = await CLIExecutor()
 
         // Skip if mole binary not found (e.g., in CI environment)
@@ -327,6 +333,7 @@ struct CLIIntegrationTests {
         let result = try await executor.executeMole("version")
         #expect(result.exitCode == 0)
         #expect(result.stdout.contains("Mole"))
+    }
     }
 
     @Test("CLIExecutor execute parses JSON")
