@@ -318,6 +318,12 @@ struct CLIIntegrationTests {
     @Test("CLIExecutor can execute mole version")
     func testExecuteMoleVersion() async throws {
         let executor = await CLIExecutor()
+
+        // Skip if mole binary not found (e.g., in CI environment)
+        guard CLIExecutor.findMoleBinary() != nil else {
+            return
+        }
+
         let result = try await executor.executeMole("version")
         #expect(result.exitCode == 0)
         #expect(result.stdout.contains("Mole"))
