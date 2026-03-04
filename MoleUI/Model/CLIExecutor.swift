@@ -74,7 +74,8 @@ final class CLIExecutor {
         }
 
         var command = "\(molePath) \(subcommand)"
-        if options.dryRun {
+        let forceDryRun = options.dryRun || ProcessInfo.processInfo.arguments.contains("UI_TESTING")
+        if forceDryRun {
             command = "MOLE_DRY_RUN=1 DRY_RUN=true \(command)"
         }
 
@@ -118,47 +119,54 @@ final class CLIExecutor {
                 // 启动超时检测
                 let timeoutTask = startTimeoutMonitor(timeout: options.timeout)
 
+                proc.terminationHandler = { [weak self] process in
+                    guard let self else { return }
+
+                    // 取消超时监控
+                    timeoutTask?.cancel()
+
+                    // 在 Task 中处理输出，因为 handleReadingOutput 是异步的
+                    Task { @MainActor in
+                        let stdout = await stdoutTask.value
+                        let stderr = await stderrTask.value
+                        let duration = Date().timeIntervalSince(startTime)
+
+                        let result = ExecutionResult(
+                            stdout: stdout,
+                            stderr: stderr,
+                            exitCode: process.terminationStatus,
+                            duration: duration,
+                            wasCancelled: false
+                        )
+
+                        if process.terminationStatus != 0 {
+                            self.logger.error("Process failed: exit code \(process.terminationStatus)")
+                            continuation.resume(
+                                throwing: ExecutionError.nonZeroExit(
+                                    process.terminationStatus,
+                                    stderr: stderr
+                                )
+                            )
+                        } else {
+                            self.logger.debug("Process completed successfully in \(duration)s")
+                            continuation.resume(returning: result)
+                        }
+
+                        // 清理引用以避免泄露
+                        if self.process === process {
+                            self.process = nil
+                        }
+                    }
+                }
+
                 // 启动进程
                 do {
                     try proc.run()
                     logger.debug("Process started: PID \(proc.processIdentifier)")
                 } catch {
+                    timeoutTask?.cancel()
                     continuation.resume(throwing: error)
                     return
-                }
-
-                // 等待进程结束
-                proc.waitUntilExit()
-
-                // 取消超时监控
-                timeoutTask?.cancel()
-
-                // 收集输出
-                Task {
-                    let stdout = await stdoutTask.value
-                    let stderr = await stderrTask.value
-                    let duration = Date().timeIntervalSince(startTime)
-
-                    let result = ExecutionResult(
-                        stdout: stdout,
-                        stderr: stderr,
-                        exitCode: proc.terminationStatus,
-                        duration: duration,
-                        wasCancelled: false
-                    )
-
-                    if proc.terminationStatus != 0 {
-                        self.logger.error("Process failed: exit code \(proc.terminationStatus)")
-                        continuation.resume(
-                            throwing: ExecutionError.nonZeroExit(
-                                proc.terminationStatus,
-                                stderr: stderr
-                            )
-                        )
-                    } else {
-                        self.logger.debug("Process completed successfully in \(duration)s")
-                        continuation.resume(returning: result)
-                    }
                 }
             }
         } onCancel: {
