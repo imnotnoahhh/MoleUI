@@ -8,7 +8,6 @@ Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, w
 
 ## 📚 Documentation
 
-- **[NATIVE_IMPLEMENTATION.md](NATIVE_IMPLEMENTATION.md)** - Why we use Swift instead of status-go (TTY dependency issues)
 - **[TODO.md](TODO.md)** - Implementation roadmap and task list
 - **[AUTO_UPDATE.md](AUTO_UPDATE.md)** - Auto-update workflow documentation
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
@@ -18,8 +17,8 @@ Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, w
 
 | Feature | CLI Command | GUI Support |
 |---------|------------|-------------|
-| System Status Monitor | `mo status` | ✅ Real-time Dashboard |
-| Disk Space Analyzer | `mo analyze` | ✅ Visual Analysis |
+| System Status Monitor | `mo status` | ✅ Real-time Dashboard (JSON mode) |
+| Disk Space Analyzer | `mo analyze` | ✅ Visual Analysis (JSON mode) |
 | System Cleanup | `mo clean` | ✅ Dry Run Support |
 | System Optimization | `mo optimize` | ✅ Dry Run Support |
 | Large File Purge | `mo purge` | ✅ |

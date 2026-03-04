@@ -58,7 +58,6 @@ We take the security of MoleUI seriously. If you believe you have found a securi
 
 MoleUI implements several security measures:
 
-- **Sandboxed Execution:** Mole CLI runs in a controlled environment
 - **Whitelist Protection:** Users can protect critical paths from cleanup
 - **Confirmation Dialogs:** Destructive operations require user confirmation
 - **Dry Run Mode:** Preview changes before applying them

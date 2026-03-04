@@ -8,10 +8,12 @@ struct DiskAnalyzerView: View {
     @State private var hoveredEntry: String?
 
     private var filteredEntries: [DirEntry] {
-        if showHiddenFiles {
-            return scanner.entries
-        }
-        return scanner.entries.filter { !$0.name.hasPrefix(".") }
+        let entries = showHiddenFiles
+            ? scanner.entries
+            : scanner.entries.filter { !$0.name.hasPrefix(".") }
+
+        // Limit to first 100 entries for performance
+        return Array(entries.prefix(100))
     }
 
     var body: some View {
@@ -167,33 +169,66 @@ struct DiskAnalyzerView: View {
             ? Double(entry.sizeBytes) / Double(scanner.totalSize)
             : 0
         let barColor = Self.barColor(for: percent)
-        let isHovered = hoveredEntry == entry.id
 
-        return HStack(spacing: 0) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.primary.opacity(isHovered ? 0.06 : 0.03))
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(barColor.opacity(isHovered ? 0.35 : 0.2))
-                        .frame(width: max(geo.size.width * CGFloat(percent), 4))
-                }
-            }
-            .overlay {
-                entryRowContent(entry, percent: percent, barColor: barColor)
-            }
-        }
-        .frame(height: 52)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            hoveredEntry = hovering ? entry.id : nil
-        }
-        .onTapGesture {
+        return Button {
             if entry.isDirectory {
                 scanner.navigateTo(directory: entry.path)
             }
+        } label: {
+            HStack(spacing: 12) {
+                // Icon
+                Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(entry.isDirectory ? barColor : .gray)
+                    .frame(width: 28)
+
+                // Name
+                Text(entry.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 100, alignment: .leading)
+
+                Spacer()
+
+                // Percentage
+                Text(String(format: "%.1f%%", percent * 100))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 50, alignment: .trailing)
+
+                // Size
+                Text(MetricsFormatter.humanBytes(entry.sizeBytes))
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .frame(width: 80, alignment: .trailing)
+
+                // Actions
+                HStack(spacing: 4) {
+                    Button {
+                        scanner.revealInFinder(entry)
+                    } label: {
+                        Image(systemName: "folder")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button {
+                        entryToDelete = entry
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .frame(width: 60)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .background(Color.primary.opacity(0.03))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
+        .buttonStyle(.plain)
     }
 
     private func entryRowContent(_ entry: DirEntry, percent: Double, barColor: Color) -> some View {

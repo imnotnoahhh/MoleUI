@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Disk Analyzer now uses Go kernel (`mole analyze --json`) instead of Swift native implementation
+- Improved Disk Analyzer performance by limiting display to top 100 entries
+- Simplified Disk Analyzer UI for better scrolling performance
+
+### Fixed
+- Disk Analyzer entries now sorted by size (largest first)
+- Fixed scrolling lag in Disk Analyzer view
+
+### Planned
+- SMC temperature reading for accurate CPU/GPU temperatures
+- GPU monitoring enhancements
+- Fan speed monitoring
+- Improved health score algorithm
+
+## [0.1.2-beta.1] - 2026-03-04
+
 ### Added
 - One-click clean and optimize functionality
   - Auto-select safe items after scanning
@@ -128,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NavigationSplitView for native macOS experience
 - Requires macOS 14.0 (Sonoma) or later
 
-[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.2-beta.1...HEAD
+[0.1.2-beta.1]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.1
 [0.1.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2
 [0.1.1]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.1
 [0.1.0]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.0
