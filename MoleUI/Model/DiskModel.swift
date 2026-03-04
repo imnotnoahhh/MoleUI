@@ -160,93 +160,97 @@ final class DiskModel {
         let totalSize: UInt64
     }
 
+    /// JSON response from mole analyze --json
+    private struct AnalyzeJSONResponse: Codable {
+        let path: String
+        let entries: [AnalyzeEntry]
+        let totalSize: Int64
+        let totalFiles: Int64
+
+        struct AnalyzeEntry: Codable {
+            let name: String
+            let path: String
+            let size: Int64
+            let isDir: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case name, path, size
+                case isDir = "is_dir"
+            }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case path, entries
+            case totalSize = "total_size"
+            case totalFiles = "total_files"
+        }
+    }
+
     private func performScan(directory: URL) async throws -> ScanResult {
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .totalFileAllocatedSizeKey],
-            options: []
+        guard let binary = findMoleBinary() else {
+            throw NSError(
+                domain: "DiskModel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "找不到 mole 可执行文件"]
+            )
+        }
+
+        let executor = CLIExecutor()
+        let command = "\"\(binary.path)\" analyze --json \"\(directory.path)\""
+
+        let response: AnalyzeJSONResponse = try await executor.executeAndParseJSON(
+            command: command,
+            options: CLIExecutor.ExecutionOptions(
+                timeout: 120,
+                captureStderr: true,
+                parseProgress: false,
+                dryRun: false
+            ),
+            decoder: JSONDecoder()
         )
 
-        let sized: [(URL, Bool)] = contents.compactMap { url in
-            guard let vals = try? url.resourceValues(forKeys: [.isDirectoryKey]) else {
-                return nil
-            }
-            return (url, vals.isDirectory ?? false)
-        }
-
-        // Calculate sizes in parallel for top-level children
-        let results = try await withThrowingTaskGroup(
-            of: (URL, Bool, UInt64, Int).self
-        ) { group in
-            for (url, isDir) in sized {
-                group.addTask {
-                    try Task.checkCancellation()
-                    let taskFM = FileManager()
-                    if isDir {
-                        let size = Self.directorySize(at: url)
-                        let childCount = (try? taskFM.contentsOfDirectory(
-                            at: url,
-                            includingPropertiesForKeys: nil,
-                            options: [.skipsSubdirectoryDescendants]
-                        ).count) ?? 0
-                        return (url, true, size, childCount)
-                    } else {
-                        let vals = try url.resourceValues(
-                            forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]
-                        )
-                        let size = UInt64(vals.totalFileAllocatedSize ?? vals.fileSize ?? 0)
-                        return (url, false, size, 0)
-                    }
-                }
-            }
-
-            var collected: [(URL, Bool, UInt64, Int)] = []
-            for try await item in group {
-                collected.append(item)
-            }
-            return collected
-        }
-
-        let entries = results
-            .map { url, isDir, size, children in
+        let entries = response.entries
+            .map { entry in
                 DirEntry(
-                    name: url.lastPathComponent,
-                    path: url,
-                    sizeBytes: size,
-                    isDirectory: isDir,
-                    children: children
+                    name: entry.name,
+                    path: URL(fileURLWithPath: entry.path),
+                    sizeBytes: UInt64(entry.size),
+                    isDirectory: entry.isDir,
+                    children: 0
                 )
             }
             .sorted { $0.sizeBytes > $1.sizeBytes }
-            .prefix(50)
 
-        let total = results.reduce(UInt64(0)) { $0 + $1.2 }
-        return ScanResult(entries: Array(entries), totalSize: total)
+        return ScanResult(
+            entries: entries,
+            totalSize: UInt64(response.totalSize)
+        )
     }
 
-    // MARK: - Helpers
-
-    private nonisolated static func directorySize(at url: URL) -> UInt64 {
+    private func findMoleBinary() -> URL? {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey],
-            options: [.skipsPackageDescendants],
-            errorHandler: nil
-        ) else {
-            return 0
+
+        #if DEBUG
+            // Development: prefer project Resources first
+            let projectPath = URL(fileURLWithPath: #file)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Resources/mole/mole")
+
+            if fm.isExecutableFile(atPath: projectPath.path) {
+                return projectPath
+            }
+        #endif
+
+        // Production: check bundle resources
+        if let bundlePath = Bundle.main.path(forResource: "mole", ofType: nil, inDirectory: "mole") {
+            let url = URL(fileURLWithPath: bundlePath)
+            if fm.isExecutableFile(atPath: url.path) {
+                return url
+            }
         }
 
-        var total: UInt64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let vals = try? fileURL.resourceValues(
-                forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]
-            ) else {
-                continue
-            }
-            total += UInt64(vals.totalFileAllocatedSize ?? vals.fileSize ?? 0)
-        }
-        return total
+        return nil
     }
 }

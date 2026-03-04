@@ -66,9 +66,10 @@ jobs:
         run: |
           ERRORS=""
 
-          # 1. Required files exist (excluding status-go since we use native Swift implementation)
+          # 1. Required files exist
           for f in \
             Resources/mole/mole \
+            Resources/mole/bin/status-go \
             Resources/mole/bin/analyze-go \
             Resources/mole/bin/clean.sh \
             Resources/mole/bin/optimize.sh \
@@ -85,16 +86,19 @@ jobs:
             ERRORS="$ERRORS\n- 'mole version' failed to execute"
           fi
 
-          # 3. Subcommand --help check (excluding status since we use native implementation)
-          for cmd in clean optimize analyze purge installer uninstall; do
+          # 3. Subcommand --help check
+          for cmd in status clean optimize purge installer uninstall; do
             if ! bash Resources/mole/mole $cmd --help >/dev/null 2>&1; then
               ERRORS="$ERRORS\n- Subcommand '$cmd --help' failed"
             fi
           done
 
-          # 4. Check if status-go exists (optional, we don't use it but good to know)
-          if [ -f Resources/mole/bin/status-go ]; then
-            echo "Note: status-go binary found but not used (MoleUI uses native Swift implementation)"
+          # Note: 'analyze' command has TTY dependency and is not used by MoleUI
+          # (MoleUI uses native Swift implementation for disk analysis)
+
+          # 4. Verify status-go JSON output format
+          if ! bash Resources/mole/mole status --json >/dev/null 2>&1; then
+            ERRORS="$ERRORS\n- 'mole status --json' failed to execute"
           fi
 
           # 5. Verify critical scripts are executable

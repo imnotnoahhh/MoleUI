@@ -18,7 +18,6 @@ show_installer_help() {
     echo "Find and remove installer files (.dmg, .pkg, .iso, .xip, .zip)."
     echo ""
     echo "Options:"
-    echo "  --dry-run         Preview installer cleanup without making changes"
     echo "  --debug           Show detailed operation logs"
     echo "  -h, --help        Show this help message"
 }
@@ -46,7 +45,6 @@ show_touchid_help() {
     echo "  status            Show current Touch ID status"
     echo ""
     echo "Options:"
-    echo "  --dry-run         Preview Touch ID changes without modifying sudo config"
     echo "  -h, --help        Show this help message"
     echo ""
     echo "If no command is provided, an interactive menu is shown."
@@ -58,7 +56,6 @@ show_uninstall_help() {
     echo "Interactively remove applications and their leftover files."
     echo ""
     echo "Options:"
-    echo "  --dry-run         Preview app uninstallation without making changes"
     echo "  --debug           Show detailed operation logs"
     echo "  -h, --help        Show this help message"
 }
