@@ -33,25 +33,35 @@ struct AppInfo: Identifiable, @unchecked Sendable {
 final class AppScanModel {
     var apps: [AppInfo] = []
     var isScanning: Bool = false
+    var errorMessage: String?
 
     init() {}
 
     func scan() {
+        guard !isScanning else { return }
         isScanning = true
+        errorMessage = nil
         apps = []
 
         Task.detached { [weak self] in
             guard let self else { return }
-            let scanned = performScan()
-            await MainActor.run {
-                self.apps = scanned
-                self.isScanning = false
+            do {
+                let scanned = try performScan()
+                await MainActor.run {
+                    self.apps = scanned
+                    self.isScanning = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isScanning = false
+                }
             }
         }
     }
 
-    private nonisolated func performScan() -> [AppInfo] {
-        guard let root = resolveMoleRoot() else { return [] }
+    private nonisolated func performScan() throws -> [AppInfo] {
+        guard let root = CLIExecutor.findMoleRoot() else { return [] }
         let command = """
         bash -lc \(shellEscape("""
         set -euo pipefail
@@ -66,7 +76,7 @@ final class AppScanModel {
         """))
         """
 
-        let output = (try? runSync(command: command)) ?? ""
+        let output = try runSync(command: command)
         var results: [AppInfo] = []
 
         for line in output.split(separator: "\n") {
@@ -106,9 +116,17 @@ final class AppScanModel {
         proc.arguments = ["-lc", command]
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        let err = Pipe()
+        proc.standardError = err
         try proc.run()
         proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown Error"
+            throw NSError(domain: "AppScanError", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Scan failed (\(proc.terminationStatus)): \(errStr)"])
+        }
+
         let data = out.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
     }
@@ -117,25 +135,6 @@ final class AppScanModel {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private nonisolated func resolveMoleRoot() -> URL? {
-        let fm = FileManager.default
-        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("mole"),
-           fm.fileExists(atPath: bundled.appendingPathComponent("lib").path)
-        {
-            return bundled
-        }
-        #if DEBUG
-            let projectPath = URL(fileURLWithPath: #file)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources/mole")
-            if fm.fileExists(atPath: projectPath.appendingPathComponent("lib").path) {
-                return projectPath
-            }
-        #endif
-        return nil
-    }
 }
 
 // MARK: - Uninstaller
@@ -206,9 +205,17 @@ final class UninstallModel {
         proc.arguments = ["-lc", command]
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        let err = Pipe()
+        proc.standardError = err
         try proc.run()
         proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown Error"
+            throw NSError(domain: "UninstallError", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Command failed (\(proc.terminationStatus)): \(errStr)"])
+        }
+
         let data = out.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
     }

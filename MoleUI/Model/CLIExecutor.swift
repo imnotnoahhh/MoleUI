@@ -69,7 +69,7 @@ final class CLIExecutor {
         _ subcommand: String,
         options: ExecutionOptions = .default
     ) async throws -> ExecutionResult {
-        guard let molePath = findMoleBinary() else {
+        guard let molePath = Self.findMoleBinary()?.path else {
             throw ExecutionError.commandNotFound("mole")
         }
 
@@ -192,30 +192,6 @@ final class CLIExecutor {
 
     // MARK: - Private Methods
 
-    private func findMoleBinary() -> String? {
-        let fm = FileManager.default
-
-        // 检查 bundle 内
-        if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("mole/mole").path,
-            fm.isExecutableFile(atPath: bundled)
-        {
-            return bundled
-        }
-
-        // 检查系统路径
-        let candidates = [
-            "/usr/local/bin/mole",
-            "/opt/homebrew/bin/mole",
-            NSHomeDirectory() + "/.config/mole/mole",
-        ]
-
-        for path in candidates where fm.isExecutableFile(atPath: path) {
-            return path
-        }
-
-        return nil
-    }
 
     /// 读取输出流
     private func startReadingOutput(
@@ -376,8 +352,15 @@ extension CLIExecutor {
         return try await run("bash '\(scriptPath)'")
     }
 
+    /// Locate the Mole executable binary.
+    nonisolated static func findMoleBinary() -> URL? {
+        guard let root = findMoleRoot() else { return nil }
+        let binaryPath = root.appendingPathComponent("mole")
+        return FileManager.default.fileExists(atPath: binaryPath.path) ? binaryPath : nil
+    }
+
     /// Locate the Mole root directory (containing `lib/`).
-    static func findMoleRoot() -> URL? {
+    nonisolated static func findMoleRoot() -> URL? {
         let fm = FileManager.default
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("mole") {
             if fm.fileExists(atPath: bundled.appendingPathComponent("lib").path) {

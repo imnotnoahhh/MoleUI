@@ -187,7 +187,7 @@ final class DiskModel {
     }
 
     private func performScan(directory: URL) async throws -> ScanResult {
-        guard let binary = findMoleBinary() else {
+        guard let binary = CLIExecutor.findMoleBinary() else {
             throw NSError(
                 domain: "DiskModel",
                 code: 1,
@@ -225,32 +225,5 @@ final class DiskModel {
             entries: entries,
             totalSize: UInt64(response.totalSize)
         )
-    }
-
-    private func findMoleBinary() -> URL? {
-        let fm = FileManager.default
-
-        #if DEBUG
-            // Development: prefer project Resources first
-            let projectPath = URL(fileURLWithPath: #file)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources/mole/mole")
-
-            if fm.isExecutableFile(atPath: projectPath.path) {
-                return projectPath
-            }
-        #endif
-
-        // Production: check bundle resources
-        if let bundlePath = Bundle.main.path(forResource: "mole", ofType: nil, inDirectory: "mole") {
-            let url = URL(fileURLWithPath: bundlePath)
-            if fm.isExecutableFile(atPath: url.path) {
-                return url
-            }
-        }
-
-        return nil
     }
 }
