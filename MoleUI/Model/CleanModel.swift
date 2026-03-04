@@ -399,30 +399,25 @@ final class CleanModel {
         cleaningCategory = nil
     }
 
-    private func generatePreview(category: CleanScanResult) async -> String {
+    private func generatePreview(category: CleanScanResult) -> String {
         var lines: [String] = []
         lines.append("Preview: \(category.category.name)")
         lines.append("Would clean \(category.itemCount) items (\(MetricsFormatter.humanBytes(category.totalBytes)))")
         lines.append("")
         lines.append("Paths:")
-        for path in category.category.paths {
-            let fm = FileManager.default
-            if fm.fileExists(atPath: path) {
-                if let contents = try? fm.contentsOfDirectory(atPath: path) {
-                    let count = contents.count
-                    lines.append("  • \(path) (\(count) items)")
-                } else {
-                    lines.append("  • \(path)")
-                }
-            }
+        for path in category.category.paths where FileManager.default.fileExists(atPath: path) {
+            lines.append("  • \(path)")
         }
         return lines.joined(separator: "\n")
     }
 
+    /// Clean all selected categories sequentially through Mole CLI.
     func cleanSelected(categories: Set<String>, dryRun: Bool) async {
         guard !categories.isEmpty else { return }
-        guard let first = scanResults.first(where: { categories.contains($0.id) }) else { return }
-        await clean(category: first, dryRun: dryRun)
+        let selected = scanResults.filter { categories.contains($0.id) }
+        for category in selected {
+            await clean(category: category, dryRun: dryRun)
+        }
     }
 
     // MARK: - Mole Core Scan
@@ -439,7 +434,7 @@ final class CleanModel {
 
         // We use Mole's core functions to compute sizes accurately without hanging the UI
         let pathsList = category.paths.map { shellEscape($0) }.joined(separator: " ")
-        let excludeList = category.excludePaths.map { shellEscape($0) }.joined(separator: " ")
+        let _ = category.excludePaths.map { shellEscape($0) }.joined(separator: " ")
 
         let script = """
         set -euo pipefail
