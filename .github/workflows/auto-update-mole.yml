@@ -25,17 +25,12 @@ jobs:
           else
             VERSION="none"
           fi
-          VERSION="${VERSION#v}"
-          VERSION="${VERSION#V}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Get latest Mole release
         id: latest_release
         run: |
-          RAW_TAG=$(curl -s https://api.github.com/repos/tw93/Mole/releases/latest | jq -r '.tag_name')
-          LATEST="${RAW_TAG#v}"
-          LATEST="${LATEST#V}"
-          echo "tag=$RAW_TAG" >> $GITHUB_OUTPUT
+          LATEST=$(curl -s https://api.github.com/repos/tw93/Mole/releases/latest | jq -r '.tag_name')
           echo "version=$LATEST" >> $GITHUB_OUTPUT
 
       - name: Check if update needed
@@ -98,10 +93,8 @@ jobs:
             fi
           done
 
-          # 3.1 Analyze JSON smoke check (used by MoleUI Disk Analyzer)
-          if ! bash Resources/mole/mole analyze --json "$HOME" >/dev/null 2>&1; then
-            ERRORS="$ERRORS\n- 'mole analyze --json <path>' failed"
-          fi
+          # Note: 'analyze' command has TTY dependency and is not used by MoleUI
+          # (MoleUI uses native Swift implementation for disk analysis)
 
           # 4. Verify status-go JSON output format
           if ! bash Resources/mole/mole status --json >/dev/null 2>&1; then
@@ -170,14 +163,15 @@ jobs:
             **Compatibility Checks:**
             - ✅ All required files present
             - ✅ Commands execute successfully
-            - ✅ JSON smoke checks (`status --json`, `analyze --json`)
+            - ℹ️ status-go not tested (MoleUI uses native Swift implementation)
+
+            **Note:** MoleUI uses a native Swift implementation for system monitoring instead of calling `status-go` due to TTY dependency issues. See [NATIVE_IMPLEMENTATION.md](https://github.com/imnotnoahhh/MoleUI/blob/main/NATIVE_IMPLEMENTATION.md) for details.
 
             **Upstream Release Notes:**
-            https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.tag }}
+            https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}
           labels: dependencies,automated
 
       - name: Auto-merge PR
-        id: auto_merge
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.create_pr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -191,10 +185,9 @@ jobs:
           # Merge PR
           gh pr merge "$PR_NUMBER" --squash --auto --delete-branch
           echo "PR #$PR_NUMBER merged successfully"
-          echo "merged=true" >> $GITHUB_OUTPUT
 
       - name: Create release tag
-        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.auto_merge.outputs.merged == 'true'
+        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -226,6 +219,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Breaking: Mole CLI ${{ steps.latest_release.outputs.version }} has incompatible changes`,
-              body: `Mole CLI ${{ steps.latest_release.outputs.version }} failed compatibility checks:\n${{ steps.compat.outputs.errors }}\n\nRelease notes: https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.tag }}\n\nManual adaptation required.`,
+              body: `Mole CLI ${{ steps.latest_release.outputs.version }} failed compatibility checks:\n${{ steps.compat.outputs.errors }}\n\nRelease notes: https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.version }}\n\nManual adaptation required.`,
               labels: ['breaking-change', 'mole-update']
             });
