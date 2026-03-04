@@ -3,7 +3,7 @@ import Observation
 
 // MARK: - Data
 
-struct HealthReport: Codable, Sendable {
+struct HealthReport: Codable, Sendable, Equatable {
     let memoryUsedGb: Double
     let memoryTotalGb: Double
     let diskUsedGb: Double
@@ -23,7 +23,7 @@ struct HealthReport: Codable, Sendable {
     }
 }
 
-struct OptimizationTask: Codable, Sendable, Identifiable {
+struct OptimizationTask: Codable, Sendable, Identifiable, Equatable {
     var id: String {
         action
     }

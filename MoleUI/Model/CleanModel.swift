@@ -3,18 +3,20 @@ import Observation
 
 // MARK: - Clean Category
 
-struct CleanCategory: Identifiable, Sendable {
+struct CleanCategory: Identifiable, Sendable, Equatable {
     let id: String
     let name: String
     let icon: String
     let paths: [String]
     let excludePaths: [String]
     let moleCommand: String
+    let safe: Bool  // Safe to clean without user concern
 
     init(
         id: String, name: String, icon: String,
         paths: [String], excludePaths: [String] = [],
-        moleCommand: String
+        moleCommand: String,
+        safe: Bool = true  // Default to safe
     ) {
         self.id = id
         self.name = name
@@ -22,6 +24,7 @@ struct CleanCategory: Identifiable, Sendable {
         self.paths = paths
         self.excludePaths = excludePaths
         self.moleCommand = moleCommand
+        self.safe = safe
     }
 
     private static let home = NSHomeDirectory()
@@ -257,7 +260,8 @@ struct CleanCategory: Identifiable, Sendable {
                 home + "/.cache/curl",
                 home + "/.cache/wget",
             ],
-            moleCommand: "clean dev"
+            moleCommand: "clean dev",
+            safe: false  // May contain important build artifacts
         ),
 
         // MARK: System Logs & Temp
@@ -296,7 +300,7 @@ struct CleanCategory: Identifiable, Sendable {
 
 // MARK: - Scan Result
 
-struct CleanScanResult: Identifiable, Sendable {
+struct CleanScanResult: Identifiable, Sendable, Equatable {
     let id: String
     let category: CleanCategory
     let totalBytes: UInt64

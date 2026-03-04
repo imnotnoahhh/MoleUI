@@ -3,7 +3,9 @@ import SwiftUI
 struct OptimizeView: View {
     @Environment(OptimizeModel.self) var service
     @AppStorage("dryRunMode") private var dryRunMode = false
+    @AppStorage("autoSelectSafeItems") private var autoSelectSafeItems = true
     @State private var selectedTasks: Set<String> = []
+    @State private var showAdvancedTasks = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +40,12 @@ struct OptimizeView: View {
         .task {
             await service.loadReport()
         }
+        .onChange(of: service.report) { oldValue, newValue in
+            // Auto-select safe tasks after loading report
+            if autoSelectSafeItems, let report = newValue, selectedTasks.isEmpty {
+                selectedTasks = Set(report.optimizations.filter { $0.safe }.map(\.action))
+            }
+        }
     }
 
     private var dryRunBanner: some View {
@@ -63,22 +71,24 @@ struct OptimizeView: View {
     @ViewBuilder
     private var toolbarButtons: some View {
         Button {
+            Task { await service.loadReport() }
+        } label: {
+            Label("Scan", systemImage: "arrow.clockwise")
+        }
+        .disabled(service.isScanning)
+
+        Button {
             Task {
                 await runSelectedTasks()
             }
         } label: {
-            let prefix = dryRunMode ? "Preview" : "Run"
-            let text = selectedTasks.isEmpty ? "\(prefix) Selected" : "\(prefix) Selected (\(selectedTasks.count))"
-            Label(text, systemImage: dryRunMode ? "eye" : "play.fill")
+            let count = selectedTasks.count
+            let prefix = dryRunMode ? "Preview" : "Optimize"
+            let text = count > 0 ? "\(prefix) All (\(count))" : "\(prefix) All"
+            Label(text, systemImage: dryRunMode ? "eye" : "bolt.fill")
         }
         .disabled(service.runningTask != nil || service.report == nil || selectedTasks.isEmpty)
-
-        Button {
-            Task { await service.loadReport() }
-        } label: {
-            Label("Refresh", systemImage: "arrow.clockwise")
-        }
-        .disabled(service.isScanning)
+        .buttonStyle(.borderedProminent)
     }
 
     // MARK: - Report Content
@@ -182,17 +192,51 @@ struct OptimizeView: View {
     // MARK: - Task List
 
     private func taskList(_ tasks: [OptimizationTask]) -> some View {
-        GroupBox {
+        let safeTasks = tasks.filter { $0.safe }
+        let advancedTasks = tasks.filter { !$0.safe }
+
+        return GroupBox {
             VStack(alignment: .leading, spacing: 0) {
                 Label("Optimizations", systemImage: "bolt.fill")
                     .font(.headline)
                     .padding(.bottom, 8)
 
-                ForEach(tasks) { task in
+                // Safe tasks (always visible)
+                ForEach(safeTasks) { task in
                     taskRow(task)
-                    if task.id != tasks.last?.id {
+                    if task.id != safeTasks.last?.id || !advancedTasks.isEmpty {
                         Divider()
                     }
+                }
+
+                // Advanced tasks (collapsible)
+                if !advancedTasks.isEmpty {
+                    DisclosureGroup(
+                        isExpanded: $showAdvancedTasks,
+                        content: {
+                            VStack(spacing: 0) {
+                                ForEach(advancedTasks) { task in
+                                    taskRow(task)
+                                    if task.id != advancedTasks.last?.id {
+                                        Divider()
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        },
+                        label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                                Text("Advanced Tasks")
+                                    .fontWeight(.medium)
+                                Text("(\(advancedTasks.count) tasks)")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                            }
+                        }
+                    )
+                    .padding(.vertical, 4)
                 }
             }
             .padding(.vertical, 4)
@@ -246,14 +290,9 @@ struct OptimizeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(width: 80)
-            } else {
-                Button(dryRunMode ? "Preview" : "Run") {
-                    Task { await service.runTask(task, dryRun: dryRunMode) }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(service.runningTask != nil && !isRunning)
-                .frame(width: 80)
+            } else if isCompleted || isFailed {
+                // Show status only, no button
+                EmptyView()
             }
         }
         .padding(.vertical, 6)
