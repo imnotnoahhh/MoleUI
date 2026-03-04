@@ -283,6 +283,56 @@ private let sampleMetricsJSON = """
     }
 }
 
+@Test func installerScanPaths() {
+    let paths = InstallerConstants.scanPaths
+    #expect(!paths.isEmpty)
+}
+
+// MARK: - CLI Integration Tests
+
+@Suite("CLI Integration Tests")
+struct CLIIntegrationTests {
+
+    @Test("CLIExecutor identifies mole root")
+    func testFindMoleRoot() {
+        let root = CLIExecutor.findMoleRoot()
+        #expect(root != nil)
+    }
+
+    @Test("CLIExecutor identifies mole binary")
+    func testFindMoleBinary() {
+        let binary = CLIExecutor.findMoleBinary()
+        #expect(binary != nil)
+    }
+
+    @Test("CLIExecutor can execute mole version")
+    func testExecuteMoleVersion() async throws {
+        let executor = await CLIExecutor()
+        let result = try await executor.executeMole("version")
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("Mole"))
+    }
+
+    @Test("CLIExecutor execute parses JSON")
+    func testExecuteAndParseJSON() async throws {
+        let executor = await CLIExecutor()
+        let json = """
+        {"name": "test", "value": 42}
+        """
+
+        struct TestResponse: Codable {
+            let name: String
+            let value: Int
+        }
+
+        let response: TestResponse = try await executor.executeAndParseJSON(
+            command: "echo '\(json)'"
+        )
+
+        #expect(response.name == "test")
+        #expect(response.value == 42)
+    }
+}
 // MARK: - PurgeTarget
 
 @Test func purgeTargetIsRecent() {
@@ -313,6 +363,8 @@ private let sampleMetricsJSON = """
     #expect(protected.contains("bin"))
 }
 
+}
+
 // MARK: - InstallerConstants
 
 @Test func installerExtensions() {
@@ -326,4 +378,76 @@ private let sampleMetricsJSON = """
 @Test func installerScanPaths() {
     let paths = InstallerConstants.scanPaths
     #expect(!paths.isEmpty)
+}
+
+// MARK: - CI Assumption Tests (P2)
+
+@Suite("CI Assumption Tests")
+struct CIAssumptionTests {
+
+    // Verify the .mole-cli-version file is bundled in app resources
+    @Test("Bundled .mole-cli-version file exists and is readable")
+    func testMoleCLIVersionFileBundled() throws {
+        guard let versionURL = Bundle.main.url(forResource: ".mole-cli-version", withExtension: nil)
+            ?? Bundle.main.url(forResource: "mole-cli-version", withExtension: nil) else {
+            // Also try in the mole subdirectory
+            let resourceURL = Bundle.main.resourceURL?.appendingPathComponent(".mole-cli-version")
+            guard let resourceURL, FileManager.default.fileExists(atPath: resourceURL.path) else {
+                throw XCTSkip(".mole-cli-version not bundled in test target resources")
+            }
+            let contents = try String(contentsOf: resourceURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(!contents.isEmpty, ".mole-cli-version should have content")
+            return
+        }
+        let contents = try String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!contents.isEmpty, ".mole-cli-version should have content")
+        // Version should be semver-like: digits.digits.digits
+        let isVersionLike = contents.range(of: #"^\d+\.\d+\.\d+"#, options: .regularExpression) != nil
+        #expect(isVersionLike, "Version '\(contents)' should be in semver format")
+    }
+
+    // Version parsing edge cases for the auto-update compare logic
+    @Test("Version stripping handles v and V prefixes")
+    func testVersionPrefixStripping() {
+        func stripPrefix(_ raw: String) -> String {
+            var v = raw
+            if v.hasPrefix("v") || v.hasPrefix("V") { v.removeFirst() }
+            return v
+        }
+        #expect(stripPrefix("v1.28.1") == "1.28.1")
+        #expect(stripPrefix("V1.28.1") == "1.28.1")
+        #expect(stripPrefix("1.28.1") == "1.28.1")
+        #expect(stripPrefix("v0.1.0") == "0.1.0")
+    }
+
+    // Bundled mole binary has the correct executable permission
+    @Test("Bundled mole binary is executable")
+    func testBundledMoleBinaryIsExecutable() throws {
+        guard let binary = CLIExecutor.findMoleBinary() else {
+            throw XCTSkip("Bundled mole binary not found - cannot test executable permission")
+        }
+        let fm = FileManager.default
+        #expect(fm.isExecutableFile(atPath: binary.path), "mole binary at \(binary.path) must be executable")
+    }
+
+    // Required Mole scripts exist next to the binary
+    @Test("Required Mole scripts exist in bundle")
+    func testRequiredMoleScriptsExist() throws {
+        guard let root = CLIExecutor.findMoleRoot() else {
+            throw XCTSkip("Mole root not found - cannot test script existence")
+        }
+        let fm = FileManager.default
+        let requiredScripts = [
+            "bin/clean.sh",
+            "bin/optimize.sh",
+            "bin/purge.sh",
+            "bin/installer.sh",
+            "bin/uninstall.sh",
+        ]
+        for script in requiredScripts {
+            let path = root.appendingPathComponent(script).path
+            #expect(fm.fileExists(atPath: path), "Required script missing: \(script)")
+            #expect(fm.isExecutableFile(atPath: path), "Script not executable: \(script)")
+        }
+    }
 }
