@@ -168,6 +168,11 @@ brew_uninstall_cask() {
     local cask_name="$1"
     local app_path="${2:-}"
 
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        debug_log "[DRY RUN] Would brew uninstall --cask --zap $cask_name"
+        return 0
+    fi
+
     is_homebrew_available || return 1
     [[ -z "$cask_name" ]] && return 1
 

@@ -77,7 +77,7 @@ struct InstallerView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-        if service.isScanning && service.files.isEmpty {
+        if service.isScanning, service.files.isEmpty {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning for installers...")
@@ -97,7 +97,7 @@ struct InstallerView: View {
             }
         }
 
-        if service.files.isEmpty && !service.isScanning {
+        if service.files.isEmpty, !service.isScanning {
             GroupBox {
                 Text("No installer files found.")
                     .foregroundStyle(.secondary)
@@ -183,12 +183,12 @@ struct InstallerView: View {
 
     private func iconForExtension(_ ext: String) -> String {
         switch ext {
-        case "dmg": return "opticaldiscdrive"
-        case "pkg", "mpkg": return "shippingbox"
-        case "iso": return "opticaldisc"
-        case "xip": return "doc.zipper"
-        case "zip": return "doc.zipper"
-        default: return "doc"
+        case "dmg": "opticaldiscdrive"
+        case "pkg", "mpkg": "shippingbox"
+        case "iso": "opticaldisc"
+        case "xip": "doc.zipper"
+        case "zip": "doc.zipper"
+        default: "doc"
         }
     }
 }

@@ -8,11 +8,19 @@ struct CleanView: View {
     @State private var showConfirmation = false
     @State private var showError = false
     @State private var currentError: ErrorTranslator.UserFriendlyError?
+    @State private var showAdvancedOptions = false
     @AppStorage("dryRunMode") private var dryRunMode = false
     @AppStorage("confirmBeforeClean") private var confirmBeforeClean = true
+    @AppStorage("autoSelectSafeItems") private var autoSelectSafeItems = true
 
     private var totalReclaimable: UInt64 {
         service.scanResults.reduce(0) { $0 + $1.totalBytes }
+    }
+
+    private var totalSelectedSize: UInt64 {
+        service.scanResults
+            .filter { selectedCategories.contains($0.id) }
+            .reduce(0) { $0 + $1.totalBytes }
     }
 
     var body: some View {
@@ -47,16 +55,29 @@ struct CleanView: View {
         .task {
             await service.scan()
         }
+        .onChange(of: service.scanResults) { _, newValue in
+            // Auto-select safe categories after scan
+            if autoSelectSafeItems, !newValue.isEmpty, selectedCategories.isEmpty {
+                selectedCategories = Set(newValue.filter(\.category.safe).map(\.id))
+            }
+        }
         .alert(dryRunMode ? "Confirm Preview" : "Confirm Clean", isPresented: $showConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button(dryRunMode ? "Preview" : "Clean", role: dryRunMode ? .none : .destructive) {
                 Task { await service.cleanSelected(categories: selectedCategories, dryRun: dryRunMode) }
             }
         } message: {
+            let safeCount = selectedCategories.count(where: { id in
+                service.scanResults.first(where: { $0.id == id })?.category.safe ?? false
+            })
+            let unsafeCount = selectedCategories.count - safeCount
+
             if dryRunMode {
                 Text("Preview \(selectedCategories.count) selected categories? No files will be deleted.")
+            } else if unsafeCount > 0 {
+                Text("Clean \(selectedCategories.count) categories (\(unsafeCount) advanced)? This cannot be undone.")
             } else {
-                Text("Clean \(selectedCategories.count) selected categories? This cannot be undone.")
+                Text("Clean \(selectedCategories.count) safe categories? This cannot be undone.")
             }
         }
         .sheet(item: Bindable(safety).currentRequest) { request in
@@ -195,11 +216,13 @@ struct CleanView: View {
                         Task { await service.cleanSelected(categories: selectedCategories, dryRun: dryRunMode) }
                     }
                 } label: {
-                    let text = dryRunMode ? "Preview Selected" : "Clean Selected"
+                    let size = MetricsFormatter.humanBytes(totalSelectedSize)
+                    let text = dryRunMode ? "Preview All (\(size))" : "Clean All (\(size))"
                     let icon = dryRunMode ? "eye" : "trash"
                     Label(text, systemImage: icon)
                 }
                 .disabled(selectedCategories.isEmpty || service.isScanning || service.cleaningCategory != nil)
+                .buttonStyle(.borderedProminent)
             }
             .padding(.vertical, 2)
         }
@@ -265,7 +288,7 @@ struct CleanView: View {
             }
         }
 
-        if service.isScanning && service.scanResults.isEmpty {
+        if service.isScanning, service.scanResults.isEmpty {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning...")
@@ -286,8 +309,39 @@ struct CleanView: View {
         }
 
         if !service.scanResults.isEmpty {
-            ForEach(service.scanResults) { result in
+            // Safe categories (always visible)
+            ForEach(service.scanResults.filter(\.category.safe)) { result in
                 categoryRow(result)
+            }
+
+            // Advanced options (collapsible)
+            let advancedResults = service.scanResults.filter { !$0.category.safe }
+            if !advancedResults.isEmpty {
+                GroupBox {
+                    DisclosureGroup(
+                        isExpanded: $showAdvancedOptions,
+                        content: {
+                            VStack(spacing: 12) {
+                                ForEach(advancedResults) { result in
+                                    categoryRow(result)
+                                }
+                            }
+                            .padding(.top, 8)
+                        },
+                        label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                                Text("Advanced Options")
+                                    .fontWeight(.medium)
+                                Text("(\(advancedResults.count) items)")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                            }
+                        }
+                    )
+                    .padding(.vertical, 4)
+                }
             }
         }
     }
@@ -316,8 +370,20 @@ struct CleanView: View {
                     .frame(width: 20)
                     .foregroundStyle(.secondary)
 
-                Text(result.category.name)
-                    .frame(width: 130, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(result.category.name)
+                        if result.category.safe {
+                            Text("safe")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(.green.opacity(0.1), in: Capsule())
+                        }
+                    }
+                }
+                .frame(width: 150, alignment: .leading)
 
                 Spacer()
 
@@ -343,12 +409,6 @@ struct CleanView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .frame(width: 70)
-                } else {
-                    Button(dryRunMode ? "Preview" : "Clean") {
-                        Task { await service.clean(category: result, dryRun: dryRunMode) }
-                    }
-                    .disabled(service.cleaningCategory != nil && !isCleaning)
-                    .frame(width: 70)
                 }
             }
             .padding(.vertical, 2)

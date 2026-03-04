@@ -3,7 +3,7 @@ import Observation
 
 // MARK: - Data
 
-struct HealthReport: Codable, Sendable {
+struct HealthReport: Codable, Sendable, Equatable {
     let memoryUsedGb: Double
     let memoryTotalGb: Double
     let diskUsedGb: Double
@@ -23,7 +23,7 @@ struct HealthReport: Codable, Sendable {
     }
 }
 
-struct OptimizationTask: Codable, Sendable, Identifiable {
+struct OptimizationTask: Codable, Sendable, Identifiable, Equatable {
     var id: String {
         action
     }
@@ -83,7 +83,7 @@ final class OptimizeModel {
     }
 
     func runAllSafe(dryRun: Bool = false) async {
-        guard let tasks = report?.optimizations.filter({ $0.safe }) else { return }
+        guard let tasks = report?.optimizations.filter(\.safe) else { return }
         for task in tasks {
             if failedTasks.contains(task.action) || completedTasks.contains(task.action) {
                 continue

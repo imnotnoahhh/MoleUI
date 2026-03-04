@@ -10,7 +10,7 @@ struct DirEntry: Identifiable, Sendable {
     let children: Int // number of immediate children (0 for files)
 
     init(name: String, path: URL, sizeBytes: UInt64, isDirectory: Bool, children: Int) {
-        id = path.path
+        self.id = path.path
         self.name = name
         self.path = path
         self.sizeBytes = sizeBytes
@@ -52,7 +52,7 @@ final class DiskModel {
     private var cache: [String: CachedScan] = [:]
 
     init() {
-        currentPath = FileManager.default.homeDirectoryForCurrentUser
+        self.currentPath = FileManager.default.homeDirectoryForCurrentUser
     }
 
     // MARK: - Navigation

@@ -15,7 +15,7 @@ struct PurgeTarget: Identifiable, Equatable {
     }
 
     init(path: URL, projectName: String, artifactName: String, sizeBytes: UInt64, ageDays: Int) {
-        id = path.path
+        self.id = path.path
         self.path = path
         self.projectName = projectName
         self.artifactName = artifactName
