@@ -357,15 +357,18 @@ private let sampleMetricsJSON = """
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
+
     try process.run()
 
     // Wait briefly for mole to produce JSON output
     try await Task.sleep(for: .seconds(2))
     let data = pipe.fileHandleForReading.availableData
-    process.terminate()
 
-    guard !data.isEmpty,
-          let jsonData = data.isEmpty ? nil : data else {
+    // Terminate process and wait for cleanup
+    process.terminate()
+    process.waitUntilExit()
+
+    guard !data.isEmpty else {
         // mole didn't produce output in test environment, skip
         return
     }
@@ -383,7 +386,7 @@ private let sampleMetricsJSON = """
                   debugDescription: "Invalid date: \(str)"))
     }
 
-    let snapshot = try decoder.decode(MetricsSnapshot.self, from: jsonData)
+    let snapshot = try decoder.decode(MetricsSnapshot.self, from: data)
     #expect(!snapshot.host.isEmpty)
     #expect(snapshot.cpu.coreCount > 0)
     #expect(snapshot.memory.total > 0)
