@@ -34,7 +34,7 @@ jobs:
         run: |
           RAW_TAG=$(curl -s https://api.github.com/repos/tw93/Mole/releases/latest | jq -r '.tag_name')
           LATEST="${RAW_TAG#v}"
-          LATEST="${RAW_TAG#V}"
+          LATEST="${LATEST#V}"
           echo "tag=$RAW_TAG" >> $GITHUB_OUTPUT
           echo "version=$LATEST" >> $GITHUB_OUTPUT
 
@@ -177,6 +177,7 @@ jobs:
           labels: dependencies,automated
 
       - name: Auto-merge PR
+        id: auto_merge
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.create_pr.outputs.pull-request-number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -190,9 +191,10 @@ jobs:
           # Merge PR
           gh pr merge "$PR_NUMBER" --squash --auto --delete-branch
           echo "PR #$PR_NUMBER merged successfully"
+          echo "merged=true" >> $GITHUB_OUTPUT
 
       - name: Create release tag
-        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
+        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.auto_merge.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
