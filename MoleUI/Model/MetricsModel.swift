@@ -44,29 +44,29 @@ struct MetricsSnapshot: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        collectedAt = try container.decode(Date.self, forKey: .collectedAt)
-        host = try container.decode(String.self, forKey: .host)
-        platform = try container.decode(String.self, forKey: .platform)
-        uptime = try container.decode(String.self, forKey: .uptime)
-        procs = try container.decode(UInt64.self, forKey: .procs)
-        hardware = try container.decode(HardwareInfo.self, forKey: .hardware)
-        healthScore = try container.decode(Int.self, forKey: .healthScore)
-        healthScoreMsg = try container.decode(String.self, forKey: .healthScoreMsg)
-        cpu = try container.decode(CPUStatus.self, forKey: .cpu)
-        memory = try container.decode(MemoryStatus.self, forKey: .memory)
-        diskIO = try container.decode(DiskIOStatus.self, forKey: .diskIO)
-        networkHistory = try container.decodeIfPresent(NetworkHistory.self, forKey: .networkHistory) ?? .empty
-        proxy = try container.decode(ProxyStatus.self, forKey: .proxy)
-        thermal = try container.decode(ThermalStatus.self, forKey: .thermal)
+        self.collectedAt = try container.decode(Date.self, forKey: .collectedAt)
+        self.host = try container.decode(String.self, forKey: .host)
+        self.platform = try container.decode(String.self, forKey: .platform)
+        self.uptime = try container.decode(String.self, forKey: .uptime)
+        self.procs = try container.decode(UInt64.self, forKey: .procs)
+        self.hardware = try container.decode(HardwareInfo.self, forKey: .hardware)
+        self.healthScore = try container.decode(Int.self, forKey: .healthScore)
+        self.healthScoreMsg = try container.decode(String.self, forKey: .healthScoreMsg)
+        self.cpu = try container.decode(CPUStatus.self, forKey: .cpu)
+        self.memory = try container.decode(MemoryStatus.self, forKey: .memory)
+        self.diskIO = try container.decode(DiskIOStatus.self, forKey: .diskIO)
+        self.networkHistory = try container.decodeIfPresent(NetworkHistory.self, forKey: .networkHistory) ?? .empty
+        self.proxy = try container.decode(ProxyStatus.self, forKey: .proxy)
+        self.thermal = try container.decode(ThermalStatus.self, forKey: .thermal)
 
         // Arrays that can be null in JSON
-        gpu = try container.decodeIfPresent([GPUStatus].self, forKey: .gpu) ?? []
-        disks = try container.decodeIfPresent([DiskStatus].self, forKey: .disks) ?? []
-        network = try container.decodeIfPresent([NetworkStatus].self, forKey: .network) ?? []
-        batteries = try container.decodeIfPresent([BatteryStatus].self, forKey: .batteries) ?? []
-        sensors = try container.decodeIfPresent([SensorReading].self, forKey: .sensors) ?? []
-        bluetooth = try container.decodeIfPresent([BluetoothDevice].self, forKey: .bluetooth) ?? []
-        topProcesses = try container.decodeIfPresent([MoleProcessInfo].self, forKey: .topProcesses) ?? []
+        self.gpu = try container.decodeIfPresent([GPUStatus].self, forKey: .gpu) ?? []
+        self.disks = try container.decodeIfPresent([DiskStatus].self, forKey: .disks) ?? []
+        self.network = try container.decodeIfPresent([NetworkStatus].self, forKey: .network) ?? []
+        self.batteries = try container.decodeIfPresent([BatteryStatus].self, forKey: .batteries) ?? []
+        self.sensors = try container.decodeIfPresent([SensorReading].self, forKey: .sensors) ?? []
+        self.bluetooth = try container.decodeIfPresent([BluetoothDevice].self, forKey: .bluetooth) ?? []
+        self.topProcesses = try container.decodeIfPresent([MoleProcessInfo].self, forKey: .topProcesses) ?? []
     }
 }
 
@@ -205,8 +205,8 @@ struct NetworkHistory: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        rxHistory = try container.decodeIfPresent([Double].self, forKey: .rxHistory) ?? []
-        txHistory = try container.decodeIfPresent([Double].self, forKey: .txHistory) ?? []
+        self.rxHistory = try container.decodeIfPresent([Double].self, forKey: .rxHistory) ?? []
+        self.txHistory = try container.decodeIfPresent([Double].self, forKey: .txHistory) ?? []
     }
 }
 
@@ -278,7 +278,7 @@ enum MetricsFormatter {
         var value = Double(bytes)
         var unitIndex = 0
 
-        while value >= 1024 && unitIndex < units.count - 1 {
+        while value >= 1024, unitIndex < units.count - 1 {
             value /= 1024
             unitIndex += 1
         }
@@ -288,18 +288,18 @@ enum MetricsFormatter {
 
     static func formatRate(_ mbps: Double) -> String {
         if mbps < 1.0 {
-            return String(format: "%.0f KB/s", mbps * 1024)
+            String(format: "%.0f KB/s", mbps * 1024)
         } else {
-            return String(format: "%.2f MB/s", mbps)
+            String(format: "%.2f MB/s", mbps)
         }
     }
 
     static func healthEmoji(score: Int) -> String {
         switch score {
-        case 90 ... 100: return "💚"
-        case 75 ..< 90: return "💛"
-        case 60 ..< 75: return "🧡"
-        default: return "❤️"
+        case 90 ... 100: "💚"
+        case 75 ..< 90: "💛"
+        case 60 ..< 75: "🧡"
+        default: "❤️"
         }
     }
 }
@@ -336,8 +336,10 @@ final class MetricsModel {
             fmt.formatOptions = [.withInternetDateTime]
             if let date = fmt.date(from: str) { return date }
             throw DecodingError.dataCorrupted(
-                .init(codingPath: decoder.codingPath,
-                      debugDescription: "Invalid date: \(str)")
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Invalid date: \(str)"
+                )
             )
         }
         return d
@@ -408,7 +410,7 @@ final class MetricsModel {
         errorMessage = nil
 
         updateTask = Task {
-            while !Task.isCancelled && isConnected {
+            while !Task.isCancelled, isConnected {
                 let cycleStart = Date()
                 do {
                     try await fetchMetrics()
@@ -516,6 +518,7 @@ final class MetricsModel {
         let rxSample = (!snap.network.isEmpty || totalRx > 0) ? totalRx : snap.networkHistory.rxHistory.last
         let txSample = (!snap.network.isEmpty || totalTx > 0) ? totalTx : snap.networkHistory.txHistory.last
 
+        // swiftformat:disable:next redundantSelf
         logger.debug("Network update - RX: \(totalRx), TX: \(totalTx), History size: \(self.networkRxHistory.count)")
 
         if let rxSample {

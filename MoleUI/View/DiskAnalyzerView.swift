@@ -210,7 +210,7 @@ struct DiskAnalyzerView: View {
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if entry.isDirectory && entry.children > 0 {
+                if entry.isDirectory, entry.children > 0 {
                     Text("\(entry.children) items")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
@@ -270,11 +270,11 @@ struct DiskAnalyzerView: View {
 
     private static func barColor(for percent: Double) -> Color {
         switch percent {
-        case 0.50...: return .red
-        case 0.25...: return .orange
-        case 0.10...: return .yellow
-        case 0.03...: return .blue
-        default: return .teal
+        case 0.50...: .red
+        case 0.25...: .orange
+        case 0.10...: .yellow
+        case 0.03...: .blue
+        default: .teal
         }
     }
 }

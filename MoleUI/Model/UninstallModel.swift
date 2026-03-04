@@ -16,7 +16,7 @@ struct AppInfo: Identifiable, @unchecked Sendable {
         name: String, bundleIdentifier: String?, version: String?,
         sizeBytes: UInt64, icon: NSImage, path: URL, lastUsed: Date?
     ) {
-        id = path.path
+        self.id = path.path
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.version = version
@@ -41,8 +41,8 @@ final class AppScanModel {
         apps = []
 
         Task.detached { [weak self] in
-            guard let self = self else { return }
-            let scanned = self.performScan()
+            guard let self else { return }
+            let scanned = performScan()
             await MainActor.run {
                 self.apps = scanned
                 self.isScanning = false

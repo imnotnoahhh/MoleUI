@@ -83,7 +83,7 @@ final class OptimizeModel {
     }
 
     func runAllSafe(dryRun: Bool = false) async {
-        guard let tasks = report?.optimizations.filter({ $0.safe }) else { return }
+        guard let tasks = report?.optimizations.filter(\.safe) else { return }
         for task in tasks {
             if failedTasks.contains(task.action) || completedTasks.contains(task.action) {
                 continue

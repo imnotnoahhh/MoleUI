@@ -57,8 +57,8 @@ struct CleanView: View {
         }
         .onChange(of: service.scanResults) { _, newValue in
             // Auto-select safe categories after scan
-            if autoSelectSafeItems && !newValue.isEmpty && selectedCategories.isEmpty {
-                selectedCategories = Set(newValue.filter { $0.category.safe }.map(\.id))
+            if autoSelectSafeItems, !newValue.isEmpty, selectedCategories.isEmpty {
+                selectedCategories = Set(newValue.filter(\.category.safe).map(\.id))
             }
         }
         .alert(dryRunMode ? "Confirm Preview" : "Confirm Clean", isPresented: $showConfirmation) {
@@ -67,9 +67,9 @@ struct CleanView: View {
                 Task { await service.cleanSelected(categories: selectedCategories, dryRun: dryRunMode) }
             }
         } message: {
-            let safeCount = selectedCategories.filter { id in
+            let safeCount = selectedCategories.count(where: { id in
                 service.scanResults.first(where: { $0.id == id })?.category.safe ?? false
-            }.count
+            })
             let unsafeCount = selectedCategories.count - safeCount
 
             if dryRunMode {
@@ -288,7 +288,7 @@ struct CleanView: View {
             }
         }
 
-        if service.isScanning && service.scanResults.isEmpty {
+        if service.isScanning, service.scanResults.isEmpty {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning...")
@@ -310,7 +310,7 @@ struct CleanView: View {
 
         if !service.scanResults.isEmpty {
             // Safe categories (always visible)
-            ForEach(service.scanResults.filter { $0.category.safe }) { result in
+            ForEach(service.scanResults.filter(\.category.safe)) { result in
                 categoryRow(result)
             }
 

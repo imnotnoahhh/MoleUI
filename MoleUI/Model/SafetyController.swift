@@ -94,7 +94,7 @@ final class SafetyController {
             lastResult = ExecutionResult(
                 success: true,
                 message: "预览模式：将清理 \(preview.formattedSize)",
-                details: preview.files.map { $0.path }.joined(separator: "\n"),
+                details: preview.files.map(\.path).joined(separator: "\n"),
                 cleanedSize: preview.totalSize,
                 duration: 0
             )

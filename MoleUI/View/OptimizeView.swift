@@ -13,7 +13,7 @@ struct OptimizeView: View {
                 dryRunBanner
             }
             Group {
-                if service.isScanning && service.report == nil {
+                if service.isScanning, service.report == nil {
                     ProgressView("Scanning system health...")
                 } else if let error = service.errorMessage, service.report == nil {
                     ContentUnavailableView(
@@ -43,7 +43,7 @@ struct OptimizeView: View {
         .onChange(of: service.report) { _, newValue in
             // Auto-select safe tasks after loading report
             if autoSelectSafeItems, let report = newValue, selectedTasks.isEmpty {
-                selectedTasks = Set(report.optimizations.filter { $0.safe }.map(\.action))
+                selectedTasks = Set(report.optimizations.filter(\.safe).map(\.action))
             }
         }
     }
@@ -192,7 +192,7 @@ struct OptimizeView: View {
     // MARK: - Task List
 
     private func taskList(_ tasks: [OptimizationTask]) -> some View {
-        let safeTasks = tasks.filter { $0.safe }
+        let safeTasks = tasks.filter(\.safe)
         let advancedTasks = tasks.filter { !$0.safe }
 
         return GroupBox {

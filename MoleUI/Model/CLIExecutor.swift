@@ -38,15 +38,15 @@ final class CLIExecutor {
         var errorDescription: String? {
             switch self {
             case .timeout:
-                return "命令执行超时"
+                "命令执行超时"
             case .cancelled:
-                return "操作已取消"
-            case let .commandNotFound(cmd):
-                return "找不到命令: \(cmd)"
-            case let .nonZeroExit(code, stderr):
-                return "命令执行失败 (退出码: \(code))\n\(stderr)"
-            case let .invalidOutput(msg):
-                return "输出解析失败: \(msg)"
+                "操作已取消"
+            case .commandNotFound(let cmd):
+                "找不到命令: \(cmd)"
+            case .nonZeroExit(let code, let stderr):
+                "命令执行失败 (退出码: \(code))\n\(stderr)"
+            case .invalidOutput(let msg):
+                "输出解析失败: \(msg)"
             }
         }
     }
@@ -316,7 +316,7 @@ final class CLIExecutor {
                let end = line.firstIndex(of: "]")
             {
                 let bar = line[line.index(after: start) ..< end]
-                let filled = bar.filter { $0 == "=" || $0 == ">" }.count
+                let filled = bar.count(where: { $0 == "=" || $0 == ">" })
                 let total = bar.count
                 if total > 0 {
                     onProgress?(Double(filled) / Double(total), line)
@@ -328,7 +328,7 @@ final class CLIExecutor {
 
     /// 超时监控
     private func startTimeoutMonitor(timeout: TimeInterval?) -> Task<Void, Never>? {
-        guard let timeout = timeout else { return nil }
+        guard let timeout else { return nil }
 
         return Task {
             try? await Task.sleep(for: .seconds(timeout))
@@ -384,8 +384,11 @@ extension CLIExecutor {
                 return bundled
             }
         }
-        let candidates = ["/usr/local/bin/mole", "/opt/homebrew/bin/mole",
-                          NSHomeDirectory() + "/.config/mole/mole"]
+        let candidates = [
+            "/usr/local/bin/mole",
+            "/opt/homebrew/bin/mole",
+            NSHomeDirectory() + "/.config/mole/mole",
+        ]
         for path in candidates {
             guard fm.isExecutableFile(atPath: path) else { continue }
             let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath()
@@ -422,14 +425,14 @@ extension CLIExecutor {
             // Log detailed error information
             if let decodingError = error as? DecodingError {
                 switch decodingError {
-                case let .keyNotFound(key, context):
-                    logger.error("Key not found: \(key.stringValue) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case let .typeMismatch(type, context):
-                    logger.error("Type mismatch: expected \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case let .valueNotFound(type, context):
-                    logger.error("Value not found: \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case let .dataCorrupted(context):
-                    logger.error("Data corrupted at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                case .keyNotFound(let key, let context):
+                    logger.error("Key not found: \(key.stringValue) at path: \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+                case .typeMismatch(let type, let context):
+                    logger.error("Type mismatch: expected \(type) at path: \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+                case .valueNotFound(let type, let context):
+                    logger.error("Value not found: \(type) at path: \(context.codingPath.map(\.stringValue).joined(separator: "."))")
+                case .dataCorrupted(let context):
+                    logger.error("Data corrupted at path: \(context.codingPath.map(\.stringValue).joined(separator: "."))")
                     logger.error("Debug description: \(context.debugDescription)")
                 @unknown default:
                     logger.error("Unknown decoding error")

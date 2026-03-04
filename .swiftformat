@@ -1,0 +1,25 @@
+# SwiftFormat configuration for MoleUI
+# https://github.com/nicklockwood/SwiftFormat
+
+# Swift version
+--swiftversion 6.0
+
+# Keep explicit self in closures for Swift 6 concurrency
+--self init-only
+--selfrequired logger.debug
+
+# Other formatting rules
+--indent 4
+--indentcase false
+--trimwhitespace always
+--commas always
+--decimalgrouping 3,6
+--exponentcase lowercase
+--fractiongrouping disabled
+--hexgrouping 4,8
+--hexliteralcase uppercase
+--octalgrouping 4,8
+--patternlet inline
+--stripunusedargs closure-only
+--wraparguments before-first
+--wrapcollections before-first

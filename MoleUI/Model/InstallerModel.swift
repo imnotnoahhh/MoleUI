@@ -13,12 +13,12 @@ struct InstallerFile: Identifiable, Equatable {
     let fileExtension: String
 
     init(path: URL, name: String, sizeBytes: UInt64, source: String) {
-        id = path.path
+        self.id = path.path
         self.path = path
         self.name = name
         self.sizeBytes = sizeBytes
         self.source = source
-        fileExtension = path.pathExtension.lowercased()
+        self.fileExtension = path.pathExtension.lowercased()
     }
 }
 

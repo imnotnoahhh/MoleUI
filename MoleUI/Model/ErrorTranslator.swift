@@ -52,7 +52,7 @@ enum ErrorTranslator {
     ) -> UserFriendlyError {
         switch error {
         case .timeout:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "操作超时",
                 message: "操作执行时间过长，已自动取消",
                 suggestion: "这可能是因为需要清理的文件太多，或者系统负载较高",
@@ -66,7 +66,7 @@ enum ErrorTranslator {
             )
 
         case .cancelled:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "操作已取消",
                 message: "您已取消了当前操作",
                 suggestion: nil,
@@ -75,8 +75,8 @@ enum ErrorTranslator {
                 severity: .info
             )
 
-        case let .commandNotFound(cmd):
-            return UserFriendlyError(
+        case .commandNotFound(let cmd):
+            UserFriendlyError(
                 title: "找不到命令",
                 message: "无法找到 \(cmd) 命令",
                 suggestion: "Mole CLI 可能没有正确安装",
@@ -89,11 +89,11 @@ enum ErrorTranslator {
                 severity: .critical
             )
 
-        case let .nonZeroExit(code, stderr):
-            return translateExitCode(code, stderr: stderr, context: context)
+        case .nonZeroExit(let code, let stderr):
+            translateExitCode(code, stderr: stderr, context: context)
 
-        case let .invalidOutput(msg):
-            return UserFriendlyError(
+        case .invalidOutput(let msg):
+            UserFriendlyError(
                 title: "输出解析失败",
                 message: "无法理解命令的输出结果",
                 suggestion: "这可能是 Mole CLI 版本不兼容",
@@ -247,13 +247,13 @@ enum ErrorTranslator {
     ) -> UserFriendlyError {
         switch error.domain {
         case NSCocoaErrorDomain:
-            return translateCocoaError(error, context: context)
+            translateCocoaError(error, context: context)
 
         case NSPOSIXErrorDomain:
-            return translatePOSIXError(error, context: context)
+            translatePOSIXError(error, context: context)
 
         default:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "系统错误",
                 message: error.localizedDescription,
                 suggestion: "这是一个系统级错误",
@@ -270,7 +270,7 @@ enum ErrorTranslator {
     ) -> UserFriendlyError {
         switch error.code {
         case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "权限不足",
                 message: "没有权限访问此文件",
                 suggestion: "请检查文件权限设置",
@@ -280,7 +280,7 @@ enum ErrorTranslator {
             )
 
         case NSFileNoSuchFileError:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "文件不存在",
                 message: "找不到指定的文件",
                 suggestion: "文件可能已被删除",
@@ -290,7 +290,7 @@ enum ErrorTranslator {
             )
 
         default:
-            return UserFriendlyError(
+            UserFriendlyError(
                 title: "文件操作失败",
                 message: error.localizedDescription,
                 suggestion: nil,
@@ -422,7 +422,7 @@ struct ErrorView: View {
                     onDismiss()
                 }
 
-                if let onRetry = onRetry {
+                if let onRetry {
                     Button("重试") {
                         onRetry()
                     }
@@ -436,19 +436,19 @@ struct ErrorView: View {
 
     private var iconName: String {
         switch error.severity {
-        case .info: return "info.circle"
-        case .warning: return "exclamationmark.triangle"
-        case .error: return "xmark.circle"
-        case .critical: return "exclamationmark.octagon"
+        case .info: "info.circle"
+        case .warning: "exclamationmark.triangle"
+        case .error: "xmark.circle"
+        case .critical: "exclamationmark.octagon"
         }
     }
 
     private var iconColor: Color {
         switch error.severity {
-        case .info: return .blue
-        case .warning: return .orange
-        case .error: return .red
-        case .critical: return .red
+        case .info: .blue
+        case .warning: .orange
+        case .error: .red
+        case .critical: .red
         }
     }
 }
