@@ -134,7 +134,6 @@ final class AppScanModel {
     private nonisolated func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
-
 }
 
 // MARK: - Uninstaller

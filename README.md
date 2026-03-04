@@ -72,6 +72,10 @@ Run tests from Xcode (Cmd+U) or command line:
 ```bash
 xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+# Test suites:
+# - MoleCoreTests: 39 core functionality tests
+# - UIFlowTests: 6 critical user flow tests
 ```
 
 ## Contributing
@@ -98,22 +102,22 @@ MoleUI implements a complete auto-update workflow that automatically detects, va
 
 ## Architecture
 
-MV (Model-View) architecture with Swift's `@Observable` macro, acting primarily as a UI wrapper over the Mole CLI, with some native bridging:
+MV (Model-View) architecture with Swift's `@Observable` macro, acting primarily as a UI wrapper over the Mole CLI, with native bridging for JSON parsing and file system operations:
 
 ```
 MoleUI/
 ├── Model/          # @Observable domain models (state + logic)
-│   ├── MetricsModel.swift      # System metrics & dashboard data
-│   ├── CleanModel.swift        # Cleanup scanning & execution
-│   ├── DiskModel.swift         # Disk space analysis
-│   ├── OptimizeModel.swift     # System optimization
-│   ├── PurgeModel.swift        # Large file purge
-│   ├── InstallerModel.swift    # Installer management
-│   ├── UninstallModel.swift    # App scanning & uninstall
+│   ├── MetricsModel.swift      # System metrics & dashboard data (via mole status --json)
+│   ├── CleanModel.swift        # Cleanup scanning & execution (via mole clean)
+│   ├── DiskModel.swift         # Disk space analysis (via mole analyze --json)
+│   ├── OptimizeModel.swift     # System optimization (via mole optimize)
+│   ├── PurgeModel.swift        # Large file purge (via mole purge)
+│   ├── InstallerModel.swift    # Installer management (via mole installer)
+│   ├── UninstallModel.swift    # App scanning & uninstall (via mole uninstall)
 │   ├── SettingsModel.swift     # Whitelist & preferences
 │   ├── VersionModel.swift      # CLI version checking
 │   ├── SafetyController.swift  # Confirmation & dry-run
-│   ├── CLIExecutor.swift       # Mole CLI process wrapper
+│   ├── CLIExecutor.swift       # Mole CLI process wrapper & JSON parser
 │   ├── ErrorTranslator.swift   # User-friendly error mapping
 │   └── SudoHelper.swift        # Privilege escalation
 └── View/           # Pure SwiftUI views (UI only)
@@ -131,9 +135,11 @@ MoleUI/
     └── SidebarView.swift       # Navigation sidebar
 ```
 
-- Model: `@Observable @MainActor` classes, injected via `.environment()`. Performs CLI orchestration and native JSON/FileSystem bridging where needed.
+**Key principles:**
+- Model: `@Observable @MainActor` classes, injected via `.environment()`. Delegates to Mole CLI for core operations.
 - View: reads Model state through `@Environment(XxxModel.self)`
 - Swift 6 strict concurrency
+- Hybrid architecture: GUI wraps Mole CLI Go/Bash kernel for data accuracy and feature parity
 
 ## Credits
 

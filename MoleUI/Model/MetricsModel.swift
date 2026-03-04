@@ -339,7 +339,6 @@ final class MetricsModel {
 
     // Note: No deinit needed - Task will be automatically cancelled when the object is deallocated
 
-
     func start() {
         guard !isConnected else {
             logger.warning("Already connected")

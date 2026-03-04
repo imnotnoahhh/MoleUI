@@ -421,29 +421,29 @@ final class CleanModel {
     }
 
     // MARK: - Mole Core Scan
-    
+
     private func scanCategoryWithMoleCore(_ category: CleanCategory) async throws -> (bytes: UInt64, count: Int) {
         let subcommand = category.moleCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !subcommand.isEmpty else {
             return (bytes: 0, count: 0)
         }
-        
+
         guard let root = CLIExecutor.findMoleRoot() else {
             return (bytes: 0, count: 0)
         }
 
         // We use Mole's core functions to compute sizes accurately without hanging the UI
         let pathsList = category.paths.map { shellEscape($0) }.joined(separator: " ")
-        let _ = category.excludePaths.map { shellEscape($0) }.joined(separator: " ")
+        _ = category.excludePaths.map { shellEscape($0) }.joined(separator: " ")
 
         let script = """
         set -euo pipefail
         ROOT=\(shellEscape(root.path))
         source "$ROOT/lib/core/common.sh"
-        
+
         total_kb=0
         total_files=0
-        
+
         # Check an array of paths and sum them using Mole's get_path_size_kb
         check_paths() {
             local search_paths=("$@")
@@ -470,24 +470,24 @@ final class CleanModel {
                 fi
             done
         }
-        
+
         # Only process if we have paths
         if [[ -n "\(pathsList)" ]]; then
            eval "scan_paths=(\(pathsList))"
            check_paths "${scan_paths[@]}"
         fi
-        
+
         # Output result
         echo "$total_kb|$total_files"
         """
 
         let output = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
         let lines = output.split(separator: "\n").map { String($0) }
-        
+
         for line in lines {
             let parts = line.split(separator: "|")
             if parts.count == 2, let kb = UInt64(parts[0]), let count = Int(parts[1]) {
-                 return (bytes: kb * 1024, count: count)
+                return (bytes: kb * 1024, count: count)
             }
         }
 

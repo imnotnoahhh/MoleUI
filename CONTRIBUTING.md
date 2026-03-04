@@ -208,6 +208,27 @@ Help make Mole UI faster and more responsive.
 
 Before submitting any code, ensure it passes all quality checks.
 
+### CI Pipeline
+
+The project uses GitHub Actions with three parallel jobs:
+
+1. **Code Quality** (SwiftFormat + SwiftLint)
+   - Validates code formatting
+   - Enforces Swift style conventions
+   - Must pass with 0 violations
+
+2. **Build & Test** (depends on Code Quality)
+   - Compiles the project
+   - Runs 45+ unit and UI tests
+   - Validates CLI integration
+
+3. **Security Scan** (parallel with Build & Test)
+   - Detects hardcoded secrets
+   - Checks for unsafe Swift patterns
+   - Validates security best practices
+
+All jobs run on macOS 15 and must pass before merge.
+
 ### SwiftFormat
 
 SwiftFormat automatically formats Swift code to maintain consistent style.
@@ -288,11 +309,24 @@ xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 ```
 
+**Test suites**:
+- **MoleCoreTests.swift**: Core functionality tests
+  - Version comparison and parsing
+  - MetricsSnapshot JSON decoding (Mole CLI output)
+  - Error translation and user-friendly messages
+  - CLI integration tests (binary discovery, command execution)
+  - CI assumption tests (bundled resources, file permissions)
+- **UIFlowTests.swift**: Critical user flow tests
+  - App launch and navigation
+  - Destructive operation confirmations (Clean, Purge, Uninstall)
+  - Dashboard metrics display
+
 **Test coverage priorities**:
 - JSON decoding for Mole CLI output
 - Error handling and user-friendly messages
 - Edge cases (empty data, missing files, permission errors)
-- Performance benchmarks for large datasets
+- CLI integration and binary discovery
+- UI flows for destructive operations
 
 ---
 
@@ -313,7 +347,9 @@ just build            # Verify it compiles
 xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-# All 24 tests must pass
+# Tests include:
+# - 39 core functionality tests (MoleCoreTests)
+# - 6 UI flow tests (UIFlowTests)
 ```
 
 **Manual Testing**
@@ -397,7 +433,10 @@ Closes #123
 
 ### Review Process
 
-1. **Automated checks run** — CI builds and tests
+1. **Automated checks run** — CI validates code quality, builds, tests, and security
+   - **Code Quality**: SwiftFormat + SwiftLint checks
+   - **Build & Test**: Compilation + 45+ unit and UI tests
+   - **Security Scan**: Hardcoded secrets detection, unsafe pattern checks
 2. **Maintainer review** — usually within 2-3 days
 3. **Address feedback** — make requested changes
 4. **Approval and merge** — squash merge to main

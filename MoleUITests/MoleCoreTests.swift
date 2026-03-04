@@ -283,6 +283,16 @@ private let sampleMetricsJSON = """
     }
 }
 
+// MARK: - InstallerConstants
+
+@Test func installerExtensions() {
+    let exts = InstallerConstants.extensions
+    #expect(exts.contains("dmg"))
+    #expect(exts.contains("pkg"))
+    #expect(exts.contains("zip"))
+    #expect(exts.contains("iso"))
+}
+
 @Test func installerScanPaths() {
     let paths = InstallerConstants.scanPaths
     #expect(!paths.isEmpty)
@@ -363,23 +373,6 @@ struct CLIIntegrationTests {
     #expect(protected.contains("bin"))
 }
 
-}
-
-// MARK: - InstallerConstants
-
-@Test func installerExtensions() {
-    let exts = InstallerConstants.extensions
-    #expect(exts.contains("dmg"))
-    #expect(exts.contains("pkg"))
-    #expect(exts.contains("zip"))
-    #expect(exts.contains("iso"))
-}
-
-@Test func installerScanPaths() {
-    let paths = InstallerConstants.scanPaths
-    #expect(!paths.isEmpty)
-}
-
 // MARK: - CI Assumption Tests (P2)
 
 @Suite("CI Assumption Tests")
@@ -388,19 +381,15 @@ struct CIAssumptionTests {
     // Verify the .mole-cli-version file is bundled in app resources
     @Test("Bundled .mole-cli-version file exists and is readable")
     func testMoleCLIVersionFileBundled() throws {
-        guard let versionURL = Bundle.main.url(forResource: ".mole-cli-version", withExtension: nil)
-            ?? Bundle.main.url(forResource: "mole-cli-version", withExtension: nil) else {
-            // Also try in the mole subdirectory
-            let resourceURL = Bundle.main.resourceURL?.appendingPathComponent(".mole-cli-version")
-            guard let resourceURL, FileManager.default.fileExists(atPath: resourceURL.path) else {
-                throw XCTSkip(".mole-cli-version not bundled in test target resources")
-            }
-            let contents = try String(contentsOf: resourceURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-            #expect(!contents.isEmpty, ".mole-cli-version should have content")
-            return
-        }
-        let contents = try String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let versionURL = Bundle.main.url(forResource: ".mole-cli-version", withExtension: nil)
+            ?? Bundle.main.url(forResource: "mole-cli-version", withExtension: nil)
+            ?? Bundle.main.resourceURL?.appendingPathComponent(".mole-cli-version")
+
+        #expect(versionURL != nil, ".mole-cli-version must be bundled in app resources")
+
+        let contents = try String(contentsOf: versionURL!, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(!contents.isEmpty, ".mole-cli-version should have content")
+
         // Version should be semver-like: digits.digits.digits
         let isVersionLike = contents.range(of: #"^\d+\.\d+\.\d+"#, options: .regularExpression) != nil
         #expect(isVersionLike, "Version '\(contents)' should be in semver format")
@@ -423,19 +412,19 @@ struct CIAssumptionTests {
     // Bundled mole binary has the correct executable permission
     @Test("Bundled mole binary is executable")
     func testBundledMoleBinaryIsExecutable() throws {
-        guard let binary = CLIExecutor.findMoleBinary() else {
-            throw XCTSkip("Bundled mole binary not found - cannot test executable permission")
-        }
+        let binary = CLIExecutor.findMoleBinary()
+        #expect(binary != nil, "Bundled mole binary must exist in app bundle")
+
         let fm = FileManager.default
-        #expect(fm.isExecutableFile(atPath: binary.path), "mole binary at \(binary.path) must be executable")
+        #expect(fm.isExecutableFile(atPath: binary!.path), "mole binary at \(binary!.path) must be executable")
     }
 
     // Required Mole scripts exist next to the binary
     @Test("Required Mole scripts exist in bundle")
     func testRequiredMoleScriptsExist() throws {
-        guard let root = CLIExecutor.findMoleRoot() else {
-            throw XCTSkip("Mole root not found - cannot test script existence")
-        }
+        let root = CLIExecutor.findMoleRoot()
+        #expect(root != nil, "Mole root directory must exist in app bundle")
+
         let fm = FileManager.default
         let requiredScripts = [
             "bin/clean.sh",
@@ -445,7 +434,7 @@ struct CIAssumptionTests {
             "bin/uninstall.sh",
         ]
         for script in requiredScripts {
-            let path = root.appendingPathComponent(script).path
+            let path = root!.appendingPathComponent(script).path
             #expect(fm.fileExists(atPath: path), "Required script missing: \(script)")
             #expect(fm.isExecutableFile(atPath: path), "Script not executable: \(script)")
         }

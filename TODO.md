@@ -50,33 +50,34 @@
 ## Priority 2: CI & Testing
 
 ### CI Pipeline Improvements
-- [ ] Add automated UI tests
-- [ ] Add integration tests for CLI execution
+- ✅ Add automated UI tests
+- ✅ Add integration tests for CLI execution
+- ✅ Add security scanning
 - [ ] Add performance regression tests
 - [ ] Test on multiple macOS versions (14.0, 15.0, 26.0)
 - [ ] Add code coverage reporting
 
-**Estimated effort**: 8-12 hours
+**Estimated effort**: 4-6 hours
 **Difficulty**: Medium
 **Priority**: High
 
 ### Build & Release Automation
-- [ ] Optimize build time
-- [ ] Add automated DMG creation
-- [ ] Add automated notarization
+- ✅ Optimize build time
+- ✅ Add automated DMG creation
+- ✅ Add automated notarization
 - [ ] Add release notes generation
 
-**Estimated effort**: 4-6 hours
+**Estimated effort**: 2 hours
 **Difficulty**: Low
 **Priority**: Medium
 
 ### Quality Checks
-- [ ] Add SwiftLint to CI
-- [ ] Add SwiftFormat verification
-- [ ] Add security scanning
+- ✅ Add SwiftLint to CI
+- ✅ Add SwiftFormat verification
+- ✅ Add security scanning
 - [ ] Add dependency vulnerability checks
 
-**Estimated effort**: 3-4 hours
+**Estimated effort**: 1 hour
 **Difficulty**: Low
 **Priority**: Medium
 
@@ -209,6 +210,7 @@
 - ✅ App Uninstaller
 - ✅ Whitelist Management
 - ✅ Settings & About
+- ✅ Unified Mole binary discovery (CLIExecutor.findMoleBinary)
 
 ### UX Improvements
 - ✅ One-click clean and optimize
@@ -221,10 +223,14 @@
 - ✅ Fixed Mole CLI analyze TTY dependency (PR #533)
 - ✅ CI with SwiftFormat and SwiftLint
 - ✅ Automated DMG build and notarization
+- ✅ Security scanning in CI
+- ✅ Three-stage CI pipeline (code-quality, build-and-test, security-scan)
 
 ### Bug Fixes
 - ✅ Disk Analyzer sorting by size
 - ✅ Basic performance optimization (limit 100 items)
+- ✅ Clean all selected categories (not just first one)
+- ✅ Uninstall scan error propagation
 
 ## Notes
 

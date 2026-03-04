@@ -192,7 +192,6 @@ final class CLIExecutor {
 
     // MARK: - Private Methods
 
-
     /// 读取输出流
     private func startReadingOutput(
         pipe: Pipe,

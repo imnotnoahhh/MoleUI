@@ -34,14 +34,13 @@ Verifies all required files exist:
 ```
 Resources/mole/mole                    # Main entry script
 Resources/mole/bin/analyze-go          # Disk analysis binary
+Resources/mole/bin/status-go           # System metrics binary
 Resources/mole/bin/clean.sh            # Cleanup script
 Resources/mole/bin/optimize.sh         # Optimization script
 Resources/mole/bin/purge.sh            # Deep cleanup script
 Resources/mole/bin/installer.sh        # Installer script
 Resources/mole/bin/uninstall.sh        # Uninstall script
 ```
-
-> **Note:** `status-go` was removed from required files in MoleUI 0.1.2 when the Dashboard was migrated to native Swift APIs.
 
 ### 2.2 Command Execution Check
 
