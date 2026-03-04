@@ -40,7 +40,7 @@ struct OptimizeView: View {
         .task {
             await service.loadReport()
         }
-        .onChange(of: service.report) { oldValue, newValue in
+        .onChange(of: service.report) { _, newValue in
             // Auto-select safe tasks after loading report
             if autoSelectSafeItems, let report = newValue, selectedTasks.isEmpty {
                 selectedTasks = Set(report.optimizations.filter { $0.safe }.map(\.action))

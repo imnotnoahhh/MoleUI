@@ -55,7 +55,7 @@ struct CleanView: View {
         .task {
             await service.scan()
         }
-        .onChange(of: service.scanResults) { oldValue, newValue in
+        .onChange(of: service.scanResults) { _, newValue in
             // Auto-select safe categories after scan
             if autoSelectSafeItems && !newValue.isEmpty && selectedCategories.isEmpty {
                 selectedCategories = Set(newValue.filter { $0.category.safe }.map(\.id))

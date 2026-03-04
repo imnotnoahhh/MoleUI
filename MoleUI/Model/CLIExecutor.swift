@@ -422,13 +422,13 @@ extension CLIExecutor {
             // Log detailed error information
             if let decodingError = error as? DecodingError {
                 switch decodingError {
-                case .keyNotFound(let key, let context):
+                case let .keyNotFound(key, context):
                     logger.error("Key not found: \(key.stringValue) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case .typeMismatch(let type, let context):
+                case let .typeMismatch(type, context):
                     logger.error("Type mismatch: expected \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case .valueNotFound(let type, let context):
+                case let .valueNotFound(type, context):
                     logger.error("Value not found: \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case .dataCorrupted(let context):
+                case let .dataCorrupted(context):
                     logger.error("Data corrupted at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                     logger.error("Debug description: \(context.debugDescription)")
                 @unknown default:

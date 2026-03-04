@@ -296,9 +296,9 @@ enum MetricsFormatter {
 
     static func healthEmoji(score: Int) -> String {
         switch score {
-        case 90...100: return "💚"
-        case 75..<90: return "💛"
-        case 60..<75: return "🧡"
+        case 90 ... 100: return "💚"
+        case 75 ..< 90: return "💛"
+        case 60 ..< 75: return "🧡"
         default: return "❤️"
         }
     }
@@ -311,7 +311,7 @@ final class MetricsModel {
     var snapshot: MetricsSnapshot?
     var isConnected = false
     var errorMessage: String?
-    var refreshRate: Double = 1.0  // 1 second refresh to match Mole TUI
+    var refreshRate: Double = 1.0 // 1 second refresh to match Mole TUI
     var cpuHistory: [Double] = []
     var memoryHistory: [Double] = []
     var diskIOReadHistory: [Double] = []
@@ -359,19 +359,19 @@ final class MetricsModel {
         let fm = FileManager.default
 
         #if DEBUG
-        // Development: prefer project Resources first.
-        let projectPath = URL(fileURLWithPath: #file)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/mole/mole")
+            // Development: prefer project Resources first.
+            let projectPath = URL(fileURLWithPath: #file)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Resources/mole/mole")
 
-        logger.debug("Checking project path: \(projectPath.path)")
-        if fm.isExecutableFile(atPath: projectPath.path) {
-            logger.info("Found project binary: \(projectPath.path)")
-            cachedMolePath = projectPath
-            return projectPath
-        }
+            logger.debug("Checking project path: \(projectPath.path)")
+            if fm.isExecutableFile(atPath: projectPath.path) {
+                logger.info("Found project binary: \(projectPath.path)")
+                cachedMolePath = projectPath
+                return projectPath
+            }
         #endif
 
         // Primary runtime source: bundled Resources.

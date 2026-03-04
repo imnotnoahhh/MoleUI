@@ -10,13 +10,13 @@ struct CleanCategory: Identifiable, Sendable, Equatable {
     let paths: [String]
     let excludePaths: [String]
     let moleCommand: String
-    let safe: Bool  // Safe to clean without user concern
+    let safe: Bool // Safe to clean without user concern
 
     init(
         id: String, name: String, icon: String,
         paths: [String], excludePaths: [String] = [],
         moleCommand: String,
-        safe: Bool = true  // Default to safe
+        safe: Bool = true // Default to safe
     ) {
         self.id = id
         self.name = name
@@ -261,7 +261,7 @@ struct CleanCategory: Identifiable, Sendable, Equatable {
                 home + "/.cache/wget",
             ],
             moleCommand: "clean dev",
-            safe: false  // May contain important build artifacts
+            safe: false // May contain important build artifacts
         ),
 
         // MARK: System Logs & Temp
