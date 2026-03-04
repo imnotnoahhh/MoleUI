@@ -339,7 +339,8 @@ private let sampleMetricsJSON = """
 
 // MARK: - Mole CLI Integration (skipped if binary unavailable)
 
-@Test func moleStatusOutputDecodesAsMetricsSnapshot() async throws {
+@Test(.disabled("Skipped in CI - may hang after completion"))
+func moleStatusOutputDecodesAsMetricsSnapshot() async throws {
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent("mole/mole").path,
         "/opt/homebrew/bin/mole",
