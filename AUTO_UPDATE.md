@@ -33,7 +33,6 @@ When a new version is detected, the system performs strict compatibility validat
 Verifies all required files exist:
 ```
 Resources/mole/mole                    # Main entry script
-Resources/mole/bin/status-go           # System monitoring binary
 Resources/mole/bin/analyze-go          # Disk analysis binary
 Resources/mole/bin/clean.sh            # Cleanup script
 Resources/mole/bin/optimize.sh         # Optimization script
@@ -41,6 +40,8 @@ Resources/mole/bin/purge.sh            # Deep cleanup script
 Resources/mole/bin/installer.sh        # Installer script
 Resources/mole/bin/uninstall.sh        # Uninstall script
 ```
+
+> **Note:** `status-go` was removed from required files in MoleUI 0.1.2 when the Dashboard was migrated to native Swift APIs.
 
 ### 2.2 Command Execution Check
 
@@ -114,9 +115,10 @@ If compatibility checks pass:
    gh pr merge {PR_NUMBER} --squash --auto --delete-branch
    ```
 
-5. **Create Release Tag**
+5. **Create Release Tag** *(only if auto-merge succeeds)*
    ```bash
-   # Tag uses MoleUI version (independent from Mole CLI version)
+   # Tag creation is gated on steps.auto_merge.outputs.merged == 'true'
+   # ensuring no tag is pushed if CI checks fail or branch protection blocks the merge
    git tag -a "v{moleui_version}" -m "Release v{moleui_version}
 
    MoleUI version: {moleui_version}

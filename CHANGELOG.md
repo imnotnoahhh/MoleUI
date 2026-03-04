@@ -7,20 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Architecture Note**: MoleUI now uses a hybrid architecture. The native Swift implementations of the Dashboard, Clean, and Disk Analyzer models have been reverted to delegate to the Mole CLI Go/Bash kernel. This yields better data accuracy, feature parity with the TUI, and reduced maintenance surface.
+
+### Added
+- CLI integration tests in `MoleUITests` covering `CLIExecutor.findMoleRoot`, `findMoleBinary`, and JSON parsing
+- `AppScanModel.errorMessage` state to surface uninstall scan failures to the UI
+
 ### Changed
-- Disk Analyzer now uses Go kernel (`mole analyze --json`) instead of Swift native implementation
-- Improved Disk Analyzer performance by limiting display to top 100 entries
-- Simplified Disk Analyzer UI for better scrolling performance
+- `DiskModel`, `MetricsModel`, `UninstallModel`, `VersionModel`: unified Mole binary discovery via `CLIExecutor.findMoleBinary()` (eliminated four duplicate implementations)
+- `AppScanModel.performScan()` now propagates script errors via `throw` instead of silently returning empty results
+- `auto-update-mole.yml`: tag creation now gated on `steps.auto_merge.outputs.merged == 'true'` (prevents releasing if PR merge fails due to CI or branch protection)
+- `AUTO_UPDATE.md`: removed stale `status-go` file check requirement; added merge-gate documentation
 
 ### Fixed
-- Disk Analyzer entries now sorted by size (largest first)
-- Fixed scrolling lag in Disk Analyzer view
+- `auto-update-mole.yml`: version-stripping bug where `V` prefix was being stripped from `RAW_TAG` instead of from `LATEST`
+- `PurgeView.swift`: UI text now correctly shows Application Support path instead of `~/.config/mole`
+- `UninstallModel.swift`: `MOLE_TEST_MODE=1` prevents interactive TUI from blocking non-interactive scan
+- `UninstallModel.swift`: `mktemp` template fixed for macOS compatibility
+- `UninstallModel.swift`: `SCRIPT_DIR` dynamically patched via `sed` for correct dependency resolution
 
-### Planned
-- SMC temperature reading for accurate CPU/GPU temperatures
-- GPU monitoring enhancements
-- Fan speed monitoring
-- Improved health score algorithm
 
 ## [0.1.2-beta.1] - 2026-03-04
 
@@ -54,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.2] - 2026-03-03
 
+> **[Editor's Note (0.1.3)]**: The native implementations introduced in this version were later reverted in [0.1.3] due to performance regressions and data accuracy issues. MoleUI has fully committed to a hybrid architecture bridging the robust Go/Bash Mole CLI core instead.
+
 ### Added
 - Native Swift implementation for system monitoring (replaces status-go)
   - CPU monitoring with per-core usage and P/E core detection
@@ -69,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub issue template for upstream Mole CLI fix (MOLE_CLI_ISSUE.md)
 
 ### Changed
-- Dashboard now uses native Swift APIs instead of calling status-go binary
+- Dashboard now uses native Swift APIs instead of calling status-go binary *(Note: Reverted in 0.1.3)*
 - Auto-update workflow no longer checks status-go compatibility
 - Health score calculation uses more aggressive algorithm
 - Machine model display simplified (e.g., "MacBook Pro" instead of full model name)
