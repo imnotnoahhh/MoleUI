@@ -33,6 +33,7 @@ When a new version is detected, the system performs strict compatibility validat
 Verifies all required files exist:
 ```
 Resources/mole/mole                    # Main entry script
+Resources/mole/bin/status-go           # System monitoring binary
 Resources/mole/bin/analyze-go          # Disk analysis binary
 Resources/mole/bin/clean.sh            # Cleanup script
 Resources/mole/bin/optimize.sh         # Optimization script
@@ -41,13 +42,12 @@ Resources/mole/bin/installer.sh        # Installer script
 Resources/mole/bin/uninstall.sh        # Uninstall script
 ```
 
-**Note:** `status-go` is NOT checked because MoleUI uses a native Swift implementation for system monitoring. See [NATIVE_IMPLEMENTATION.md](NATIVE_IMPLEMENTATION.md) for details.
-
 ### 2.2 Command Execution Check
 
 Verifies all subcommands work correctly:
 ```bash
 mole version        # Version info
+mole status --help  # System monitoring help
 mole clean --help   # Cleanup help
 mole optimize --help
 mole analyze --help
@@ -55,8 +55,6 @@ mole purge --help
 mole installer --help
 mole uninstall --help
 ```
-
-**Note:** `mole status --help` is NOT checked because MoleUI doesn't use the status command (uses native Swift implementation instead).
 
 ### 2.3 Script Executable Check
 
@@ -69,13 +67,19 @@ Resources/mole/bin/installer.sh
 Resources/mole/bin/uninstall.sh
 ```
 
-### ~~2.4 JSON Schema Validation~~ (REMOVED)
+### 2.4 JSON Schema Validation
 
-**This check has been removed** because MoleUI uses a native Swift implementation for system monitoring instead of calling `status-go`. The `status-go` binary has TTY dependency issues that prevent it from being called from GUI applications.
+Validates that `status-go --json` output matches expected structure:
+```bash
+mole status --json | jq '.cpu.usage, .memory.used, .health_score'
+```
 
-For more information, see:
-- [NATIVE_IMPLEMENTATION.md](NATIVE_IMPLEMENTATION.md) - Why we use Swift instead of status-go
-- [TODO.md](TODO.md) - Implementation roadmap
+Verifies key fields exist and have reasonable values:
+- CPU usage (0-100%)
+- Memory usage (bytes)
+- Health score (0-100)
+- Disk information
+- Network interfaces
 
 ## 3. Auto-merge and Release
 

@@ -38,26 +38,14 @@ get_latest_version_from_github() {
 }
 
 # Install detection (Homebrew vs manual).
-# Uses variable capture + string matching to avoid SIGPIPE under pipefail.
 is_homebrew_install() {
-    local mole_path link_target brew_list="" has_brew=false
+    local mole_path
     mole_path=$(command -v mole 2> /dev/null) || return 1
 
-    # Cache brew list once if brew is available
-    if command -v brew > /dev/null 2>&1; then
-        has_brew=true
-        brew_list=$(brew list --formula 2> /dev/null) || true
-    fi
-
-    # Helper to check if mole is in brew list
-    _mole_in_brew_list() {
-        [[ -n "$brew_list" ]] && [[ $'\n'"$brew_list"$'\n' == *$'\n'"mole"$'\n'* ]]
-    }
-
-    if [[ -L "$mole_path" ]]; then
-        link_target=$(readlink "$mole_path" 2> /dev/null) || true
-        if [[ "$link_target" == *"Cellar/mole"* ]]; then
-            $has_brew && _mole_in_brew_list && return 0
+    if [[ -L "$mole_path" ]] && readlink "$mole_path" | grep -q "Cellar/mole"; then
+        if command -v brew > /dev/null 2>&1; then
+            brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
+        else
             return 1
         fi
     fi
@@ -66,8 +54,8 @@ is_homebrew_install() {
         case "$mole_path" in
             /opt/homebrew/bin/mole | /usr/local/bin/mole)
                 if [[ -d /opt/homebrew/Cellar/mole ]] || [[ -d /usr/local/Cellar/mole ]]; then
-                    if $has_brew; then
-                        _mole_in_brew_list && return 0
+                    if command -v brew > /dev/null 2>&1; then
+                        brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
                     else
                         return 0 # Cellar exists, probably Homebrew install
                     fi
@@ -76,34 +64,15 @@ is_homebrew_install() {
         esac
     fi
 
-    if $has_brew; then
+    if command -v brew > /dev/null 2>&1; then
         local brew_prefix
         brew_prefix=$(brew --prefix 2> /dev/null)
         if [[ -n "$brew_prefix" && "$mole_path" == "$brew_prefix/bin/mole" && -d "$brew_prefix/Cellar/mole" ]]; then
-            _mole_in_brew_list && return 0
+            brew list --formula 2> /dev/null | grep -q "^mole$" && return 0
         fi
     fi
 
     return 1
-}
-
-get_install_channel() {
-    local channel_file="$SCRIPT_DIR/install_channel"
-    local channel="stable"
-    if [[ -f "$channel_file" ]]; then
-        channel=$(sed -n 's/^CHANNEL=\(.*\)$/\1/p' "$channel_file" | head -1)
-    fi
-    case "$channel" in
-        nightly | dev | stable) printf '%s\n' "$channel" ;;
-        *) printf 'stable\n' ;;
-    esac
-}
-
-get_install_commit() {
-    local channel_file="$SCRIPT_DIR/install_channel"
-    if [[ -f "$channel_file" ]]; then
-        sed -n 's/^COMMIT_HASH=\(.*\)$/\1/p' "$channel_file" | head -1
-    fi
 }
 
 # Background update notice
@@ -224,19 +193,7 @@ show_version() {
         install_method="Homebrew"
     fi
 
-    local channel
-    channel=$(get_install_channel)
-
     printf '\nMole version %s\n' "$VERSION"
-    if [[ "$channel" == "nightly" ]]; then
-        local commit
-        commit=$(get_install_commit)
-        if [[ -n "$commit" ]]; then
-            printf 'Channel: Nightly (%s)\n' "$commit"
-        else
-            printf 'Channel: Nightly\n'
-        fi
-    fi
     printf 'macOS: %s\n' "$os_ver"
     printf 'Architecture: %s\n' "$arch"
     printf 'Kernel: %s\n' "$kernel"
@@ -265,16 +222,10 @@ show_help() {
 
     printf "  %s%-28s%s %s\n" "$GREEN" "mo optimize --dry-run" "$NC" "Preview optimization"
     printf "  %s%-28s%s %s\n" "$GREEN" "mo optimize --whitelist" "$NC" "Manage protected items"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo uninstall --dry-run" "$NC" "Preview app uninstall"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo purge --dry-run" "$NC" "Preview project purge"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo installer --dry-run" "$NC" "Preview installer cleanup"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo touchid enable --dry-run" "$NC" "Preview Touch ID setup"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo completion --dry-run" "$NC" "Preview shell completion edits"
     printf "  %s%-28s%s %s\n" "$GREEN" "mo purge --paths" "$NC" "Configure scan directories"
     printf "  %s%-28s%s %s\n" "$GREEN" "mo analyze /Volumes" "$NC" "Analyze external drives only"
     printf "  %s%-28s%s %s\n" "$GREEN" "mo update --force" "$NC" "Force reinstall latest stable version"
     printf "  %s%-28s%s %s\n" "$GREEN" "mo update --nightly" "$NC" "Install latest unreleased main branch build"
-    printf "  %s%-28s%s %s\n" "$GREEN" "mo remove --dry-run" "$NC" "Preview Mole removal"
     echo
     printf "%s%s%s\n" "$BLUE" "OPTIONS" "$NC"
     printf "  %s%-28s%s %s\n" "$GREEN" "--debug" "$NC" "Show detailed operation logs"
@@ -286,13 +237,7 @@ update_mole() {
     local force_update="${1:-false}"
     local nightly_update="${2:-false}"
     local update_interrupted=false
-    local sudo_keepalive_pid=""
-
-    # Cleanup function for sudo keepalive
-    _update_cleanup() {
-        [[ -n "$sudo_keepalive_pid" ]] && _stop_sudo_keepalive "$sudo_keepalive_pid" || true
-    }
-    trap '_update_cleanup; update_interrupted=true; echo ""; exit 130' INT TERM
+    trap 'update_interrupted=true; echo ""; exit 130' INT TERM
 
     if is_homebrew_install; then
         if [[ "$nightly_update" == "true" ]]; then
@@ -403,8 +348,6 @@ update_mole() {
             rm -f "$tmp_installer"
             exit 1
         fi
-        # Start sudo keepalive to prevent cache expiration during install
-        sudo_keepalive_pid=$(_start_sudo_keepalive)
     fi
 
     if [[ -t 1 ]]; then
@@ -456,7 +399,6 @@ update_mole() {
         else
             if [[ -t 1 ]]; then stop_inline_spinner; fi
             rm -f "$tmp_installer"
-            _update_cleanup
             log_error "Nightly update failed"
             echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
             exit 1
@@ -467,7 +409,6 @@ update_mole() {
         else
             if [[ -t 1 ]]; then stop_inline_spinner; fi
             rm -f "$tmp_installer"
-            _update_cleanup
             log_error "Update failed"
             echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
             exit 1
@@ -481,7 +422,6 @@ update_mole() {
             else
                 if [[ -t 1 ]]; then stop_inline_spinner; fi
                 rm -f "$tmp_installer"
-                _update_cleanup
                 log_error "Update failed"
                 echo "$install_output" | tail -10 >&2 # Show last 10 lines of error
                 exit 1
@@ -491,16 +431,10 @@ update_mole() {
 
     rm -f "$tmp_installer"
     rm -f "$HOME/.cache/mole/update_message"
-
-    # Cleanup and reset trap
-    _update_cleanup
-    trap - INT TERM
 }
 
 # Remove flow (Homebrew + manual + config/cache).
 remove_mole() {
-    local dry_run_mode="${1:-false}"
-
     if [[ -t 1 ]]; then
         start_inline_spinner "Detecting Mole installations..."
     else
@@ -581,31 +515,6 @@ remove_mole() {
     local alias_count=${#alias_installs[@]}
     if [[ "$is_homebrew" == "false" && ${manual_count:-0} -eq 0 && ${alias_count:-0} -eq 0 ]]; then
         printf '%s\n\n' "${YELLOW}No Mole installation detected${NC}"
-        exit 0
-    fi
-
-    # Dry-run mode: show preview and exit without confirmation
-    if [[ "$dry_run_mode" == "true" ]]; then
-        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, no files will be removed"
-        echo ""
-        echo -e "${YELLOW}Remove Mole${NC}, would delete the following:"
-        if [[ "$is_homebrew" == "true" ]]; then
-            echo -e "  ${GRAY}${ICON_LIST} Would run: brew uninstall --force mole${NC}"
-        fi
-        if [[ ${manual_count:-0} -gt 0 ]]; then
-            for install in "${manual_installs[@]}"; do
-                [[ -f "$install" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: ${install}${NC}"
-            done
-        fi
-        if [[ ${alias_count:-0} -gt 0 ]]; then
-            for alias in "${alias_installs[@]}"; do
-                [[ -f "$alias" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: ${alias}${NC}"
-            done
-        fi
-        [[ -d "$HOME/.cache/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.cache/mole${NC}"
-        [[ -d "$HOME/.config/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.config/mole${NC}"
-
-        printf '\n%s\n\n' "${GREEN}${ICON_SUCCESS}${NC} Dry run complete, no changes made"
         exit 0
     fi
 
@@ -923,18 +832,7 @@ main() {
             exit 0
             ;;
         "remove")
-            local dry_run_remove=false
-            for arg in "${args[@]:1}"; do
-                case "$arg" in
-                    "--dry-run" | "-n") dry_run_remove=true ;;
-                    *)
-                        echo "Unknown remove option: $arg"
-                        echo "Use 'mole remove [--dry-run]' for supported options."
-                        exit 1
-                        ;;
-                esac
-            done
-            remove_mole "$dry_run_remove"
+            remove_mole
             ;;
         "help" | "--help" | "-h")
             show_help

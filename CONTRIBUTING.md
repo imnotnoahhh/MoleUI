@@ -65,7 +65,7 @@ Mole UI wraps the [Mole CLI tool](https://github.com/tw93/Mole). When Mole CLI u
    - Clean/Optimize/Purge/Installer/Uninstall execute correctly
    - Dry-run mode works for destructive operations
 3. **Check for breaking changes**:
-   - Does `status-go` JSON output match `MetricsSnapshot` struct?
+   - Does `status-go --json` output match `MetricsSnapshot` struct?
    - Do shell scripts in `Resources/mole/bin/` still exist?
    - Are new subcommands added that GUI should support?
 4. **Run automated tests**: `xcodebuild -scheme MoleUITests test CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`
@@ -103,7 +103,7 @@ Help make Mole UI more robust and reliable.
 - What happens when Mole CLI binary is missing?
 - How does the app behave with no disk space?
 - Does it handle permission errors gracefully?
-- What if `status-go` crashes or hangs?
+- What if `status-go` crashes or returns invalid JSON?
 
 **Memory Management**
 - Check for retain cycles in `@Observable` models
@@ -141,7 +141,7 @@ Help make Mole UI faster and more responsive.
 - Consider: parallel scanning, incremental updates, caching
 
 **Metrics Streaming (MetricsModel.swift)**
-- `status-go` streams JSON every 2 seconds
+- `status-go --json` streams JSON every 2 seconds
 - Parsing and UI updates happen on main thread
 - Consider: background parsing, throttling updates
 
