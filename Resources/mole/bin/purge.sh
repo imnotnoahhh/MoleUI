@@ -205,11 +205,18 @@ perform_purge() {
         rm -f "$stats_dir/purge_count"
     fi
 
-    if [[ $total_size_cleaned -gt 0 ]]; then
-        local freed_gb
-        freed_gb=$(echo "$total_size_cleaned" | awk '{printf "%.2f", $1/1024/1024}')
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        summary_heading="Dry run complete - no changes made"
+    fi
 
-        local summary_line="Space freed: ${GREEN}${freed_gb}GB${NC}"
+    if [[ $total_size_cleaned -gt 0 ]]; then
+        local freed_size_human
+        freed_size_human=$(bytes_to_human_kb "$total_size_cleaned")
+
+        local summary_line="Space freed: ${GREEN}${freed_size_human}${NC}"
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            summary_line="Would free: ${GREEN}${freed_size_human}${NC}"
+        fi
         [[ $total_items_cleaned -gt 0 ]] && summary_line+=" | Items: $total_items_cleaned"
         summary_line+=" | Free: $(get_free_space)"
         summary_details+=("$summary_line")
@@ -233,6 +240,7 @@ show_help() {
     echo ""
     echo -e "${YELLOW}Options:${NC}"
     echo "  --paths         Edit custom scan directories"
+    echo "  --dry-run       Preview purge actions without making changes"
     echo "  --debug         Enable debug logging"
     echo "  --help          Show this help message"
     echo ""
@@ -262,6 +270,9 @@ main() {
             "--debug")
                 export MO_DEBUG=1
                 ;;
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
             *)
                 echo "Unknown option: $arg"
                 echo "Use 'mo purge --help' for usage information"
@@ -271,6 +282,10 @@ main() {
     done
 
     start_purge
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No project artifacts will be removed"
+        printf '\n'
+    fi
     hide_cursor
     perform_purge
     show_cursor

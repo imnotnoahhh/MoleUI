@@ -121,7 +121,7 @@ final class CLIExecutor {
                 // 启动进程
                 do {
                     try proc.run()
-                    logger.info("Process started: PID \(proc.processIdentifier)")
+                    logger.debug("Process started: PID \(proc.processIdentifier)")
                 } catch {
                     continuation.resume(throwing: error)
                     return
@@ -156,7 +156,7 @@ final class CLIExecutor {
                             )
                         )
                     } else {
-                        self.logger.info("Process completed successfully in \(duration)s")
+                        self.logger.debug("Process completed successfully in \(duration)s")
                         continuation.resume(returning: result)
                     }
                 }
@@ -257,6 +257,21 @@ final class CLIExecutor {
                             if parseProgress {
                                 self.parseProgressLine(lineStr)
                             }
+                        }
+                    }
+                }
+            }
+
+            // Flush trailing bytes when output doesn't end with a newline.
+            if !buffer.isEmpty, let tail = String(data: buffer, encoding: .utf8) {
+                output += tail
+                await MainActor.run {
+                    if isStderr {
+                        self.onStderr?(tail)
+                    } else {
+                        self.onStdout?(tail)
+                        if parseProgress {
+                            self.parseProgressLine(tail)
                         }
                     }
                 }
@@ -389,7 +404,8 @@ extension CLIExecutor {
     /// 解析 JSON 输出
     func executeAndParseJSON<T: Decodable>(
         command: String,
-        options: ExecutionOptions = .default
+        options: ExecutionOptions = .default,
+        decoder: JSONDecoder = JSONDecoder()
     ) async throws -> T {
         let result = try await execute(command: command, options: options)
 
@@ -398,9 +414,28 @@ extension CLIExecutor {
         }
 
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            return try decoder.decode(T.self, from: data)
         } catch {
             logger.error("JSON decode failed: \(error.localizedDescription)")
+            logger.error("Raw JSON size: \(data.count) bytes")
+
+            // Log detailed error information
+            if let decodingError = error as? DecodingError {
+                switch decodingError {
+                case .keyNotFound(let key, let context):
+                    logger.error("Key not found: \(key.stringValue) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                case .typeMismatch(let type, let context):
+                    logger.error("Type mismatch: expected \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                case .valueNotFound(let type, let context):
+                    logger.error("Value not found: \(type) at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                case .dataCorrupted(let context):
+                    logger.error("Data corrupted at path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                    logger.error("Debug description: \(context.debugDescription)")
+                @unknown default:
+                    logger.error("Unknown decoding error")
+                }
+            }
+
             throw ExecutionError.invalidOutput("JSON 解析失败: \(error.localizedDescription)")
         }
     }

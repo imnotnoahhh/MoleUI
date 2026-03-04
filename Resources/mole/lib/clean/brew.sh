@@ -5,7 +5,12 @@
 clean_homebrew() {
     command -v brew > /dev/null 2>&1 || return 0
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup and autoremove"
+        # Check if Homebrew cache is whitelisted
+        if is_path_whitelisted "$HOME/Library/Caches/Homebrew"; then
+            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew · skipped whitelist"
+        else
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup and autoremove"
+        fi
         return 0
     fi
     # Skip if cleaned recently to avoid repeated heavy operations.

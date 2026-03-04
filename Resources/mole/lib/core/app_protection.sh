@@ -1419,6 +1419,11 @@ force_kill_app() {
     local app_name="$1"
     local app_path="${2:-""}"
 
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        debug_log "[DRY RUN] Would terminate running app: $app_name"
+        return 0
+    fi
+
     # Get the executable name from bundle if app_path is provided
     local exec_name=""
     if [[ -n "$app_path" && -e "$app_path/Contents/Info.plist" ]]; then

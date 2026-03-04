@@ -32,8 +32,32 @@ emit_fish_completions() {
     printf 'complete -c %s -n "not __fish_mole_no_subcommand" -a fish -d "generate fish completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
 }
 
+if [[ $# -gt 0 ]]; then
+    normalized_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
+            *)
+                normalized_args+=("$arg")
+                ;;
+        esac
+    done
+    if [[ ${#normalized_args[@]} -gt 0 ]]; then
+        set -- "${normalized_args[@]}"
+    else
+        set --
+    fi
+fi
+
 # Auto-install mode when run without arguments
 if [[ $# -eq 0 ]]; then
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, shell config files will not be modified"
+        echo ""
+    fi
+
     # Detect current shell
     current_shell="${SHELL##*/}"
     if [[ -z "$current_shell" ]]; then
@@ -73,16 +97,21 @@ if [[ $# -eq 0 ]]; then
 
     if [[ -z "$completion_name" ]]; then
         if [[ -f "$config_file" ]] && grep -Eq "(^# Mole shell completion$|(mole|mo)[[:space:]]+completion)" "$config_file" 2> /dev/null; then
-            original_mode=""
-            original_mode="$(stat -f '%Mp%Lp' "$config_file" 2> /dev/null || true)"
-            temp_file="$(mktemp)"
-            grep -Ev "(^# Mole shell completion$|(mole|mo)[[:space:]]+completion)" "$config_file" > "$temp_file" || true
-            mv "$temp_file" "$config_file"
-            if [[ -n "$original_mode" ]]; then
-                chmod "$original_mode" "$config_file" 2> /dev/null || true
+            if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+                echo -e "${GRAY}${ICON_REVIEW} [DRY RUN] Would remove stale completion entries from $config_file${NC}"
+                echo ""
+            else
+                original_mode=""
+                original_mode="$(stat -f '%Mp%Lp' "$config_file" 2> /dev/null || true)"
+                temp_file="$(mktemp)"
+                grep -Ev "(^# Mole shell completion$|(mole|mo)[[:space:]]+completion)" "$config_file" > "$temp_file" || true
+                mv "$temp_file" "$config_file"
+                if [[ -n "$original_mode" ]]; then
+                    chmod "$original_mode" "$config_file" 2> /dev/null || true
+                fi
+                echo -e "${GREEN}${ICON_SUCCESS}${NC} Removed stale completion entries from $config_file"
+                echo ""
             fi
-            echo -e "${GREEN}${ICON_SUCCESS}${NC} Removed stale completion entries from $config_file"
-            echo ""
         fi
         log_error "mole not found in PATH, install Mole before enabling completion"
         exit 1
@@ -90,6 +119,12 @@ if [[ $# -eq 0 ]]; then
 
     # Check if already installed and normalize to latest line
     if [[ -f "$config_file" ]] && grep -Eq "(mole|mo)[[:space:]]+completion" "$config_file" 2> /dev/null; then
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            echo -e "${GRAY}${ICON_REVIEW} [DRY RUN] Would normalize completion entry in $config_file${NC}"
+            echo ""
+            exit 0
+        fi
+
         original_mode=""
         original_mode="$(stat -f '%Mp%Lp' "$config_file" 2> /dev/null || true)"
         temp_file="$(mktemp)"
@@ -114,6 +149,11 @@ if [[ $# -eq 0 ]]; then
     echo -e "${GRAY}Will add to ${config_file}:${NC}"
     echo "  $completion_line"
     echo ""
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${GREEN}${ICON_SUCCESS}${NC} Dry run complete, no changes made"
+        exit 0
+    fi
+
     echo -ne "${PURPLE}${ICON_ARROW}${NC} Enable completion for ${GREEN}${current_shell}${NC}? ${GRAY}Enter confirm / Q cancel${NC}: "
     IFS= read -r -s -n1 key || key=""
     drain_pending_input
@@ -227,6 +267,7 @@ Setup shell tab completion for mole and mo commands.
 
 Auto-install:
   mole completion              # Auto-detect shell and install
+  mole completion --dry-run    # Preview config changes without writing files
 
 Manual install:
   mole completion bash         # Generate bash completion script

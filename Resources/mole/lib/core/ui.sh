@@ -387,20 +387,6 @@ stop_inline_spinner() {
     fi
 }
 
-# Run command with a terminal spinner
-with_spinner() {
-    local msg="$1"
-    shift || true
-    local timeout=180
-    start_inline_spinner "$msg"
-    local exit_code=0
-    if [[ -n "${MOLE_TIMEOUT_BIN:-}" ]]; then
-        "$MOLE_TIMEOUT_BIN" "$timeout" "$@" > /dev/null 2>&1 || exit_code=$?
-    else "$@" > /dev/null 2>&1 || exit_code=$?; fi
-    stop_inline_spinner "$msg"
-    return $exit_code
-}
-
 # Get spinner characters
 mo_spinner_chars() {
     local chars="|/-\\"
