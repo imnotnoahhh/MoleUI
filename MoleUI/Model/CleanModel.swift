@@ -352,70 +352,22 @@ final class CleanModel {
     }
 
     private func scanCategory(_ category: CleanCategory) async -> CleanScanResult {
-        let excludePaths = category.excludePaths
-        let result = await Task.detached { () -> (UInt64, Int) in
-            var totalBytes: UInt64 = 0
-            var itemCount = 0
-            let fm = FileManager.default
-
-            for path in category.paths {
-                let url = URL(fileURLWithPath: path)
-                let (bytes, count) = Self.directorySize(at: url, excludePaths: excludePaths, fm: fm)
-                totalBytes += bytes
-                itemCount += count
-            }
-            return (totalBytes, itemCount)
-        }.value
-
-        return CleanScanResult(
-            id: category.id,
-            category: category,
-            totalBytes: result.0,
-            itemCount: result.1
-        )
-    }
-
-    // MARK: - Directory Size Helper
-
-    private nonisolated static func directorySize(
-        at url: URL,
-        excludePaths: [String] = [],
-        fm: FileManager = .default
-    ) -> (bytes: UInt64, count: Int) {
-        var totalBytes: UInt64 = 0
-        var itemCount = 0
-
-        guard fm.fileExists(atPath: url.path) else { return (0, 0) }
-
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isDirectoryKey],
-            options: [] // include hidden files and package descendants
-        ) else {
-            return (0, 0)
+        do {
+            let result = try await scanCategoryWithMoleCore(category)
+            return CleanScanResult(
+                id: category.id,
+                category: category,
+                totalBytes: result.bytes,
+                itemCount: result.count
+            )
+        } catch {
+            return CleanScanResult(
+                id: category.id,
+                category: category,
+                totalBytes: 0,
+                itemCount: 0
+            )
         }
-
-        for case let fileURL as URL in enumerator {
-            let filePath = fileURL.path
-
-            // Skip excluded subtrees
-            if excludePaths.contains(where: { filePath.hasPrefix($0) }) {
-                continue
-            }
-
-            guard let values = try? fileURL.resourceValues(
-                forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isDirectoryKey]
-            ) else { continue }
-
-            if values.isDirectory == true { continue }
-
-            // Prefer allocated size (matches `du`), fall back to logical size
-            let size = values.totalFileAllocatedSize ?? values.fileSize ?? 0
-            totalBytes += UInt64(size)
-            itemCount += 1
-        }
-
-        return (totalBytes, itemCount)
     }
 
     // MARK: - Clean
@@ -426,28 +378,14 @@ final class CleanModel {
         lastOutput = nil
 
         do {
-            if dryRun {
-                // Dry run: show what would be cleaned
-                let previewText = await generatePreview(category: category)
-                lastOutput = previewText
-                completedCategories.insert(category.id)
-            } else if category.id == "trash" {
-                // Trash: use Finder AppleScript (handles permissions correctly)
-                _ = try await CLIExecutor.run(
-                    "osascript -e 'tell application \"Finder\" to empty trash'"
-                )
-                completedCategories.insert(category.id)
-            } else if category.id == "homebrew" {
-                // Homebrew: use brew cleanup
-                let output = try await CLIExecutor.run("brew cleanup --prune=all 2>&1 || true")
-                lastOutput = output
-                completedCategories.insert(category.id)
-            } else {
-                // Other categories: remove contents of each path directly
-                try await cleanPaths(category.category.paths)
-                lastOutput = "Cleaned \(category.category.name): \(category.itemCount) items removed"
-                completedCategories.insert(category.id)
+            // Execute the exact Mole subcommand mapped for this clean category.
+            let subcommand = category.category.moleCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !subcommand.isEmpty else {
+                throw CLIExecutor.ExecutionError.invalidOutput("Missing clean subcommand")
             }
+            let output = try await CLIExecutor.runMole(subcommand, dryRun: dryRun)
+            lastOutput = output
+            completedCategories.insert(category.id)
 
             // Re-scan to update sizes
             let updated = await scanCategory(category.category)
@@ -461,44 +399,102 @@ final class CleanModel {
         cleaningCategory = nil
     }
 
-    private func generatePreview(category: CleanScanResult) async -> String {
+    private func generatePreview(category: CleanScanResult) -> String {
         var lines: [String] = []
         lines.append("Preview: \(category.category.name)")
         lines.append("Would clean \(category.itemCount) items (\(MetricsFormatter.humanBytes(category.totalBytes)))")
         lines.append("")
         lines.append("Paths:")
-        for path in category.category.paths {
-            let fm = FileManager.default
-            if fm.fileExists(atPath: path) {
-                if let contents = try? fm.contentsOfDirectory(atPath: path) {
-                    let count = contents.count
-                    lines.append("  • \(path) (\(count) items)")
-                } else {
-                    lines.append("  • \(path)")
-                }
-            }
+        for path in category.category.paths where FileManager.default.fileExists(atPath: path) {
+            lines.append("  • \(path)")
         }
         return lines.joined(separator: "\n")
     }
 
-    /// Remove the contents of each path (not the directory itself).
-    private func cleanPaths(_ paths: [String]) async throws {
-        let fm = FileManager.default
-        for path in paths {
-            guard fm.fileExists(atPath: path) else { continue }
-            // Remove contents inside the directory, keep the directory itself
-            let cmd = "find \(shellEscape(path)) -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true"
-            _ = try await CLIExecutor.run(cmd)
+    /// Clean all selected categories sequentially through Mole CLI.
+    func cleanSelected(categories: Set<String>, dryRun: Bool) async {
+        guard !categories.isEmpty else { return }
+        let selected = scanResults.filter { categories.contains($0.id) }
+        for category in selected {
+            await clean(category: category, dryRun: dryRun)
         }
+    }
+
+    // MARK: - Mole Core Scan
+
+    private func scanCategoryWithMoleCore(_ category: CleanCategory) async throws -> (bytes: UInt64, count: Int) {
+        let subcommand = category.moleCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !subcommand.isEmpty else {
+            return (bytes: 0, count: 0)
+        }
+
+        guard let root = CLIExecutor.findMoleRoot() else {
+            return (bytes: 0, count: 0)
+        }
+
+        // We use Mole's core functions to compute sizes accurately without hanging the UI
+        let pathsList = category.paths.map { shellEscape($0) }.joined(separator: " ")
+        _ = category.excludePaths.map { shellEscape($0) }.joined(separator: " ")
+
+        let script = """
+        set -euo pipefail
+        ROOT=\(shellEscape(root.path))
+        source "$ROOT/lib/core/common.sh"
+
+        total_kb=0
+        total_files=0
+
+        # Check an array of paths and sum them using Mole's get_path_size_kb
+        check_paths() {
+            local search_paths=("$@")
+            for path in "${search_paths[@]}"; do
+                if [[ -e "$path" ]]; then
+                    # Get size in KB
+                    size_kb=$(get_path_size_kb "$path" 2>/dev/null || echo 0)
+                    if [[ "$size_kb" =~ ^[0-9]+$ && "$size_kb" -gt 0 ]]; then
+                        total_kb=$((total_kb + size_kb))
+                    fi
+                    
+                    # Estimate file count simply
+                    if [[ -d "$path" ]]; then
+                        files=$(find "$path" -type f 2>/dev/null | wc -l || echo 0)
+                        # Remove leading whitespace from wc
+                        files=$(echo "$files" | tr -d ' ')
+                    else
+                        files=1
+                    fi
+                    
+                    if [[ "$files" =~ ^[0-9]+$ && "$files" -gt 0 ]]; then
+                        total_files=$((total_files + files))
+                    fi
+                fi
+            done
+        }
+
+        # Only process if we have paths
+        if [[ -n "\(pathsList)" ]]; then
+           eval "scan_paths=(\(pathsList))"
+           check_paths "${scan_paths[@]}"
+        fi
+
+        # Output result
+        echo "$total_kb|$total_files"
+        """
+
+        let output = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
+        let lines = output.split(separator: "\n").map { String($0) }
+
+        for line in lines {
+            let parts = line.split(separator: "|")
+            if parts.count == 2, let kb = UInt64(parts[0]), let count = Int(parts[1]) {
+                return (bytes: kb * 1024, count: count)
+            }
+        }
+
+        return (bytes: 0, count: 0)
     }
 
     private func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    func cleanSelected(categories: Set<String>, dryRun: Bool) async {
-        for result in scanResults where categories.contains(result.id) {
-            await clean(category: result, dryRun: dryRun)
-        }
     }
 }

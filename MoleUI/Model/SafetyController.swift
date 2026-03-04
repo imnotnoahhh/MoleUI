@@ -130,12 +130,12 @@ final class SafetyController {
         let startTime = Date()
 
         let result = try await executor.executeMole(
-            "clean \(target) --dry-run --json",
+            "clean --dry-run",
             options: CLIExecutor.ExecutionOptions(
                 timeout: 60,
                 captureStderr: true,
                 parseProgress: false,
-                dryRun: true
+                dryRun: false
             )
         )
 
@@ -165,12 +165,12 @@ final class SafetyController {
         let startTime = Date()
 
         let result = try await executor.executeMole(
-            "clean \(target)",
+            "clean",
             options: CLIExecutor.ExecutionOptions(
                 timeout: 600, // 10 分钟
                 captureStderr: true,
                 parseProgress: true,
-                dryRun: dryRun
+                dryRun: false
             )
         )
 

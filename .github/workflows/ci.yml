@@ -73,14 +73,14 @@ jobs:
 
       - name: Run security checks
         run: |
-          # Check for hardcoded secrets
-          if grep -r "AKIA\|sk_live_\|sk_test_\|ghp_\|gho_" MoleUI/ --exclude-dir=.git; then
+          # Check for hardcoded secrets in the whole project
+          if grep -r "AKIA\|sk_live_\|sk_test_\|ghp_\|gho_" . --exclude-dir=.git --exclude-dir=DerivedData --exclude-dir=.github; then
             echo "❌ Potential hardcoded secrets found"
             exit 1
           fi
 
           # Check for unsafe Swift patterns
-          if grep -r "unsafeBitCast\|unsafeDowncast" MoleUI/ --include="*.swift"; then
+          if grep -r "unsafeBitCast\|unsafeDowncast" . --include="*.swift" --exclude-dir=DerivedData; then
             echo "⚠️  Unsafe Swift patterns detected"
           fi
 

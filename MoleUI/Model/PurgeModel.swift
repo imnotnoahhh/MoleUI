@@ -97,18 +97,19 @@ final class PurgeModel {
         errorMessage = nil
         completedTargets = []
 
-        let results = await Task.detached { () -> [PurgeTarget] in
-            Self.findArtifacts()
-        }.value
-
-        targets = results.sorted { $0.sizeBytes > $1.sizeBytes }
+        do {
+            targets = try await scanWithMole().sorted { $0.sizeBytes > $1.sizeBytes }
+        } catch {
+            errorMessage = error.localizedDescription
+            targets = []
+        }
         isScanning = false
     }
 
     func deleteTarget(_ target: PurgeTarget) async {
         cleaningTarget = target.id
         do {
-            _ = try await CLIExecutor.run("rm -rf \(shellEscape(target.path.path))")
+            try await deleteWithMole(target.path.path)
             completedTargets.insert(target.id)
             targets.removeAll { $0.id == target.id }
         } catch {
@@ -123,93 +124,78 @@ final class PurgeModel {
         }
     }
 
+    private func scanWithMole() async throws -> [PurgeTarget] {
+        guard let root = CLIExecutor.findMoleRoot() else {
+            throw CLIExecutor.ExecutionError.commandNotFound("mole")
+        }
+
+        let script = """
+        set -euo pipefail
+        ROOT=\(shellEscape(root.path))
+        export XDG_CACHE_HOME="${TMPDIR:-/tmp}/moleui-cache"
+        mkdir -p "$XDG_CACHE_HOME/mole"
+        source "$ROOT/lib/core/common.sh"
+        source "$ROOT/lib/clean/project.sh"
+        tmp=$(mktemp)
+        for search in "${PURGE_SEARCH_PATHS[@]}"; do
+          scan_purge_targets "$search" "$tmp"
+        done
+        while IFS= read -r path; do
+          [[ -z "$path" || ! -d "$path" ]] && continue
+          size_kb=$(get_path_size_kb "$path" 2>/dev/null || echo 0)
+          [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+          [[ "$size_kb" -le 0 ]] && continue
+          mtime=$(get_file_mtime "$path" 2>/dev/null || echo 0)
+          now=$(get_epoch_seconds)
+          if [[ "$mtime" =~ ^[0-9]+$ && "$mtime" -gt 0 ]]; then
+            age_days=$(((now - mtime) / 86400))
+          else
+            age_days=9999
+          fi
+          [[ "$age_days" -lt 0 ]] && age_days=0
+          project_name=$(basename "$(dirname "$path")")
+          artifact_name=$(basename "$path")
+          printf '%s|%s|%s|%s|%s\\n' "$path" "$size_kb" "$age_days" "$project_name" "$artifact_name"
+        done < "$tmp"
+        rm -f "$tmp"
+        """
+
+        let output = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
+        return output
+            .split(separator: "\n")
+            .compactMap { line -> PurgeTarget? in
+                let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+                guard parts.count >= 5 else { return nil }
+                let path = String(parts[0])
+                let sizeKB = UInt64(parts[1]) ?? 0
+                let ageDays = Int(parts[2]) ?? 0
+                let projectName = String(parts[3])
+                let artifactName = String(parts[4])
+                return PurgeTarget(
+                    path: URL(fileURLWithPath: path),
+                    projectName: projectName,
+                    artifactName: artifactName,
+                    sizeBytes: sizeKB * 1024,
+                    ageDays: ageDays
+                )
+            }
+    }
+
+    private func deleteWithMole(_ path: String) async throws {
+        guard let root = CLIExecutor.findMoleRoot() else {
+            throw CLIExecutor.ExecutionError.commandNotFound("mole")
+        }
+        let script = """
+        set -euo pipefail
+        ROOT=\(shellEscape(root.path))
+        TARGET=\(shellEscape(path))
+        source "$ROOT/lib/core/common.sh"
+        safe_remove "$TARGET" true >/dev/null
+        """
+        _ = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
+    }
+
     private func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private nonisolated static func findArtifacts() -> [PurgeTarget] {
-        let fm = FileManager.default
-        let artifactSet = Set(PurgeConstants.artifactNames)
-        var results: [PurgeTarget] = []
-        let now = Date()
-
-        for scanPath in PurgeConstants.allScanPaths {
-            let rootURL = URL(fileURLWithPath: scanPath)
-            guard fm.fileExists(atPath: scanPath) else { continue }
-
-            guard let enumerator = fm.enumerator(
-                at: rootURL,
-                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
-                options: []
-            ) else { continue }
-
-            for case let url as URL in enumerator {
-                guard let vals = try? url.resourceValues(forKeys: [.isDirectoryKey]) else { continue }
-                guard vals.isDirectory == true else { continue }
-
-                let name = url.lastPathComponent
-
-                if name == ".git" || name == "Library" || name == ".Trash" || name == "Applications" {
-                    enumerator.skipDescendants()
-                    continue
-                }
-
-                let relComponents = url.pathComponents.count - rootURL.pathComponents.count
-                if relComponents > PurgeConstants.maxScanDepth {
-                    enumerator.skipDescendants()
-                    continue
-                }
-
-                guard artifactSet.contains(name) else { continue }
-                enumerator.skipDescendants()
-
-                if PurgeConstants.protectedArtifacts.contains(name) {
-                    let parent = url.deletingLastPathComponent()
-                    if name == "vendor" {
-                        if !fm.fileExists(atPath: parent.appendingPathComponent("composer.json").path) {
-                            continue
-                        }
-                    } else if name == "bin" {
-                        let siblings = (try? fm.contentsOfDirectory(atPath: parent.path)) ?? []
-                        let hasDotnet = siblings.contains { file in PurgeConstants.dotnetIndicators.contains(where: { ext in file.hasSuffix(ext) }) }
-                        if !hasDotnet { continue }
-                    }
-                }
-
-                let parentPath = url.deletingLastPathComponent()
-                let parentContents = (try? fm.contentsOfDirectory(atPath: parentPath.path)) ?? []
-                let hasIndicator = parentContents.contains { PurgeConstants.projectIndicators.contains($0) }
-                if !hasIndicator { continue }
-
-                let size = directorySize(at: url, fm: fm)
-                if size == 0 { continue }
-
-                let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? now
-                let ageDays = max(0, Int(now.timeIntervalSince(modDate) / 86400))
-
-                results.append(PurgeTarget(
-                    path: url, projectName: parentPath.lastPathComponent,
-                    artifactName: name, sizeBytes: size, ageDays: ageDays
-                ))
-            }
-        }
-        return results
-    }
-
-    private nonisolated static func directorySize(at url: URL, fm: FileManager) -> UInt64 {
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey],
-            options: []
-        ) else { return 0 }
-
-        var total: UInt64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let vals = try? fileURL.resourceValues(
-                forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]
-            ) else { continue }
-            total += UInt64(vals.totalFileAllocatedSize ?? vals.fileSize ?? 0)
-        }
-        return total
     }
 }
