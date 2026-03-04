@@ -293,15 +293,6 @@ enum MetricsFormatter {
             String(format: "%.2f MB/s", mbps)
         }
     }
-
-    static func healthEmoji(score: Int) -> String {
-        switch score {
-        case 90 ... 100: "💚"
-        case 75 ..< 90: "💛"
-        case 60 ..< 75: "🧡"
-        default: "❤️"
-        }
-    }
 }
 
 // MARK: - MetricsModel (JSON-based)
@@ -322,7 +313,6 @@ final class MetricsModel {
     private var updateTask: Task<Void, Never>?
     private let maxHistoryPoints = 120 // 4 minutes at 2s interval (matches Mole)
     private let logger = Logger(subsystem: "com.qinfuyao.MoleUI", category: "MetricsModel")
-    private var cachedMolePath: URL? // Cache mole path to avoid repeated lookups
     private var lastFetchTime: Date?
     private let minFetchInterval: TimeInterval = 0.5 // Minimum 500ms between fetches
 
@@ -348,56 +338,6 @@ final class MetricsModel {
     init() {}
 
     // Note: No deinit needed - Task will be automatically cancelled when the object is deallocated
-
-    // MARK: - Binary Discovery
-
-    private func findMoleBinary() -> URL? {
-        // Return cached path if available
-        if let cached = cachedMolePath {
-            logger.debug("Using cached binary path: \(cached.path)")
-            return cached
-        }
-
-        let fm = FileManager.default
-
-        #if DEBUG
-            // Development: prefer project Resources first.
-            let projectPath = URL(fileURLWithPath: #file)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources/mole/mole")
-
-            logger.debug("Checking project path: \(projectPath.path)")
-            if fm.isExecutableFile(atPath: projectPath.path) {
-                logger.info("Found project binary: \(projectPath.path)")
-                cachedMolePath = projectPath
-                return projectPath
-            }
-        #endif
-
-        // Primary runtime source: bundled Resources.
-        if let resourceURL = Bundle.main.resourceURL {
-            logger.debug("Bundle resourceURL: \(resourceURL.path)")
-            let bundled = resourceURL.appendingPathComponent("mole/mole")
-            logger.debug("Checking bundled path: \(bundled.path)")
-            logger.debug("File exists: \(fm.fileExists(atPath: bundled.path))")
-            logger.debug("Is executable: \(fm.isExecutableFile(atPath: bundled.path))")
-
-            if fm.isExecutableFile(atPath: bundled.path) {
-                logger.info("Found bundled binary: \(bundled.path)")
-                cachedMolePath = bundled
-                return bundled
-            }
-        } else {
-            logger.warning("Bundle.main.resourceURL is nil")
-        }
-
-        logger.error("No bundled mole binary found")
-        return nil
-    }
-
-    // MARK: - Public Methods
 
     func start() {
         guard !isConnected else {
@@ -453,7 +393,7 @@ final class MetricsModel {
 
         let startTime = Date()
 
-        guard let binary = findMoleBinary() else {
+        guard let binary = CLIExecutor.findMoleBinary() else {
             throw NSError(
                 domain: "MetricsModel",
                 code: 1,

@@ -64,7 +64,7 @@ struct CleanView: View {
         .alert(dryRunMode ? "Confirm Preview" : "Confirm Clean", isPresented: $showConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button(dryRunMode ? "Preview" : "Clean", role: dryRunMode ? .none : .destructive) {
-                Task { await service.cleanSelected(categories: selectedCategories, dryRun: dryRunMode) }
+                Task { await runCleanThroughSafety() }
             }
         } message: {
             let safeCount = selectedCategories.count(where: { id in
@@ -213,7 +213,7 @@ struct CleanView: View {
                     if confirmBeforeClean {
                         showConfirmation = true
                     } else {
-                        Task { await service.cleanSelected(categories: selectedCategories, dryRun: dryRunMode) }
+                        Task { await runCleanThroughSafety() }
                     }
                 } label: {
                     let size = MetricsFormatter.humanBytes(totalSelectedSize)
@@ -412,6 +412,19 @@ struct CleanView: View {
                 }
             }
             .padding(.vertical, 2)
+        }
+    }
+
+    private func runCleanThroughSafety() async {
+        do {
+            try await safety.executeClean(
+                target: "all",
+                dryRun: dryRunMode
+            )
+            await service.scan()
+        } catch {
+            currentError = ErrorTranslator.translate(error: error, context: "clean")
+            showError = true
         }
     }
 }

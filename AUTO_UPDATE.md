@@ -33,8 +33,8 @@ When a new version is detected, the system performs strict compatibility validat
 Verifies all required files exist:
 ```
 Resources/mole/mole                    # Main entry script
-Resources/mole/bin/status-go           # System monitoring binary
 Resources/mole/bin/analyze-go          # Disk analysis binary
+Resources/mole/bin/status-go           # System metrics binary
 Resources/mole/bin/clean.sh            # Cleanup script
 Resources/mole/bin/optimize.sh         # Optimization script
 Resources/mole/bin/purge.sh            # Deep cleanup script
@@ -50,7 +50,6 @@ mole version        # Version info
 mole status --help  # System monitoring help
 mole clean --help   # Cleanup help
 mole optimize --help
-mole analyze --help
 mole purge --help
 mole installer --help
 mole uninstall --help
@@ -67,19 +66,13 @@ Resources/mole/bin/installer.sh
 Resources/mole/bin/uninstall.sh
 ```
 
-### 2.4 JSON Schema Validation
+### 2.4 JSON Smoke Validation
 
-Validates that `status-go --json` output matches expected structure:
+Validates that Mole JSON commands execute successfully in GUI-relevant paths:
 ```bash
-mole status --json | jq '.cpu.usage, .memory.used, .health_score'
+mole status --json
+mole analyze --json "$HOME"
 ```
-
-Verifies key fields exist and have reasonable values:
-- CPU usage (0-100%)
-- Memory usage (bytes)
-- Health score (0-100)
-- Disk information
-- Network interfaces
 
 ## 3. Auto-merge and Release
 
@@ -121,9 +114,10 @@ If compatibility checks pass:
    gh pr merge {PR_NUMBER} --squash --auto --delete-branch
    ```
 
-5. **Create Release Tag**
+5. **Create Release Tag** *(only if auto-merge succeeds)*
    ```bash
-   # Tag uses MoleUI version (independent from Mole CLI version)
+   # Tag creation is gated on steps.auto_merge.outputs.merged == 'true'
+   # ensuring no tag is pushed if CI checks fail or branch protection blocks the merge
    git tag -a "v{moleui_version}" -m "Release v{moleui_version}
 
    MoleUI version: {moleui_version}

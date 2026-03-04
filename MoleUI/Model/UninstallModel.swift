@@ -33,120 +33,106 @@ struct AppInfo: Identifiable, @unchecked Sendable {
 final class AppScanModel {
     var apps: [AppInfo] = []
     var isScanning: Bool = false
+    var errorMessage: String?
 
     init() {}
 
     func scan() {
+        guard !isScanning else { return }
         isScanning = true
+        errorMessage = nil
         apps = []
 
         Task.detached { [weak self] in
             guard let self else { return }
-            let scanned = performScan()
-            await MainActor.run {
-                self.apps = scanned
-                self.isScanning = false
+            do {
+                let scanned = try performScan()
+                await MainActor.run {
+                    self.apps = scanned
+                    self.isScanning = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isScanning = false
+                }
             }
         }
     }
 
-    private nonisolated func performScan() -> [AppInfo] {
-        let fm = FileManager.default
-        let appsURL = URL(fileURLWithPath: "/Applications")
+    private nonisolated func performScan() throws -> [AppInfo] {
+        guard let root = CLIExecutor.findMoleRoot() else { return [] }
+        let command = """
+        bash -lc \(shellEscape("""
+        set -euo pipefail
+        export MOLE_TEST_MODE=1
+        ROOT=\(shellEscape(root.path))
+        tmp_script=$(mktemp "${TMPDIR:-/tmp}/mole-uninstall-nomain.XXXXXX")
+        awk '$0 != "main \\\"$@\\\""' "$ROOT/bin/uninstall.sh" | sed "s|^SCRIPT_DIR=.*|SCRIPT_DIR=\\"$ROOT/bin\\"|" > "$tmp_script"
+        source "$tmp_script"
+        apps_file=$(scan_applications)
+        cat "$apps_file"
+        rm -f "$apps_file" "$tmp_script"
+        """))
+        """
 
-        guard let contents = try? fm.contentsOfDirectory(
-            at: appsURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
+        let output = try runSync(command: command)
         var results: [AppInfo] = []
 
-        for url in contents where url.pathExtension == "app" {
-            guard let bundle = Bundle(url: url),
-                  let infoPlist = bundle.infoDictionary
-            else {
-                continue
-            }
+        for line in output.split(separator: "\n") {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+            guard parts.count >= 7 else { continue }
+            let epoch = TimeInterval(parts[0]) ?? 0
+            let path = String(parts[1])
+            let displayName = String(parts[2])
+            let bundleIdRaw = String(parts[3])
+            let sizeKB = UInt64(parts[6]) ?? 0
+            let appURL = URL(fileURLWithPath: path)
 
-            let name = infoPlist["CFBundleName"] as? String
-                ?? infoPlist["CFBundleDisplayName"] as? String
-                ?? url.deletingPathExtension().lastPathComponent
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            let bundle = Bundle(url: appURL)
+            let version = bundle?.infoDictionary?["CFBundleShortVersionString"] as? String
+            let icon = NSWorkspace.shared.icon(forFile: path)
+            let bundleId = (bundleIdRaw.isEmpty || bundleIdRaw == "unknown") ? bundle?.bundleIdentifier : bundleIdRaw
+            let lastUsed = epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
 
-            let bundleId = infoPlist["CFBundleIdentifier"] as? String
-            let version = infoPlist["CFBundleShortVersionString"] as? String
-
-            let icon = NSWorkspace.shared.icon(forFile: url.path)
-            let size = bundleSize(at: url)
-            let lastUsed = lastUsedDate(for: url.path)
-
-            let info = AppInfo(
-                name: name,
+            results.append(AppInfo(
+                name: displayName,
                 bundleIdentifier: bundleId,
                 version: version,
-                sizeBytes: size,
+                sizeBytes: sizeKB * 1024,
                 icon: icon,
-                path: url,
+                path: appURL,
                 lastUsed: lastUsed
-            )
-            results.append(info)
+            ))
         }
 
-        results.sort { $0.sizeBytes > $1.sizeBytes }
-        return results
+        return results.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private nonisolated func bundleSize(at url: URL) -> UInt64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return 0 }
+    private nonisolated func runSync(command: String) throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-lc", command]
+        let out = Pipe()
+        proc.standardOutput = out
+        let err = Pipe()
+        proc.standardError = err
+        try proc.run()
+        proc.waitUntilExit()
 
-        var total: UInt64 = 0
-        for case let fileURL as URL in enumerator {
-            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                total += UInt64(size)
-            }
+        if proc.terminationStatus != 0 {
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown Error"
+            throw NSError(domain: "AppScanError", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Scan failed (\(proc.terminationStatus)): \(errStr)"])
         }
-        return total
+
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private nonisolated func lastUsedDate(for path: String) -> Date? {
-        let url = URL(fileURLWithPath: path)
-
-        // 1. Try Spotlight kMDItemLastUsedDate (most accurate when available)
-        if let item = MDItemCreateWithURL(nil, url as CFURL),
-           let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date
-        {
-            return date
-        }
-
-        // 2. Try content modification date from Spotlight
-        if let item = MDItemCreateWithURL(nil, url as CFURL),
-           let date = MDItemCopyAttribute(item, kMDItemContentModificationDate) as? Date
-        {
-            return date
-        }
-
-        // 3. Fall back to file system contentAccessDate or contentModificationDate
-        let fm = FileManager.default
-        if let values = try? url.resourceValues(forKeys: [.contentAccessDateKey, .contentModificationDateKey]) {
-            return values.contentAccessDate ?? values.contentModificationDate
-        }
-
-        // 4. Last resort: Info.plist modification date
-        let plistURL = url.appendingPathComponent("Contents/Info.plist")
-        if let attrs = try? fm.attributesOfItem(atPath: plistURL.path),
-           let date = attrs[.modificationDate] as? Date
-        {
-            return date
-        }
-
-        return nil
+    private nonisolated func shellEscape(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
@@ -161,65 +147,27 @@ final class UninstallModel {
     init() {}
 
     func findRelatedFiles(for app: AppInfo) -> [URL] {
-        let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
-        let library = home.appendingPathComponent("Library")
-        var related: [URL] = []
-
-        let name = app.name
-        let bundleId = app.bundleIdentifier
-
-        // ~/Library/Application Support/{name or bundleId}
-        if let bundleId {
-            let path = library.appendingPathComponent("Application Support/\(bundleId)")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-        let appSupportName = library.appendingPathComponent("Application Support/\(name)")
-        if fm.fileExists(atPath: appSupportName.path) { related.append(appSupportName) }
-
-        // ~/Library/Caches/{bundleId}
-        if let bundleId {
-            let path = library.appendingPathComponent("Caches/\(bundleId)")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-
-        // ~/Library/Preferences/{bundleId}.plist
-        if let bundleId {
-            let path = library.appendingPathComponent("Preferences/\(bundleId).plist")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-
-        // ~/Library/Logs/{name or bundleId}
-        if let bundleId {
-            let path = library.appendingPathComponent("Logs/\(bundleId)")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-        let logsName = library.appendingPathComponent("Logs/\(name)")
-        if fm.fileExists(atPath: logsName.path) { related.append(logsName) }
-
-        // ~/Library/Saved Application State/{bundleId}.savedState
-        if let bundleId {
-            let path = library.appendingPathComponent("Saved Application State/\(bundleId).savedState")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-
-        // ~/Library/Containers/{bundleId}
-        if let bundleId {
-            let path = library.appendingPathComponent("Containers/\(bundleId)")
-            if fm.fileExists(atPath: path.path) { related.append(path) }
-        }
-
-        // ~/Library/Group Containers/*{bundleId}*
-        if let bundleId {
-            let groupDir = library.appendingPathComponent("Group Containers")
-            if let items = try? fm.contentsOfDirectory(atPath: groupDir.path) {
-                for item in items where item.contains(bundleId) {
-                    related.append(groupDir.appendingPathComponent(item))
-                }
-            }
-        }
-
-        return related
+        guard let root = CLIExecutor.findMoleRoot() else { return [] }
+        let bundleID = app.bundleIdentifier ?? "unknown"
+        let script = """
+        set -euo pipefail
+        export MOLE_TEST_MODE=1
+        ROOT=\(shellEscape(root.path))
+        BUNDLE_ID=\(shellEscape(bundleID))
+        APP_NAME=\(shellEscape(app.name))
+        source "$ROOT/lib/core/common.sh"
+        source "$ROOT/lib/core/app_protection.sh"
+        find_app_files "$BUNDLE_ID" "$APP_NAME" || true
+        find_app_system_files "$BUNDLE_ID" "$APP_NAME" || true
+        """
+        let output = (try? runSync("bash -lc \(shellEscape(script))")) ?? ""
+        var seen = Set<String>()
+        return output
+            .split(separator: "\n")
+            .map { String($0) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
+            .map { URL(fileURLWithPath: $0) }
     }
 
     func uninstall(app: AppInfo, relatedFiles: [URL]) async throws {
@@ -227,19 +175,51 @@ final class UninstallModel {
         errorMessage = nil
         defer { isUninstalling = false }
 
-        let allURLs = [app.path] + relatedFiles
-
-        // Use NSWorkspace.recycle to move to Trash (safer than rm)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            NSWorkspace.shared.recycle(allURLs) { _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
+        _ = relatedFiles // related files are resolved by Mole core during batch uninstall.
+        guard let root = CLIExecutor.findMoleRoot() else {
+            throw CLIExecutor.ExecutionError.commandNotFound("mole")
         }
+        let bundleID = app.bundleIdentifier ?? "unknown"
+        let selected = "0|\(app.path.path)|\(app.name)|\(bundleID)|0|Unknown|0"
+        let script = """
+        set -euo pipefail
+        export MOLE_TEST_MODE=1
+        ROOT=\(shellEscape(root.path))
+        APP_ENTRY=\(shellEscape(selected))
+        tmp_script=$(mktemp "${TMPDIR:-/tmp}/mole-uninstall-nomain.XXXXXX")
+        awk '$0 != "main \\"$@\\"" {print}' "$ROOT/bin/uninstall.sh" | sed "s|^SCRIPT_DIR=.*|SCRIPT_DIR=\\"$ROOT/bin\\"|" > "$tmp_script"
+        source "$tmp_script"
+        selected_apps=("$APP_ENTRY")
+        printf '\\n' | batch_uninstall_applications
+        rm -f "$tmp_script"
+        """
+        _ = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
 
         uninstalledApps.insert(app.id)
+    }
+
+    private nonisolated func runSync(_ command: String) throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-lc", command]
+        let out = Pipe()
+        proc.standardOutput = out
+        let err = Pipe()
+        proc.standardError = err
+        try proc.run()
+        proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown Error"
+            throw NSError(domain: "UninstallError", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Command failed (\(proc.terminationStatus)): \(errStr)"])
+        }
+
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private nonisolated func shellEscape(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
