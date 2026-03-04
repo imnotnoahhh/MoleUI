@@ -181,7 +181,7 @@ struct DashboardView: View {
                 description: Text(error)
             )
         } else {
-            ProgressView("Connecting to status-go...")
+            ProgressView("Loading system metrics...")
         }
     }
 

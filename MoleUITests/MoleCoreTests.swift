@@ -337,14 +337,14 @@ private let sampleMetricsJSON = """
     #expect(!paths.isEmpty)
 }
 
-// MARK: - status-go Integration (skipped if binary unavailable)
+// MARK: - Mole CLI Integration (skipped if binary unavailable)
 
-@Test func statusGoOutputDecodesAsMetricsSnapshot() async throws {
+@Test func moleStatusOutputDecodesAsMetricsSnapshot() async throws {
     let candidates = [
-        Bundle.main.resourceURL?.appendingPathComponent("mole/status-go").path,
-        "/opt/homebrew/bin/status-go",
-        "/usr/local/bin/status-go",
-        NSHomeDirectory() + "/.config/mole/bin/status-go"
+        Bundle.main.resourceURL?.appendingPathComponent("mole/mole").path,
+        "/opt/homebrew/bin/mole",
+        "/usr/local/bin/mole",
+        NSHomeDirectory() + "/.config/mole/bin/mole"
     ].compactMap { $0 }
 
     guard let binaryPath = candidates.first(where: {
@@ -353,21 +353,20 @@ private let sampleMetricsJSON = """
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binaryPath)
+    process.arguments = ["status", "--json"]
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
     try process.run()
 
-    // Wait briefly for status-go to produce its first JSON line
+    // Wait briefly for mole to produce JSON output
     try await Task.sleep(for: .seconds(2))
     let data = pipe.fileHandleForReading.availableData
     process.terminate()
 
-    guard let jsonLine = String(data: data, encoding: .utf8)?
-        .components(separatedBy: "\n")
-        .first(where: { $0.hasPrefix("{") }),
-        let jsonData = jsonLine.data(using: .utf8) else {
-        // status-go didn't produce output in test environment, skip
+    guard !data.isEmpty,
+          let jsonData = data.isEmpty ? nil : data else {
+        // mole didn't produce output in test environment, skip
         return
     }
 
