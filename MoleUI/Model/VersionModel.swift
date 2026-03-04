@@ -52,8 +52,11 @@ final class VersionModel {
         {
             return bundled
         }
-        for path in ["/usr/local/bin/mole", "/opt/homebrew/bin/mole",
-                     NSHomeDirectory() + "/.config/mole/mole"]
+        for path in [
+            "/usr/local/bin/mole",
+            "/opt/homebrew/bin/mole",
+            NSHomeDirectory() + "/.config/mole/mole",
+        ]
             where fm.isExecutableFile(atPath: path)
         {
             return path

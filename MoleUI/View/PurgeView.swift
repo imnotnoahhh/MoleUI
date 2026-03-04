@@ -85,7 +85,7 @@ struct PurgeView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-        if service.isScanning && service.targets.isEmpty {
+        if service.isScanning, service.targets.isEmpty {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning project directories...")
@@ -105,7 +105,7 @@ struct PurgeView: View {
             }
         }
 
-        if service.targets.isEmpty && !service.isScanning {
+        if service.targets.isEmpty, !service.isScanning {
             GroupBox {
                 Text("No build artifacts found in scan paths.")
                     .foregroundStyle(.secondary)
@@ -198,20 +198,20 @@ struct PurgeView: View {
 
     private func iconForArtifact(_ name: String) -> String {
         switch name {
-        case "node_modules": return "shippingbox"
+        case "node_modules": "shippingbox"
         case "target", "build", "dist", ".output", "zig-out", "obj", ".build":
-            return "hammer"
+            "hammer"
         case "venv", ".venv", ".tox", ".nox":
-            return "terminal"
-        case "DerivedData": return "xcode"
-        case "Pods": return "puzzlepiece"
-        case ".gradle": return "gearshape.2"
+            "terminal"
+        case "DerivedData": "xcode"
+        case "Pods": "puzzlepiece"
+        case ".gradle": "gearshape.2"
         case "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache":
-            return "memorychip"
+            "memorychip"
         case ".next", ".nuxt", ".angular", ".svelte-kit", ".astro":
-            return "globe"
-        case "coverage": return "chart.bar"
-        default: return "folder"
+            "globe"
+        case "coverage": "chart.bar"
+        default: "folder"
         }
     }
 

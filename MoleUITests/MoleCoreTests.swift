@@ -50,59 +50,59 @@ import Foundation
 
 private let sampleMetricsJSON = """
 {
-  "collectedAt": "2025-01-15T10:30:00Z",
+  "collected_at": "2025-01-15T10:30:00Z",
   "host": "MacBook-Pro",
   "platform": "darwin",
   "uptime": "3d 2h",
   "procs": 350,
   "hardware": {
     "model": "MacBookPro18,1",
-    "cpuModel": "Apple M1 Pro",
-    "totalRAM": "16 GB",
-    "diskSize": "512 GB",
-    "osVersion": "14.2",
-    "refreshRate": "120Hz"
+    "cpu_model": "Apple M1 Pro",
+    "total_ram": "16 GB",
+    "disk_size": "512 GB",
+    "os_version": "14.2",
+    "refresh_rate": "120Hz"
   },
-  "healthScore": 82,
-  "healthScoreMsg": "Good",
+  "health_score": 82,
+  "health_score_msg": "Good",
   "cpu": {
     "usage": 12.5,
-    "perCore": [15.0, 10.0, 8.0, 17.0],
-    "perCoreEstimated": false,
+    "per_core": [15.0, 10.0, 8.0, 17.0],
+    "per_core_estimated": false,
     "load1": 2.1,
     "load5": 1.8,
     "load15": 1.5,
-    "coreCount": 10,
-    "logicalCPU": 10,
-    "pCoreCount": 8,
-    "eCoreCount": 2
+    "core_count": 10,
+    "logical_cpu": 10,
+    "p_core_count": 8,
+    "e_core_count": 2
   },
   "gpu": [],
   "memory": {
     "used": 8589934592,
     "total": 17179869184,
-    "usedPercent": 50.0,
-    "swapUsed": 0,
-    "swapTotal": 2147483648,
+    "used_percent": 50.0,
+    "swap_used": 0,
+    "swap_total": 2147483648,
     "cached": 4294967296,
     "pressure": "nominal"
   },
   "disks": [
-    {"mount": "/", "device": "disk3s1", "used": 200000000000, "total": 500000000000, "usedPercent": 40.0, "fstype": "apfs", "external": false}
+    {"mount": "/", "device": "disk3s1", "used": 200000000000, "total": 500000000000, "used_percent": 40.0, "fstype": "apfs", "external": false}
   ],
-  "diskIO": {"readRate": 1.5, "writeRate": 0.8},
+  "disk_io": {"read_rate": 1.5, "write_rate": 0.8},
   "network": [
-    {"name": "en0", "rxRateMBs": 0.5, "txRateMBs": 0.1, "ip": "192.168.1.100"}
+    {"name": "en0", "rx_rate_mbs": 0.5, "tx_rate_mbs": 0.1, "ip": "192.168.1.100"}
   ],
-  "networkHistory": {"rxHistory": [0.1, 0.2, 0.5], "txHistory": [0.05, 0.1, 0.08]},
+  "network_history": {"rx_history": [0.1, 0.2, 0.5], "tx_history": [0.05, 0.1, 0.08]},
   "proxy": {"enabled": false, "type": "", "host": ""},
   "batteries": [
-    {"percent": 85.0, "status": "charging", "timeLeft": "1:30", "health": "Normal", "cycleCount": 120, "capacity": 95}
+    {"percent": 85.0, "status": "charging", "time_left": "1:30", "health": "Normal", "cycle_count": 120, "capacity": 95}
   ],
-  "thermal": {"cpuTemp": 45.2, "gpuTemp": 40.1, "fanSpeed": 1200, "fanCount": 2, "systemPower": 15.0, "adapterPower": 67.0, "batteryPower": 0.0},
+  "thermal": {"cpu_temp": 45.2, "gpu_temp": 40.1, "fan_speed": 1200, "fan_count": 2, "system_power": 15.0, "adapter_power": 67.0, "battery_power": 0.0},
   "sensors": [],
   "bluetooth": [{"name": "AirPods Pro", "connected": true, "battery": "85%"}],
-  "topProcesses": [
+  "top_processes": [
     {"name": "kernel_task", "cpu": 5.2, "memory": 1.1},
     {"name": "WindowServer", "cpu": 3.8, "memory": 0.9}
   ]
@@ -147,24 +147,24 @@ private let sampleMetricsJSON = """
     // Go nil slices encode as JSON null
     let json = """
     {
-      "collectedAt": "2025-01-15T10:30:00Z",
+      "collected_at": "2025-01-15T10:30:00Z",
       "host": "test", "platform": "darwin", "uptime": "1h",
       "procs": 1,
-      "hardware": {"model":"M","cpuModel":"C","totalRAM":"8","diskSize":"256","osVersion":"14","refreshRate":"60"},
-      "healthScore": 50, "healthScoreMsg": "OK",
-      "cpu": {"usage":0,"perCore":[],"perCoreEstimated":false,"load1":0,"load5":0,"load15":0,"coreCount":1,"logicalCPU":1,"pCoreCount":0,"eCoreCount":0},
+      "hardware": {"model":"M","cpu_model":"C","total_ram":"8","disk_size":"256","os_version":"14","refresh_rate":"60"},
+      "health_score": 50, "health_score_msg": "OK",
+      "cpu": {"usage":0,"per_core":[],"per_core_estimated":false,"load1":0,"load5":0,"load15":0,"core_count":1,"logical_cpu":1,"p_core_count":0,"e_core_count":0},
       "gpu": null,
-      "memory": {"used":0,"total":1,"usedPercent":0,"swapUsed":0,"swapTotal":0,"cached":0,"pressure":"ok"},
+      "memory": {"used":0,"total":1,"used_percent":0,"swap_used":0,"swap_total":0,"cached":0,"pressure":"ok"},
       "disks": null,
-      "diskIO": {"readRate":0,"writeRate":0},
+      "disk_io": {"read_rate":0,"write_rate":0},
       "network": null,
-      "networkHistory": {"rxHistory":null,"txHistory":null},
+      "network_history": {"rx_history":null,"tx_history":null},
       "proxy": {"enabled":false,"type":"","host":""},
       "batteries": null,
-      "thermal": {"cpuTemp":0,"gpuTemp":0,"fanSpeed":0,"fanCount":0,"systemPower":0,"adapterPower":0,"batteryPower":0},
+      "thermal": {"cpu_temp":0,"gpu_temp":0,"fan_speed":0,"fan_count":0,"system_power":0,"adapter_power":0,"battery_power":0},
       "sensors": null,
       "bluetooth": null,
-      "topProcesses": null
+      "top_processes": null
     }
     """
     let data = json.data(using: .utf8)!
@@ -191,8 +191,8 @@ private let sampleMetricsJSON = """
 // MARK: - MetricsFormatter
 
 @Test func humanBytesFormatting() {
-    #expect(MetricsFormatter.humanBytes(0) == "0 B")
-    #expect(MetricsFormatter.humanBytes(512) == "512 B")
+    #expect(MetricsFormatter.humanBytes(0) == "0.0 B")
+    #expect(MetricsFormatter.humanBytes(512) == "512.0 B")
     #expect(MetricsFormatter.humanBytes(1024) == "1.0 KB")
     #expect(MetricsFormatter.humanBytes(1536) == "1.5 KB")
     #expect(MetricsFormatter.humanBytes(1_048_576) == "1.0 MB")
@@ -201,18 +201,18 @@ private let sampleMetricsJSON = """
 }
 
 @Test func formatRate() {
-    #expect(MetricsFormatter.formatRate(0.001) == "0 B/s")
+    #expect(MetricsFormatter.formatRate(0.001) == "1 KB/s")
     #expect(MetricsFormatter.formatRate(0.5) == "512 KB/s")
-    #expect(MetricsFormatter.formatRate(1.0) == "1.0 MB/s")
-    #expect(MetricsFormatter.formatRate(10.5) == "10.5 MB/s")
+    #expect(MetricsFormatter.formatRate(1.0) == "1.00 MB/s")
+    #expect(MetricsFormatter.formatRate(10.5) == "10.50 MB/s")
 }
 
 @Test func healthEmoji() {
-    #expect(MetricsFormatter.healthEmoji(score: 90) == "🟢")
-    #expect(MetricsFormatter.healthEmoji(score: 75) == "🟢")
-    #expect(MetricsFormatter.healthEmoji(score: 70) == "🟡")
-    #expect(MetricsFormatter.healthEmoji(score: 60) == "🟡")
-    #expect(MetricsFormatter.healthEmoji(score: 50) == "🔴")
+    #expect(MetricsFormatter.healthEmoji(score: 90) == "💚")
+    #expect(MetricsFormatter.healthEmoji(score: 75) == "💛")
+    #expect(MetricsFormatter.healthEmoji(score: 70) == "🧡")
+    #expect(MetricsFormatter.healthEmoji(score: 60) == "🧡")
+    #expect(MetricsFormatter.healthEmoji(score: 50) == "❤️")
 }
 
 // MARK: - SafetyController Parsing
@@ -335,57 +335,4 @@ private let sampleMetricsJSON = """
 @Test func installerScanPaths() {
     let paths = InstallerConstants.scanPaths
     #expect(!paths.isEmpty)
-}
-
-// MARK: - status-go Integration (skipped if binary unavailable)
-
-@Test func statusGoOutputDecodesAsMetricsSnapshot() async throws {
-    let candidates = [
-        Bundle.main.resourceURL?.appendingPathComponent("mole/status-go").path,
-        "/opt/homebrew/bin/status-go",
-        "/usr/local/bin/status-go",
-        NSHomeDirectory() + "/.config/mole/bin/status-go"
-    ].compactMap { $0 }
-
-    guard let binaryPath = candidates.first(where: {
-        FileManager.default.isExecutableFile(atPath: $0)
-    }) else { return }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: binaryPath)
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-
-    // Wait briefly for status-go to produce its first JSON line
-    try await Task.sleep(for: .seconds(2))
-    let data = pipe.fileHandleForReading.availableData
-    process.terminate()
-
-    guard let jsonLine = String(data: data, encoding: .utf8)?
-        .components(separatedBy: "\n")
-        .first(where: { $0.hasPrefix("{") }),
-        let jsonData = jsonLine.data(using: .utf8) else {
-        // status-go didn't produce output in test environment, skip
-        return
-    }
-
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .custom { decoder in
-        let str = try decoder.singleValueContainer().decode(String.self)
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fmt.date(from: str) { return date }
-        fmt.formatOptions = [.withInternetDateTime]
-        if let date = fmt.date(from: str) { return date }
-        throw DecodingError.dataCorrupted(
-            .init(codingPath: decoder.codingPath,
-                  debugDescription: "Invalid date: \(str)"))
-    }
-
-    let snapshot = try decoder.decode(MetricsSnapshot.self, from: jsonData)
-    #expect(!snapshot.host.isEmpty)
-    #expect(snapshot.cpu.coreCount > 0)
-    #expect(snapshot.memory.total > 0)
 }

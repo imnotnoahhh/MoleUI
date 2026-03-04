@@ -7,41 +7,57 @@ struct MoleAnimationView: View {
     private let timer = Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()
 
     private static let bodyRight: [[String]] = [
-        [#"     /\_/\"#,
-         #" ___/ o o \"#,
-         #"/___   =-= /"#,
-         #"\____)-m-m)"#],
-        [#"     /\_/\"#,
-         #" ___/ o o \"#,
-         #"/___   =-= /"#,
-         #"\____)mm__)"#],
-        [#"     /\_/\"#,
-         #" ___/ · · \"#,
-         #"/___   =-= /"#,
-         #"\___)-m__m)"#],
-        [#"     /\_/\"#,
-         #" ___/ o o \"#,
-         #"/___   =-= /"#,
-         #"\____)-mm-)"#],
+        [
+            #"     /\_/\"#,
+            #" ___/ o o \"#,
+            #"/___   =-= /"#,
+            #"\____)-m-m)"#,
+        ],
+        [
+            #"     /\_/\"#,
+            #" ___/ o o \"#,
+            #"/___   =-= /"#,
+            #"\____)mm__)"#,
+        ],
+        [
+            #"     /\_/\"#,
+            #" ___/ · · \"#,
+            #"/___   =-= /"#,
+            #"\___)-m__m)"#,
+        ],
+        [
+            #"     /\_/\"#,
+            #" ___/ o o \"#,
+            #"/___   =-= /"#,
+            #"\____)-mm-)"#,
+        ],
     ]
 
     private static let bodyLeft: [[String]] = [
-        [#"    /\_/\"#,
-         #"   / o o \___"#,
-         #"  \ =-=   ___\"#,
-         #"  (m-m-(____/"#],
-        [#"    /\_/\"#,
-         #"   / o o \___"#,
-         #"  \ =-=   ___\"#,
-         #"  (__mm(____/"#],
-        [#"    /\_/\"#,
-         #"   / · · \___"#,
-         #"  \ =-=   ___\"#,
-         #"  (m__m-(___/"#],
-        [#"    /\_/\"#,
-         #"   / o o \___"#,
-         #"  \ =-=   ___\"#,
-         #"  (-mm-(____/"#],
+        [
+            #"    /\_/\"#,
+            #"   / o o \___"#,
+            #"  \ =-=   ___\"#,
+            #"  (m-m-(____/"#,
+        ],
+        [
+            #"    /\_/\"#,
+            #"   / o o \___"#,
+            #"  \ =-=   ___\"#,
+            #"  (__mm(____/"#,
+        ],
+        [
+            #"    /\_/\"#,
+            #"   / · · \___"#,
+            #"  \ =-=   ___\"#,
+            #"  (m__m-(___/"#,
+        ],
+        [
+            #"    /\_/\"#,
+            #"   / o o \___"#,
+            #"  \ =-=   ___\"#,
+            #"  (-mm-(____/"#,
+        ],
     ]
 
     var body: some View {
@@ -149,7 +165,11 @@ struct DashboardView: View {
                     }
                     equalHeightRow {
                         processCard(snap.topProcesses)
-                        networkCard(snap.network, history: snap.networkHistory, proxy: snap.proxy)
+                        networkCard(
+                            snap.network,
+                            history: service.networkHistoryForDisplay(from: snap.networkHistory),
+                            proxy: snap.proxy
+                        )
                     }
                 }
                 .padding()
@@ -161,14 +181,14 @@ struct DashboardView: View {
                 description: Text(error)
             )
         } else {
-            ProgressView("Connecting to status-go...")
+            ProgressView("Loading system metrics...")
         }
     }
 
     // MARK: - Header
 
-    private func equalHeightRow<L: View, R: View>(
-        @ViewBuilder content: () -> TupleView<(L, R)>
+    private func equalHeightRow(
+        @ViewBuilder content: () -> TupleView<(some View, some View)>
     ) -> some View {
         let views = content()
         return HStack(alignment: .top, spacing: 12) {

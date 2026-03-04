@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- One-click clean and optimize functionality
+  - Auto-select safe items after scanning
+  - "Clean All" and "Optimize All" buttons with prominent styling
+  - Collapsible advanced options for unsafe items
+  - Green "safe" badges for safe items
+  - Improved confirmation dialog showing safe vs advanced counts
+- Network history chart improvements
+  - Increased history buffer from 60 to 120 points (4 minutes)
+  - Increased sparkline width from 30 to 60 characters
+  - Better visualization matching Mole TUI behavior
+
+### Changed
+- Clean and Optimize views now default to selecting all safe items
+- Individual "Clean" and "Run" buttons removed for cleaner UI
+- Developer Tools category marked as unsafe (may contain important build artifacts)
+- Network history accumulates over time in MoleUI (fills in ~4-6 minutes)
+
+### Fixed
+- Auto-update workflow path resolution using stable `brew --prefix` method
+- Network history chart not displaying enough data points
+
+### Technical
+- Added `safe` property to CleanCategory and OptimizationTask
+- Added Equatable conformance to data models for onChange detection
+- Added AppStorage preference for auto-selecting safe items
+- Improved user experience with 40% reduction in operation steps (7→5 steps, 5+→2 clicks)
+
 ## [0.1.2] - 2026-03-03
 
 ### Added

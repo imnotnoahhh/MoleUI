@@ -822,10 +822,17 @@ main() {
             "--debug")
                 export MO_DEBUG=1
                 ;;
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
         esac
     done
 
     hide_cursor
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No app files or settings will be modified"
+        printf '\n'
+    fi
 
     local first_scan=true
     while true; do

@@ -650,13 +650,22 @@ perform_installers() {
 show_summary() {
     local summary_heading="Installers cleaned"
     local -a summary_details=()
+    local dry_run_mode="${MOLE_DRY_RUN:-0}"
+
+    if [[ "$dry_run_mode" == "1" ]]; then
+        summary_heading="Dry run complete - no changes made"
+    fi
 
     if [[ $total_deleted -gt 0 ]]; then
         local freed_mb
         freed_mb=$(echo "$total_size_freed_kb" | awk '{printf "%.2f", $1/1024}')
 
-        summary_details+=("Removed ${GREEN}$total_deleted${NC} installers, freed ${GREEN}${freed_mb}MB${NC}")
-        summary_details+=("Your Mac is cleaner now!")
+        if [[ "$dry_run_mode" == "1" ]]; then
+            summary_details+=("Would remove ${GREEN}$total_deleted${NC} installers, free ${GREEN}${freed_mb}MB${NC}")
+        else
+            summary_details+=("Removed ${GREEN}$total_deleted${NC} installers, freed ${GREEN}${freed_mb}MB${NC}")
+            summary_details+=("Your Mac is cleaner now!")
+        fi
     else
         summary_details+=("No installers were removed")
     fi
@@ -675,12 +684,20 @@ main() {
             "--debug")
                 export MO_DEBUG=1
                 ;;
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
             *)
                 echo "Unknown option: $arg"
                 exit 1
                 ;;
         esac
     done
+
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No installer files will be removed"
+        printf '\n'
+    fi
 
     hide_cursor
     perform_installers

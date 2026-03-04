@@ -297,6 +297,11 @@
 - ✅ External disk detection
 - ✅ Network history graphs
 - ✅ Hardware info (model, CPU, RAM, disk size)
+- ✅ One-click clean and optimize (CleanMyMac-style UX)
+- ✅ Auto-select safe items after scanning
+- ✅ Collapsible advanced options
+- ✅ Safe item badges
+- ✅ Auto-update workflow fix (brew --prefix path resolution)
 
 ## Notes
 

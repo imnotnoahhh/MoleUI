@@ -60,6 +60,10 @@ supports_touchid() {
     return 1
 }
 
+touchid_dry_run_enabled() {
+    [[ "${MOLE_DRY_RUN:-0}" == "1" ]]
+}
+
 # Show current Touch ID status
 show_status() {
     if is_touchid_configured; then
@@ -73,6 +77,16 @@ show_status() {
 enable_touchid() {
     # Cleanup trap handled by global EXIT trap
     local temp_file=""
+
+    if touchid_dry_run_enabled; then
+        if is_touchid_configured; then
+            echo -e "${GREEN}${ICON_SUCCESS} Touch ID is already enabled, no changes needed${NC}"
+        else
+            echo -e "${GREEN}${ICON_SUCCESS} [DRY RUN] Would enable Touch ID for sudo${NC}"
+            echo -e "${GRAY}${ICON_REVIEW} Target files: ${PAM_SUDO_FILE} and/or ${PAM_SUDO_LOCAL_FILE}${NC}"
+        fi
+        return 0
+    fi
 
     # First check if system supports Touch ID
     if ! supports_touchid; then
@@ -201,6 +215,16 @@ disable_touchid() {
     # Cleanup trap handled by global EXIT trap
     local temp_file=""
 
+    if touchid_dry_run_enabled; then
+        if ! is_touchid_configured; then
+            echo -e "${YELLOW}Touch ID is not currently enabled${NC}"
+        else
+            echo -e "${GREEN}${ICON_SUCCESS} [DRY RUN] Would disable Touch ID for sudo${NC}"
+            echo -e "${GRAY}${ICON_REVIEW} Target files: ${PAM_SUDO_FILE} and/or ${PAM_SUDO_LOCAL_FILE}${NC}"
+        fi
+        return 0
+    fi
+
     if ! is_touchid_configured; then
         echo -e "${YELLOW}Touch ID is not currently enabled${NC}"
         return 0
@@ -303,12 +327,39 @@ show_menu() {
 
 # Main
 main() {
-    local command="${1:-}"
+    local command=""
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
+            "--help" | "-h")
+                show_touchid_help
+                return 0
+                ;;
+            enable | disable | status)
+                if [[ -z "$command" ]]; then
+                    command="$arg"
+                else
+                    log_error "Only one touchid command is supported per run"
+                    return 1
+                fi
+                ;;
+            *)
+                log_error "Unknown command: $arg"
+                return 1
+                ;;
+        esac
+    done
+
+    if touchid_dry_run_enabled; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No sudo authentication files will be modified"
+        echo ""
+    fi
 
     case "$command" in
-        "--help" | "-h")
-            show_touchid_help
-            ;;
         enable)
             enable_touchid
             ;;

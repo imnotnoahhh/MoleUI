@@ -10,8 +10,8 @@ final class SettingsModel {
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        configDir = home.appendingPathComponent(".config/mole")
-        filePath = configDir.appendingPathComponent("whitelist")
+        self.configDir = home.appendingPathComponent(".config/mole")
+        self.filePath = configDir.appendingPathComponent("whitelist")
         load()
     }
 

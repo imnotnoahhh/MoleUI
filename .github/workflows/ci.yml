@@ -56,13 +56,12 @@ jobs:
 
       - name: Run tests
         run: |
-          xcodebuild -scheme MoleUITests \
+          xcodebuild test -scheme MoleUI \
             -configuration Debug \
             -destination 'platform=macOS' \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            test
+            CODE_SIGNING_ALLOWED=NO
 
   security-scan:
     name: Security Scan

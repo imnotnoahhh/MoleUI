@@ -16,14 +16,14 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .status: return "waveform.path.ecg"
-        case .diskAnalyzer: return "internaldrive"
-        case .clean: return "trash"
-        case .purge: return "folder.badge.minus"
-        case .installer: return "opticaldiscdrive"
-        case .optimize: return "bolt.fill"
-        case .uninstall: return "xmark.app"
-        case .settings: return "gear"
+        case .status: "waveform.path.ecg"
+        case .diskAnalyzer: "internaldrive"
+        case .clean: "trash"
+        case .purge: "folder.badge.minus"
+        case .installer: "opticaldiscdrive"
+        case .optimize: "bolt.fill"
+        case .uninstall: "xmark.app"
+        case .settings: "gear"
         }
     }
 }
