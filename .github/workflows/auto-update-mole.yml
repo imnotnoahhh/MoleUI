@@ -52,9 +52,7 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true'
         run: |
           rm -rf Resources/mole/*
-          MOLE_PATH=$(which mole)
-          MOLE_REAL=$(readlink "$MOLE_PATH")
-          MOLE_ROOT=$(dirname $(dirname "$MOLE_REAL"))
+          MOLE_ROOT=$(brew --prefix mole)
           mkdir -p Resources/mole
           cp -R "$MOLE_ROOT/libexec/"* Resources/mole/
           cp "$MOLE_ROOT/bin/mole" Resources/mole/
