@@ -27,3 +27,6 @@ Package.resolved
 
 # Claude Code project instructions
 CLAUDE.md
+
+# Mole CLI backup
+Resources/mole.backup/
