@@ -225,6 +225,16 @@ final class UninstallModel {
         errorMessage = nil
         defer { isUninstalling = false }
 
+        // Request sudo access once upfront
+        let hasAccess = await SudoHelper.requestSudoAccess()
+        guard hasAccess else {
+            throw NSError(
+                domain: "UninstallError",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+            )
+        }
+
         _ = relatedFiles // related files are resolved by Mole core during batch uninstall.
         guard let root = CLIExecutor.findMoleRoot() else {
             throw CLIExecutor.ExecutionError.commandNotFound("mole")

@@ -62,10 +62,15 @@ final class InstallerModel {
         completedFiles = []
 
         do {
-            files = try await findInstallersWithMole().sorted { $0.sizeBytes > $1.sizeBytes }
+            let results = try await findInstallersWithMole()
+            files = results.sorted { $0.sizeBytes > $1.sizeBytes }
         } catch {
             files = []
-            errorMessage = error.localizedDescription
+            if let cliError = error as? CLIExecutor.ExecutionError {
+                errorMessage = "Failed to scan installers: \(cliError)"
+            } else {
+                errorMessage = "Failed to scan installers: \(error)"
+            }
         }
         isScanning = false
     }
@@ -77,15 +82,9 @@ final class InstallerModel {
             completedFiles.insert(file.id)
             files.removeAll { $0.id == file.id }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Failed to delete file: \(error)"
         }
         deletingFile = nil
-    }
-
-    func deleteSelected(ids: Set<String>) async {
-        for file in files where ids.contains(file.id) {
-            await deleteFile(file)
-        }
     }
 
     // MARK: - Mole Core Integration
@@ -95,31 +94,48 @@ final class InstallerModel {
             throw CLIExecutor.ExecutionError.commandNotFound("mole")
         }
 
-        let script = """
-        set -euo pipefail
+        // Step 1: Get file paths from Mole with metadata
+        let scanScript = """
+        set -eo pipefail
         ROOT=\(shellEscape(root.path))
         export MOLE_TEST_MODE=1
         source "$ROOT/bin/installer.sh"
-        collect_installers >/dev/null 2>&1 || true
-        for i in "${!INSTALLER_PATHS[@]}"; do
-          path="${INSTALLER_PATHS[$i]}"
-          size="${INSTALLER_SIZES[$i]}"
-          source_name="${INSTALLER_SOURCES[$i]}"
-          name="$(basename "$path")"
-          printf '%s|%s|%s|%s\\n' "$path" "$size" "$source_name" "$name"
+
+        # Use Mole's scan_all_installers and get_source_display
+        scan_all_installers | while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            size=$(stat -f%z "$file" 2>/dev/null || echo 0)
+            source=$(get_source_display "$file")
+            name=$(basename "$file")
+            printf '%s|%s|%s|%s\\n' "$file" "$size" "$source" "$name"
         done
         """
 
-        let output = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
-        return output
+        let executor = CLIExecutor()
+        let result = try await executor.execute(
+            command: "bash -c \(shellEscape(scanScript))",
+            options: CLIExecutor.ExecutionOptions(
+                timeout: 30,
+                captureStderr: true,
+                parseProgress: false,
+                dryRun: false
+            )
+        )
+
+        let output = result.stdout
+
+        // Step 2: Parse the pipe-delimited output
+        let results = output
             .split(separator: "\n")
             .compactMap { line -> InstallerFile? in
                 let parts = line.split(separator: "|", omittingEmptySubsequences: false)
                 guard parts.count >= 4 else { return nil }
+
                 let path = String(parts[0])
                 let size = UInt64(parts[1]) ?? 0
                 let source = String(parts[2])
                 let name = String(parts[3])
+
                 return InstallerFile(
                     path: URL(fileURLWithPath: path),
                     name: name,
@@ -127,6 +143,8 @@ final class InstallerModel {
                     source: source
                 )
             }
+
+        return results
     }
 
     private func deleteWithMole(_ path: String) async throws {
@@ -140,7 +158,7 @@ final class InstallerModel {
         source "$ROOT/lib/core/common.sh"
         safe_remove "$TARGET" true >/dev/null
         """
-        _ = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
+        _ = try await CLIExecutor.run("bash -c \(shellEscape(script))")
     }
 
     private func shellEscape(_ s: String) -> String {

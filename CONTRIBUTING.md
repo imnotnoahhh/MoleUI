@@ -68,7 +68,14 @@ Mole UI wraps the [Mole CLI tool](https://github.com/tw93/Mole). When Mole CLI u
    - Does `mole status --json` output match `MetricsSnapshot` parsing contract?
    - Do shell scripts in `Resources/mole/bin/` still exist?
    - Are new subcommands added that GUI should support?
-4. **Run automated tests**: `xcodebuild -scheme MoleUI -destination 'platform=macOS' -derivedDataPath /tmp/MoleUI-DerivedData test CODE_SIGN_IDENTITY='Apple Development' CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES`
+4. **Run automated tests**:
+   ```bash
+   xcodebuild -scheme MoleUI test \
+     -destination 'platform=macOS' \
+     CODE_SIGN_IDENTITY="-" \
+     CODE_SIGNING_REQUIRED=NO \
+     CODE_SIGNING_ALLOWED=NO
+   ```
 5. **Report issues**: If tests fail or features break, create an issue with:
    - Mole CLI version (check `.mole-cli-version`)
    - Error messages or unexpected behavior
@@ -210,22 +217,26 @@ Before submitting any code, ensure it passes all quality checks.
 
 ### CI Pipeline
 
-The project uses GitHub Actions with three parallel jobs:
+The project uses GitHub Actions with the following workflow:
 
-1. **Code Quality** (SwiftFormat + SwiftLint)
-   - Validates code formatting
-   - Enforces Swift style conventions
+1. **Code Quality** (runs first)
+   - Validates code formatting with SwiftFormat
+   - Enforces Swift style conventions with SwiftLint
    - Must pass with 0 violations
 
 2. **Build & Test** (depends on Code Quality)
    - Compiles the project
-   - Runs 45+ unit and UI tests
+   - Runs 59 unit and UI tests (44 core + 15 UI flow)
    - Validates CLI integration
 
 3. **Security Scan** (parallel with Build & Test)
    - Detects hardcoded secrets
    - Checks for unsafe Swift patterns
    - Validates security best practices
+
+4. **Test Coverage** (depends on Build & Test, PR only)
+   - Generates code coverage report
+   - Posts coverage summary as PR comment
 
 All jobs run on macOS 15 and must pass before merge.
 
@@ -348,8 +359,8 @@ xcodebuild -scheme MoleUI test \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
 # Tests include:
-# - 39 core functionality tests (MoleCoreTests)
-# - 6 UI flow tests (UIFlowTests)
+# - 44 core functionality tests (MoleCoreTests)
+# - 15 UI flow tests (UIFlowTests)
 ```
 
 **Manual Testing**
@@ -435,7 +446,7 @@ Closes #123
 
 1. **Automated checks run** — CI validates code quality, builds, tests, and security
    - **Code Quality**: SwiftFormat + SwiftLint checks
-   - **Build & Test**: Compilation + 45+ unit and UI tests
+   - **Build & Test**: Compilation + 59 unit and UI tests (44 core + 15 UI flow)
    - **Security Scan**: Hardcoded secrets detection, unsafe pattern checks
 2. **Maintainer review** — usually within 2-3 days
 3. **Address feedback** — make requested changes

@@ -15,6 +15,7 @@ struct MoleVersionView: View {
                 if versionChecker.isChecking {
                     ProgressView()
                         .controlSize(.small)
+                        .frame(width: 16, height: 16)
                 }
             }
 

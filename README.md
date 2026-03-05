@@ -8,10 +8,10 @@ Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, w
 
 ## 📚 Documentation
 
-- **[TODO.md](TODO.md)** - Implementation roadmap and task list
-- **[AUTO_UPDATE.md](AUTO_UPDATE.md)** - Auto-update workflow documentation
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history
+- **[SECURITY.md](SECURITY.md)** - Security policy
+- **[AUTO_UPDATE.md](AUTO_UPDATE.md)** - Auto-update system details
 
 ## Features
 
@@ -70,12 +70,24 @@ just info             # Show Swift/Xcode/Mole versions
 Run tests from Xcode (Cmd+U) or command line:
 
 ```bash
+# Run all tests
 xcodebuild -scheme MoleUI test \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=macOS' \
+  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGNING_ALLOWED=NO
+
+# Run only unit tests
+xcodebuild test -scheme MoleUI \
+  -destination 'platform=macOS' \
+  -only-testing:MoleUITests \
+  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGNING_ALLOWED=NO
 
 # Test suites:
-# - MoleCoreTests: 39 core functionality tests
-# - UIFlowTests: 6 critical user flow tests
+# - MoleCoreTests: 44 core functionality tests
+# - UIFlowTests: 15 critical user flow tests
 ```
 
 ## Contributing
@@ -114,7 +126,6 @@ MoleUI/
 │   ├── PurgeModel.swift        # Large file purge (via mole purge)
 │   ├── InstallerModel.swift    # Installer management (via mole installer)
 │   ├── UninstallModel.swift    # App scanning & uninstall (via mole uninstall)
-│   ├── SettingsModel.swift     # Whitelist & preferences
 │   ├── VersionModel.swift      # CLI version checking
 │   ├── SafetyController.swift  # Confirmation & dry-run
 │   ├── CLIExecutor.swift       # Mole CLI process wrapper & JSON parser
@@ -145,6 +156,16 @@ MoleUI/
 
 - [tw93/Mole](https://github.com/tw93/Mole) — Original CLI tool, Mole UI is based on this project
 - Built with SwiftUI + NavigationSplitView for native macOS experience
+
+## Troubleshooting
+
+**App won't open:** Right-click → Open, or run `xattr -cr "/Applications/Mole UI.app"`
+
+**Dashboard not loading:** Restart the app. If issue persists, check Console.app for errors.
+
+**Slow disk scanning:** Large directories take time. Scan smaller folders first.
+
+For more issues, check [GitHub Issues](https://github.com/imnotnoahhh/MoleUI/issues).
 
 ## License
 

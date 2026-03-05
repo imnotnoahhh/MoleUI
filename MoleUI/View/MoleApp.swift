@@ -10,7 +10,6 @@ struct MoleApp: App {
     @State private var diskModel = DiskModel()
     @State private var appScanModel = AppScanModel()
     @State private var uninstallModel = UninstallModel()
-    @State private var settingsModel = SettingsModel()
     @State private var safetyController = SafetyController()
     @State private var versionModel = VersionModel()
 
@@ -25,7 +24,6 @@ struct MoleApp: App {
                 .environment(diskModel)
                 .environment(appScanModel)
                 .environment(uninstallModel)
-                .environment(settingsModel)
                 .environment(safetyController)
                 .environment(versionModel)
                 .frame(width: 904, height: 580)

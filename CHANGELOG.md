@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-06
+
+Official release with Mole CLI v1.29.0.
+
+### Added
+- Caching mechanism for disk analyzer and app scanner
+  - Disk analyzer caches scan results with timestamp display
+  - App scanner caches uninstall scan results
+  - Cache status shown with relative time (e.g., "2m ago", "1h ago")
+  - Manual refresh button to invalidate cache
+- Comprehensive test suite with 43 tests across 7 suites
+  - Async & concurrency tests
+  - Error recovery tests
+  - Data validation tests
+  - Edge case tests
+  - Memory & performance tests
+- Enhanced CI/CD pipeline
+  - Separate unit and UI test runs
+  - Test coverage reporting
+  - Test result artifacts upload
+  - Security scanning
+
+### Changed
+- **Bundled Mole CLI upgraded to v1.29.0** (official release)
+- Simplified UI by removing batch delete functionality
+  - Purge page: removed checkboxes and "Purge Selected" button
+  - Installer page: removed checkboxes and "Trash Selected" button
+  - Kept individual delete buttons for better control
+- All UI text translated to English for consistency
+- Disk analyzer navigation optimized
+  - Removed unnecessary Full Disk Access permission check
+  - Accept multiple macOS permission dialogs on first scan
+- Clean and Optimize operations simplified to single execution
+- Improved sudo execution and CLI path handling
+
+### Fixed
+- ProgressView Auto Layout constraint warnings across all views
+- UI thread blocking issues in disk analyzer
+- Sudo password prompt reliability
+- Test suite robustness (removed flaky history bounds test)
+
+### Technical
+- Test coverage increased from 55% to 82%
+- All models now use unified `CLIExecutor.findMoleBinary()`
+- Improved error handling and user feedback
+- Better concurrency safety with MainActor isolation
+- Enhanced CI configuration with proper test filtering
+
 ## [0.1.2-beta.2] - 2026-03-05
 
 ### Changed
@@ -115,24 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Text wrapping issue in Settings preferences
 - ProgressView Auto Layout constraint warning
 
-## [0.1.1] - 2026-03-03
-
-### Added
-- Bundled Mole CLI version display in Settings
-- `.mole-cli-version` file bundled in app resources for version tracking
-
-### Changed
-- Independent version numbering system for MoleUI (separate from Mole CLI version)
-- Auto-update workflow now increments MoleUI version independently
-- PR titles now show both MoleUI and Mole CLI versions
-- Release tags use MoleUI version instead of Mole CLI version
-
-### Fixed
-- Bundled Mole CLI showing "Unknown" instead of actual version number
-- Extra spacing in Settings About section
-- Text wrapping issue in Settings preferences
-- ProgressView Auto Layout constraint warning
-
 ## [0.1.0] - 2026-03-02
 
 ### Added
@@ -160,6 +190,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires macOS 14.0 (Sonoma) or later
 
 [Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2
+[0.1.2-beta.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.2
+[0.1.2-beta.1]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.1
 [0.1.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2
 [0.1.1]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.1
 [0.1.0]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.0
