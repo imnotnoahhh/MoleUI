@@ -46,10 +46,15 @@ final class DiskModel {
     private struct CachedScan {
         let entries: [DirEntry]
         let totalSize: UInt64
+        let timestamp: Date
+        let modificationDate: Date?
         var dirty: Bool = false
     }
 
     private var cache: [String: CachedScan] = [:]
+    private let cacheValidityDuration: TimeInterval = 300 // 5 minutes
+
+    var lastScanTime: Date?
 
     init() {
         self.currentPath = FileManager.default.homeDirectoryForCurrentUser
@@ -72,10 +77,18 @@ final class DiskModel {
                 self.currentPath = directory
                 self.isScanning = false
                 self.progress = nil
-                // Write to cache
+
+                // Get directory modification date
+                let modDate = try? FileManager.default.attributesOfItem(atPath: directory.path)[.modificationDate] as? Date
+
+                // Write to cache with timestamp
                 cache[directory.path] = CachedScan(
-                    entries: result.entries, totalSize: result.totalSize
+                    entries: result.entries,
+                    totalSize: result.totalSize,
+                    timestamp: Date(),
+                    modificationDate: modDate
                 )
+                lastScanTime = Date()
             } catch is CancellationError {
                 // scan was cancelled
             } catch {
@@ -87,18 +100,35 @@ final class DiskModel {
         }
     }
 
-    /// Restore from cache if available and clean; otherwise scan.
+    /// Restore from cache if available and valid; otherwise scan.
     private func loadOrScan(directory: URL) {
         if let cached = cache[directory.path], !cached.dirty {
-            scanTask?.cancel()
-            entries = cached.entries
-            totalSize = cached.totalSize
-            currentPath = directory
-            isScanning = false
-            progress = nil
-        } else {
-            scan(directory: directory)
+            // Check if cache is still valid
+            let cacheAge = Date().timeIntervalSince(cached.timestamp)
+            let isCacheValid = cacheAge < cacheValidityDuration
+
+            // Check if directory has been modified
+            var isDirectoryUnmodified = true
+            if let cachedModDate = cached.modificationDate,
+               let currentModDate = try? FileManager.default.attributesOfItem(atPath: directory.path)[.modificationDate] as? Date
+            {
+                isDirectoryUnmodified = cachedModDate == currentModDate
+            }
+
+            if isCacheValid, isDirectoryUnmodified {
+                // Use cached data
+                scanTask?.cancel()
+                entries = cached.entries
+                totalSize = cached.totalSize
+                currentPath = directory
+                isScanning = false
+                progress = nil
+                return
+            }
         }
+
+        // Cache miss or invalid - perform scan
+        scan(directory: directory)
     }
 
     func navigateTo(directory: URL) {
@@ -123,6 +153,17 @@ final class DiskModel {
         loadOrScan(directory: target)
     }
 
+    /// Manually refresh current directory (clear cache and rescan)
+    func refresh() {
+        cache.removeValue(forKey: currentPath.path)
+        scan(directory: currentPath)
+    }
+
+    /// Clear all cache
+    func clearCache() {
+        cache.removeAll()
+    }
+
     // MARK: - Actions
 
     func deleteEntry(_ entry: DirEntry) async throws {
@@ -144,7 +185,10 @@ final class DiskModel {
         var path = url
         let home = FileManager.default.homeDirectoryForCurrentUser
         while path.path.count >= home.path.count {
-            cache[path.path]?.dirty = true
+            if var cached = cache[path.path] {
+                cached.dirty = true
+                cache[path.path] = cached
+            }
             path = path.deletingLastPathComponent()
         }
     }
