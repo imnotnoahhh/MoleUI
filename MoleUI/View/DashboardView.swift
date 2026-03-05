@@ -127,14 +127,26 @@ struct MiniSparklineView: View {
     let width: Int = 30
 
     var body: some View {
-        let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        // 32-level visualization using repeated standard block characters
+        // Levels 0-31 mapped to combinations of blocks
+        let blocks: [String] = [
+            "▁", "▁", "▂", "▂",
+            "▂", "▃", "▃", "▃",
+            "▄", "▄", "▄", "▅",
+            "▅", "▅", "▆", "▆",
+            "▆", "▇", "▇", "▇",
+            "▇", "█", "█", "█",
+            "█", "█", "█", "█",
+            "█", "█", "█", "█",
+        ]
         let recent = Array(data.suffix(width))
         let padded = Array(repeating: 0.0, count: max(0, width - recent.count)) + recent
         let maxVal = padded.max().flatMap { $0 > 0 ? $0 : nil } ?? 1
         let sparkline: String = padded.map { val in
-            if val <= 0 { return String(blocks[0]) }
-            let idx = Int((val / maxVal) * 7)
-            return String(blocks[min(idx, 7)])
+            // Always show baseline (▁), even when there's traffic
+            if val <= 0 { return blocks[0] }
+            let idx = Int((val / maxVal) * Double(blocks.count - 1))
+            return blocks[max(1, min(idx, blocks.count - 1))]
         }.joined()
 
         Text(sparkline)
@@ -150,38 +162,49 @@ struct DashboardView: View {
     @Environment(MetricsModel.self) var service
 
     var body: some View {
-        if let snap = service.snapshot {
-            ScrollView {
-                VStack(spacing: 12) {
-                    headerBar(snap)
-                    MoleAnimationView()
-                    equalHeightRow {
-                        cpuCard(snap.cpu, thermal: snap.thermal)
-                        memoryCard(snap.memory)
+        Group {
+            if let snap = service.snapshot {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        headerBar(snap)
+                        MoleAnimationView()
+                        equalHeightRow {
+                            cpuCard(snap.cpu, thermal: snap.thermal)
+                            memoryCard(snap.memory)
+                        }
+                        equalHeightRow {
+                            diskCard(snap.disks, io: snap.diskIO)
+                            powerCard(snap.batteries, thermal: snap.thermal)
+                        }
+                        equalHeightRow {
+                            processCard(snap.topProcesses)
+                            networkCard(
+                                snap.network,
+                                history: service.networkHistoryForDisplay(from: snap.networkHistory),
+                                proxy: snap.proxy
+                            )
+                        }
                     }
-                    equalHeightRow {
-                        diskCard(snap.disks, io: snap.diskIO)
-                        powerCard(snap.batteries, thermal: snap.thermal)
-                    }
-                    equalHeightRow {
-                        processCard(snap.topProcesses)
-                        networkCard(
-                            snap.network,
-                            history: service.networkHistoryForDisplay(from: snap.networkHistory),
-                            proxy: snap.proxy
-                        )
-                    }
+                    .padding()
                 }
-                .padding()
+            } else if let error = service.errorMessage {
+                ContentUnavailableView(
+                    "Connection Error",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(error)
+                )
+            } else {
+                ProgressView("Loading system metrics...")
+                    .controlSize(.regular)
             }
-        } else if let error = service.errorMessage {
-            ContentUnavailableView(
-                "Connection Error",
-                systemImage: "exclamationmark.triangle",
-                description: Text(error)
-            )
-        } else {
-            ProgressView("Loading system metrics...")
+        }
+        .task {
+            // Start metrics collection when Dashboard appears
+            service.start()
+        }
+        .onDisappear {
+            // Stop metrics collection when Dashboard disappears
+            service.stop()
         }
     }
 

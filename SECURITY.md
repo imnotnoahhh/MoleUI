@@ -19,8 +19,14 @@ We take the security of MoleUI seriously. If you believe you have found a securi
 
 ### Please Do
 
-1. **Email us directly** at the repository owner's email (found in GitHub profile)
-2. **Include the following information:**
+1. **Report via GitHub Security Advisories** (preferred method):
+   - Go to https://github.com/imnotnoahhh/MoleUI/security/advisories
+   - Click "Report a vulnerability"
+   - Fill in the details using the template below
+
+2. **Or email directly** to the repository maintainer (email found in GitHub profile commits)
+
+3. **Include the following information:**
    - Type of vulnerability
    - Full paths of source file(s) related to the vulnerability
    - Location of the affected source code (tag/branch/commit or direct URL)

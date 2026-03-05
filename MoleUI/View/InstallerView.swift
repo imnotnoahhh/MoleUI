@@ -2,7 +2,6 @@ import SwiftUI
 
 struct InstallerView: View {
     @Environment(InstallerModel.self) var service
-    @State private var selectedFiles: Set<String> = []
     @State private var showConfirmation = false
     @State private var searchText = ""
 
@@ -25,14 +24,6 @@ struct InstallerView: View {
         }
         .task {
             await service.scan()
-        }
-        .alert("Confirm Delete", isPresented: $showConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Move to Trash", role: .destructive) {
-                Task { await service.deleteSelected(ids: selectedFiles) }
-            }
-        } message: {
-            Text("Move \(selectedFiles.count) installer files to Trash?")
         }
     }
 
@@ -61,13 +52,6 @@ struct InstallerView: View {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
                 .disabled(service.isScanning)
-
-                Button {
-                    showConfirmation = true
-                } label: {
-                    Label("Trash Selected", systemImage: "trash")
-                }
-                .disabled(selectedFiles.isEmpty || service.isScanning || service.deletingFile != nil)
             }
             .padding(.vertical, 2)
         }
@@ -81,6 +65,7 @@ struct InstallerView: View {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning for installers...")
+                        .controlSize(.regular)
                     Text("Checking Downloads, Desktop, iCloud and more")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -116,23 +101,11 @@ struct InstallerView: View {
     // MARK: - File Row
 
     private func fileRow(_ file: InstallerFile) -> some View {
-        let isSelected = selectedFiles.contains(file.id)
         let isDeleting = service.deletingFile == file.id
         let isCompleted = service.completedFiles.contains(file.id)
 
         return GroupBox {
             HStack(spacing: 10) {
-                Toggle(isOn: Binding(
-                    get: { isSelected },
-                    set: { on in
-                        if on { selectedFiles.insert(file.id) } else { selectedFiles.remove(file.id) }
-                    }
-                )) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-
                 Image(systemName: iconForExtension(file.fileExtension))
                     .frame(width: 20)
                     .foregroundStyle(.secondary)
@@ -164,6 +137,7 @@ struct InstallerView: View {
                 if isDeleting {
                     ProgressView()
                         .controlSize(.small)
+                        .frame(width: 16, height: 16)
                         .frame(width: 60)
                 } else if isCompleted {
                     Image(systemName: "checkmark.circle.fill")

@@ -24,3 +24,11 @@ xcuserdata/
 .build/
 .swiftpm/
 Package.resolved
+
+# Claude Code project instructions
+CLAUDE.md
+
+# Mole CLI backup
+Resources/mole.backup/
+TestResults.xcresult
+test-results.json

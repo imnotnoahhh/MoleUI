@@ -1,71 +1,14 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @Environment(SettingsModel.self) var whitelist
-    @AppStorage("confirmBeforeClean") private var confirmBeforeClean = true
-    @AppStorage("dryRunMode") private var dryRunMode = false
-    @AppStorage("showHiddenFiles") private var showHiddenFiles = false
-
     var body: some View {
         ScrollView {
             Form {
-                whitelistSection
-                preferencesSection
                 aboutSection
                 cliOnlySection
             }
             .formStyle(.grouped)
             .padding()
-        }
-    }
-
-    // MARK: - Whitelist
-
-    private var whitelistSection: some View {
-        Section {
-            if whitelist.whitelistItems.isEmpty {
-                Text("No whitelisted paths")
-                    .foregroundStyle(.secondary)
-                    .font(.system(.caption, design: .monospaced))
-            } else {
-                ForEach(whitelist.whitelistItems, id: \.self) { path in
-                    HStack {
-                        Text(path)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button(role: .destructive) {
-                            whitelist.removeFromWhitelist(path: path)
-                        } label: {
-                            Image(systemName: "trash")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
-            Button {
-                addPath()
-            } label: {
-                Label("Add Path", systemImage: "plus.circle")
-            }
-        } header: {
-            Label("Whitelist", systemImage: "shield.checkered")
-                .font(.headline)
-        }
-    }
-
-    // MARK: - Preferences
-
-    private var preferencesSection: some View {
-        Section {
-            Toggle("Confirm before cleaning", isOn: $confirmBeforeClean)
-            Toggle("Dry run mode", isOn: $dryRunMode)
-            Toggle("Show hidden files in Disk Analyzer", isOn: $showHiddenFiles)
-        } header: {
-            Label("Preferences", systemImage: "slider.horizontal.3")
-                .font(.headline)
         }
     }
 
@@ -148,17 +91,6 @@ struct SettingsView: View {
     }
 
     // MARK: - Helpers
-
-    private func addPath() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Select a directory to whitelist"
-        if panel.runModal() == .OK, let url = panel.url {
-            whitelist.addToWhitelist(path: url.path)
-        }
-    }
 
     private func readMoleCLIVersion() -> String? {
         // Read from .mole-cli-version file in app bundle resources

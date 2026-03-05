@@ -118,12 +118,6 @@ final class PurgeModel {
         cleaningTarget = nil
     }
 
-    func deleteSelected(ids: Set<String>) async {
-        for target in targets where ids.contains(target.id) {
-            await deleteTarget(target)
-        }
-    }
-
     private func scanWithMole() async throws -> [PurgeTarget] {
         guard let root = CLIExecutor.findMoleRoot() else {
             throw CLIExecutor.ExecutionError.commandNotFound("mole")

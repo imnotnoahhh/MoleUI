@@ -426,7 +426,7 @@ final class MetricsModel {
             throw NSError(
                 domain: "MetricsModel",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "找不到 mole 可执行文件"]
+                userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
             )
         }
 
