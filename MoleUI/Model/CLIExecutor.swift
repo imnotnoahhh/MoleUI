@@ -1,7 +1,7 @@
 import Foundation
 import os.log
 
-/// 增强版 CLI 执行器：支持超时、进度、取消、错误处理
+/// Enhanced CLI executor: supports timeout, progress, cancellation, error handling
 @MainActor
 final class CLIExecutor {
     // MARK: - Types
@@ -38,15 +38,15 @@ final class CLIExecutor {
         var errorDescription: String? {
             switch self {
             case .timeout:
-                "命令执行超时"
+                "Execution timeout"
             case .cancelled:
-                "操作已取消"
+                "Operation cancelled"
             case .commandNotFound(let cmd):
-                "找不到命令: \(cmd)"
+                "Command not found: \(cmd)"
             case .nonZeroExit(let code, let stderr):
-                "命令执行失败 (退出码: \(code))\n\(stderr)"
+                "Command failed (exit code: \(code))\n\(stderr)"
             case .invalidOutput(let msg):
-                "输出解析失败: \(msg)"
+                "Output parsing failed: \(msg)"
             }
         }
     }
@@ -445,7 +445,7 @@ extension CLIExecutor {
                 }
             }
 
-            throw ExecutionError.invalidOutput("JSON 解析失败: \(error.localizedDescription)")
+            throw ExecutionError.invalidOutput("JSON parsing failed: \(error.localizedDescription)")
         }
     }
 

@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// 安全控制：执行前确认、预览模式、dry-run、统计
+/// Safety control: pre-execution confirmation, preview mode, dry-run, statistics
 @Observable @MainActor
 final class SafetyController {
     // MARK: - Types
@@ -57,7 +57,7 @@ final class SafetyController {
     init(executor: CLIExecutor) {
         self.executor = executor
 
-        // 监听进度
+        // Listen to progress
         executor.onProgress = { [weak self] progress, message in
             self?.progress = progress
             self?.progressMessage = message
@@ -70,30 +70,30 @@ final class SafetyController {
 
     // MARK: - Public Methods
 
-    /// 执行清理操作（带确认）
+    /// Execute clean operation (with confirmation)
     func executeClean(
         target: String,
         dryRun: Bool = false
     ) async throws {
-        // 1. 先执行 dry-run 获取预览
+        // 1. Execute dry-run first to get preview
         let preview = try await getCleanPreview(target: target)
 
-        // 2. 如果是真实执行，需要用户确认
+        // 2. If real execution, need user confirmation
         if !dryRun {
             try await requestConfirmation(
-                title: "确认清理",
-                message: "即将清理 \(target)，共 \(preview.formattedSize)",
+                title: "Confirm Clean",
+                message: "About to clean \(target), total \(preview.formattedSize)",
                 destructive: true,
                 preview: preview
             ) {
-                // 3. 执行真实清理
+                // 3. Execute real clean
                 try await self.performClean(target: target, dryRun: false)
             }
         } else {
-            // Dry-run 模式，直接显示预览
+            // Dry-run mode, show preview directly
             lastResult = ExecutionResult(
                 success: true,
-                message: "预览模式：将清理 \(preview.formattedSize)",
+                message: "Preview mode: will clean \(preview.formattedSize)",
                 details: preview.files.map(\.path).joined(separator: "\n"),
                 cleanedSize: preview.totalSize,
                 duration: 0
@@ -101,13 +101,13 @@ final class SafetyController {
         }
     }
 
-    /// 执行优化操作（带确认）
+    /// Execute optimize operation (with confirmation)
     func executeOptimize(
         target: String
     ) async throws {
         try await requestConfirmation(
-            title: "确认优化",
-            message: "即将执行 \(target) 优化",
+            title: "Confirm Optimize",
+            message: "About to execute \(target) optimization",
             destructive: false,
             preview: nil
         ) {
@@ -115,7 +115,7 @@ final class SafetyController {
         }
     }
 
-    /// 取消当前操作
+    /// Cancel current operation
     func cancel() {
         executor.cancel()
         isExecuting = false
@@ -125,7 +125,7 @@ final class SafetyController {
 
     // MARK: - Private Methods
 
-    /// 获取清理预览
+    /// Get clean preview
     private func getCleanPreview(target: String) async throws -> CleanPreview {
         let startTime = Date()
 
@@ -139,7 +139,7 @@ final class SafetyController {
             )
         )
 
-        // 解析输出
+        // Parse output
         let files = parseCleanOutput(result.stdout)
         let totalSize = files.reduce(0) { $0 + $1.size }
         let duration = Date().timeIntervalSince(startTime)
@@ -148,15 +148,15 @@ final class SafetyController {
             target: target,
             files: files,
             totalSize: totalSize,
-            estimatedTime: duration * 2 // 估计实际执行时间是 dry-run 的 2 倍
+            estimatedTime: duration * 2 // Estimate real execution time is 2x dry-run
         )
     }
 
-    /// 执行真实清理
+    /// Execute real clean
     private func performClean(target: String, dryRun: Bool) async throws {
         isExecuting = true
         progress = 0
-        progressMessage = "正在清理..."
+        progressMessage = "Cleaning..."
 
         defer {
             isExecuting = false
@@ -167,7 +167,7 @@ final class SafetyController {
         let result = try await executor.executeMole(
             "clean",
             options: CLIExecutor.ExecutionOptions(
-                timeout: 600, // 10 分钟
+                timeout: 600, // 10 minutes
                 captureStderr: true,
                 parseProgress: true,
                 dryRun: false
@@ -176,23 +176,23 @@ final class SafetyController {
 
         let duration = Date().timeIntervalSince(startTime)
 
-        // 解析清理结果
+        // Parse clean result
         let cleanedSize = parseCleanedSize(result.stdout)
 
         lastResult = ExecutionResult(
             success: true,
-            message: "清理完成",
+            message: "Clean completed",
             details: result.stdout,
             cleanedSize: cleanedSize,
             duration: duration
         )
     }
 
-    /// 执行优化
+    /// Execute optimize
     private func performOptimize(target: String) async throws {
         isExecuting = true
         progress = 0
-        progressMessage = "正在优化..."
+        progressMessage = "Optimizing..."
 
         defer {
             isExecuting = false
@@ -214,7 +214,7 @@ final class SafetyController {
 
         lastResult = ExecutionResult(
             success: true,
-            message: "优化完成",
+            message: "Optimize completed",
             details: result.stdout,
             cleanedSize: nil,
             duration: duration
@@ -350,14 +350,14 @@ struct SafetyConfirmationView: View {
                 PreviewSection(preview: preview)
             }
 
-            // 按钮
+            // Buttons
             HStack(spacing: 12) {
-                Button("取消") {
+                Button("Cancel") {
                     request.onCancel()
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button(request.destructive ? "确认删除" : "确认") {
+                Button(request.destructive ? "Confirm Delete" : "Confirm") {
                     Task {
                         try? await request.onConfirm()
                     }
