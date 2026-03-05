@@ -17,9 +17,6 @@ struct InstallerView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                if !service.hasFullDiskAccess {
-                    permissionBanner
-                }
                 headerCard
                 contentArea
             }
@@ -27,39 +24,6 @@ struct InstallerView: View {
         }
         .task {
             await service.scan()
-        }
-    }
-
-    // MARK: - Permission Banner
-
-    private var permissionBanner: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                Image(systemName: "exclamationmark.shield")
-                    .font(.title2)
-                    .foregroundStyle(.orange)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Full Disk Access Recommended")
-                        .fontWeight(.semibold)
-                    Text("First scan will request access to multiple directories. Grant Full Disk Access in System Settings for the best experience.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button("Open Settings") {
-                    service.openSystemPreferences()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Dismiss") {
-                    service.hasFullDiskAccess = true
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 4)
         }
     }
 

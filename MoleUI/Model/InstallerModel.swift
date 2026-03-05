@@ -55,23 +55,6 @@ final class InstallerModel {
     var deletingFile: String?
     var completedFiles: Set<String> = []
     var errorMessage: String?
-    var hasFullDiskAccess: Bool = false
-
-    init() {
-        checkFullDiskAccess()
-    }
-
-    func checkFullDiskAccess() {
-        // Check if app has Full Disk Access by trying to read TCC database
-        let tccPath = "/Library/Application Support/com.apple.TCC/TCC.db"
-        hasFullDiskAccess = FileManager.default.isReadableFile(atPath: tccPath)
-    }
-
-    func openSystemPreferences() {
-        // Open Full Disk Access settings
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
-        NSWorkspace.shared.open(url)
-    }
 
     func scan() async {
         isScanning = true
