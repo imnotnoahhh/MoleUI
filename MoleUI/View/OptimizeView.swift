@@ -3,9 +3,8 @@ import SwiftUI
 struct OptimizeView: View {
     @Environment(OptimizeModel.self) var service
     @AppStorage("dryRunMode") private var dryRunMode = false
-    @AppStorage("autoSelectSafeItems") private var autoSelectSafeItems = true
-    @State private var selectedTasks: Set<String> = []
     @State private var showAdvancedTasks = false
+    @State private var showRawOutput = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,12 +39,6 @@ struct OptimizeView: View {
         .task {
             await service.loadReport()
         }
-        .onChange(of: service.report) { _, newValue in
-            // Auto-select safe tasks after loading report
-            if autoSelectSafeItems, let report = newValue, selectedTasks.isEmpty {
-                selectedTasks = Set(report.optimizations.filter(\.safe).map(\.action))
-            }
-        }
     }
 
     private var dryRunBanner: some View {
@@ -79,15 +72,13 @@ struct OptimizeView: View {
 
         Button {
             Task {
-                await runSelectedTasks()
+                await service.runOptimize(dryRun: dryRunMode)
             }
         } label: {
-            let count = selectedTasks.count
             let prefix = dryRunMode ? "Preview" : "Optimize"
-            let text = count > 0 ? "\(prefix) All (\(count))" : "\(prefix) All"
-            Label(text, systemImage: dryRunMode ? "eye" : "bolt.fill")
+            Label("\(prefix) All", systemImage: dryRunMode ? "eye" : "bolt.fill")
         }
-        .disabled(service.runningTask != nil || service.report == nil || selectedTasks.isEmpty)
+        .disabled(service.isOptimizing || service.report == nil)
         .buttonStyle(.borderedProminent)
     }
 
@@ -98,24 +89,73 @@ struct OptimizeView: View {
             VStack(spacing: 12) {
                 systemInfoHeader(report)
 
-                if let output = service.lastOutput {
-                    outputCard(output)
+                taskList(report.optimizations)
+
+                // Show optimizing status
+                if service.isOptimizing {
+                    optimizingStatusCard
                 }
 
-                taskList(report.optimizations)
+                // Show result summary after completion
+                if let output = service.lastOutput, !service.isOptimizing {
+                    resultSummaryCard(output)
+                }
             }
             .padding()
         }
     }
 
+    // MARK: - Optimizing Status Card
+
+    private var optimizingStatusCard: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.regular)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(dryRunMode ? "Previewing..." : "Optimizing...")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+
+                    if let currentTask = service.currentTask {
+                        Text(currentTask)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Starting optimization tasks...")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.vertical, 8)
+        }
+    }
+
     // MARK: - Output Card
 
-    private func outputCard(_ output: String) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 6) {
+    private func resultSummaryCard(_ output: String) -> some View {
+        let summary = parseOutputSummary(output)
+
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                // Header
                 HStack {
-                    Label(dryRunMode ? "Preview Output" : "Execution Output", systemImage: "terminal")
-                        .font(.headline)
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dryRunMode ? "Preview Completed" : "Optimization Completed")
+                            .font(.headline)
+                        if let duration = service.executionDuration {
+                            Text(String(format: "Completed in %.1f seconds", duration))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     Button {
                         service.lastOutput = nil
@@ -126,25 +166,235 @@ struct OptimizeView: View {
                     .buttonStyle(.plain)
                 }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(stripAnsiCodes(output))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .padding(.vertical, 4)
+                Divider()
+
+                // Statistics
+                HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(summary.completedCount)")
+                            .font(.title2.bold())
+                            .foregroundStyle(.green)
+                        Text("Tasks Completed")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if summary.skippedCount > 0 {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(summary.skippedCount)")
+                                .font(.title2.bold())
+                                .foregroundStyle(.orange)
+                            Text("Tasks Skipped")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
                 }
-                .frame(maxHeight: 200)
+
+                // Skipped tasks details
+                if !summary.skippedTasks.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Skipped Tasks", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.orange)
+
+                        ForEach(summary.skippedTasks, id: \.self) { task in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 6))
+                                    .foregroundStyle(.orange)
+                                    .padding(.top, 6)
+                                Text(task)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                // System status
+                if !summary.systemStatus.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("System Status", systemImage: "info.circle")
+                            .font(.subheadline.bold())
+
+                        ForEach(summary.systemStatus.prefix(3), id: \.self) { status in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.green)
+                                    .padding(.top, 4)
+                                Text(status)
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+
+                // Warnings
+                if !summary.warnings.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Suggestions", systemImage: "lightbulb")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.orange)
+
+                        ForEach(summary.warnings, id: \.self) { warning in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.orange)
+                                    .padding(.top, 4)
+                                Text(warning)
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+
+                // Show raw output button
+                if !dryRunMode {
+                    Divider()
+                    Button {
+                        showRawOutput = true
+                    } label: {
+                        Label("View Detailed Log", systemImage: "doc.text")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.vertical, 4)
         }
+        .sheet(isPresented: $showRawOutput) {
+            rawOutputSheet(output)
+        }
+    }
+
+    private func rawOutputSheet(_ output: String) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Detailed Execution Log")
+                    .font(.headline)
+                Spacer()
+                Button("Close") {
+                    showRawOutput = false
+                }
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView([.vertical, .horizontal]) {
+                Text(stripAnsiCodes(output))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+        }
+        .frame(width: 700, height: 500)
     }
 
     private func stripAnsiCodes(_ text: String) -> String {
         text.replacingOccurrences(
-            of: "\\x1B\\[[0-9;]*[a-zA-Z]",
+            of: "\u{001B}\\[[0-9;]*[a-zA-Z]",
             with: "",
             options: .regularExpression
         )
+    }
+
+    // MARK: - Output Parsing
+
+    struct OutputSummary {
+        var duration: String?
+        var completedCount: Int = 0
+        var skippedCount: Int = 0
+        var skippedTasks: [String] = []
+        var systemStatus: [String] = []
+        var warnings: [String] = []
+    }
+
+    private func parseOutputSummary(_ output: String) -> OutputSummary {
+        var summary = OutputSummary()
+        let cleaned = stripAnsiCodes(output)
+        let lines = cleaned.components(separatedBy: .newlines)
+
+        var completedTasks = 0
+        var skippedTasks = 0
+        var currentSection = ""
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Count completed tasks (✓)
+            if trimmed.contains("✓"), !trimmed.contains("System"), !trimmed.contains("Security") {
+                completedTasks += 1
+            }
+
+            // Count skipped tasks (◎)
+            if trimmed.contains("◎") {
+                skippedTasks += 1
+                // Extract skip reason
+                if trimmed.contains("Close these apps") {
+                    summary.skippedTasks.append("Database Optimization: Close Safari first")
+                } else if trimmed.contains("Skipped font cache") {
+                    summary.skippedTasks.append("Font Cache Rebuild: Close browsers first")
+                } else if trimmed.contains("available") {
+                    let parts = trimmed.components(separatedBy: "◎")
+                    if parts.count > 1 {
+                        summary.warnings.append(parts[1].trimmingCharacters(in: .whitespaces))
+                    }
+                }
+            }
+
+            // Extract system status
+            if trimmed.hasPrefix("➤ System Health") {
+                currentSection = "health"
+            } else if trimmed.hasPrefix("➤ Security Status") {
+                currentSection = "security"
+            } else if trimmed.hasPrefix("➤") {
+                currentSection = ""
+            }
+
+            if currentSection == "health", trimmed.contains("✓") {
+                let parts = trimmed.components(separatedBy: "✓")
+                if parts.count > 1 {
+                    let status = parts[1].trimmingCharacters(in: .whitespaces)
+                    if !status.isEmpty, !status.contains("System Health") {
+                        summary.systemStatus.append(status)
+                    }
+                }
+            }
+
+            // Extract final summary
+            if trimmed.contains("Applied"), trimmed.contains("optimizations") {
+                if let match = trimmed.range(of: "Applied ([0-9]+)", options: .regularExpression) {
+                    let numStr = trimmed[match].replacingOccurrences(of: "Applied ", with: "")
+                    if let num = Int(numStr) {
+                        summary.completedCount = num
+                    }
+                }
+            }
+        }
+
+        // If no final summary found, use counted tasks
+        if summary.completedCount == 0 {
+            summary.completedCount = completedTasks
+        }
+        summary.skippedCount = skippedTasks
+
+        // Estimate duration (rough calculation based on task count)
+        let estimatedSeconds = summary.completedCount * 2
+        if estimatedSeconds > 0 {
+            summary.duration = "\(estimatedSeconds) seconds"
+        }
+
+        return summary
     }
 
     // MARK: - System Info Header
@@ -246,20 +496,12 @@ struct OptimizeView: View {
     // MARK: - Task Row
 
     private func taskRow(_ task: OptimizationTask) -> some View {
-        let isSelected = selectedTasks.contains(task.action)
-        let isRunning = service.runningTask == task.action
-        let isCompleted = service.completedTasks.contains(task.action)
-        let isFailed = service.failedTasks.contains(task.action)
-
-        return HStack(spacing: 10) {
-            selectionIndicator(
-                task: task,
-                isSelected: isSelected,
-                isRunning: isRunning,
-                isCompleted: isCompleted,
-                isFailed: isFailed
-            )
-            .frame(width: 20)
+        HStack(spacing: 10) {
+            // Icon indicator (read-only, no checkbox)
+            Image(systemName: "circle.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(task.safe ? .green : .orange)
+                .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -280,67 +522,7 @@ struct OptimizeView: View {
             }
 
             Spacer()
-
-            if isRunning {
-                HStack(spacing: 4) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(dryRunMode ? "Preview..." : "Running...")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(width: 80)
-            } else if isCompleted || isFailed {
-                // Show status only, no button
-                EmptyView()
-            }
         }
         .padding(.vertical, 6)
-    }
-
-    // MARK: - Selection Indicator
-
-    @ViewBuilder
-    private func selectionIndicator(
-        task: OptimizationTask,
-        isSelected: Bool,
-        isRunning: Bool,
-        isCompleted: Bool,
-        isFailed: Bool
-    ) -> some View {
-        if isRunning {
-            ProgressView()
-                .controlSize(.small)
-        } else if isCompleted {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        } else if isFailed {
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.red)
-        } else {
-            Button {
-                if isSelected {
-                    selectedTasks.remove(task.action)
-                } else {
-                    selectedTasks.insert(task.action)
-                }
-            } label: {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.gray)
-            }
-            .buttonStyle(.plain)
-            .disabled(service.runningTask != nil)
-        }
-    }
-
-    // MARK: - Actions
-
-    private func runSelectedTasks() async {
-        guard let report = service.report else { return }
-        let tasksToRun = report.optimizations.filter { selectedTasks.contains($0.action) }
-        for task in tasksToRun {
-            await service.runTask(task, dryRun: dryRunMode)
-        }
-        selectedTasks.subtract(tasksToRun.map(\.action))
     }
 }

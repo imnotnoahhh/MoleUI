@@ -310,11 +310,17 @@ final class MetricsModel {
     var networkRxHistory: [Double] = []
     var networkTxHistory: [Double] = []
 
+    /// Reference to CleanModel to check if privileged operations are in progress
+    weak var cleanModel: CleanModel?
+    /// Reference to OptimizeModel to check if privileged operations are in progress
+    weak var optimizeModel: OptimizeModel?
+
     private var updateTask: Task<Void, Never>?
     private let maxHistoryPoints = 120 // 4 minutes at 2s interval (matches Mole)
     private let logger = Logger(subsystem: "com.qinfuyao.MoleUI", category: "MetricsModel")
     private var lastFetchTime: Date?
     private let minFetchInterval: TimeInterval = 0.5 // Minimum 500ms between fetches
+    private var isPaused = false // Track pause state to avoid repeated logging
 
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -352,12 +358,35 @@ final class MetricsModel {
         updateTask = Task {
             while !Task.isCancelled, isConnected {
                 let cycleStart = Date()
-                do {
-                    try await fetchMetrics()
-                } catch {
-                    logger.error("Failed to fetch metrics: \(error.localizedDescription)")
-                    errorMessage = error.localizedDescription
-                    isConnected = false
+
+                // Skip metrics fetch if privileged operations are in progress
+                // This avoids resource contention between mole status and mole clean/optimize
+                let cleaningFlag = cleanModel?.isCleaningWithPrivileges ?? false
+                let optimizingFlag = optimizeModel?.isOptimizingWithPrivileges ?? false
+                let shouldSkip = cleaningFlag || optimizingFlag
+
+                if shouldSkip {
+                    // Only log when transitioning to paused state
+                    if !isPaused {
+                        logger.info("⏸️ Pausing metrics refresh (cleaning: \(cleaningFlag), optimizing: \(optimizingFlag))")
+                        isPaused = true
+                    }
+                } else {
+                    // Log when resuming
+                    if isPaused {
+                        logger.info("▶️ Resuming metrics refresh")
+                        isPaused = false
+                    }
+                }
+
+                if !shouldSkip {
+                    do {
+                        try await fetchMetrics()
+                    } catch {
+                        logger.error("Failed to fetch metrics: \(error.localizedDescription)")
+                        errorMessage = error.localizedDescription
+                        isConnected = false
+                    }
                 }
 
                 let elapsed = Date().timeIntervalSince(cycleStart)

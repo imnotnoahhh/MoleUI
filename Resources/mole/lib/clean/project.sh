@@ -1367,6 +1367,7 @@ clean_project_artifacts() {
     echo ""
     local stats_dir="${XDG_CACHE_HOME:-$HOME/.cache}/mole"
     local cleaned_count=0
+    local dry_run_mode="${MOLE_DRY_RUN:-0}"
     for idx in "${selected_indices[@]}"; do
         local item_path="${item_paths[idx]}"
         local artifact_type=$(basename "$item_path")
@@ -1386,17 +1387,27 @@ clean_project_artifacts() {
         if [[ -t 1 ]]; then
             start_inline_spinner "Cleaning $project_path/$artifact_type..."
         fi
+        local removal_recorded=false
         if [[ -e "$item_path" ]]; then
-            safe_remove "$item_path" true
-            if [[ ! -e "$item_path" ]]; then
-                local current_total=$(cat "$stats_dir/purge_stats" 2> /dev/null || echo "0")
-                echo "$((current_total + size_kb))" > "$stats_dir/purge_stats"
-                cleaned_count=$((cleaned_count + 1))
+            if safe_remove "$item_path" true; then
+                if [[ "$dry_run_mode" == "1" || ! -e "$item_path" ]]; then
+                    local current_total
+                    current_total=$(cat "$stats_dir/purge_stats" 2> /dev/null || echo "0")
+                    echo "$((current_total + size_kb))" > "$stats_dir/purge_stats"
+                    cleaned_count=$((cleaned_count + 1))
+                    removal_recorded=true
+                fi
             fi
         fi
         if [[ -t 1 ]]; then
             stop_inline_spinner
-            echo -e "${GREEN}${ICON_SUCCESS}${NC} $project_path, $artifact_type${NC}, ${GREEN}$size_human${NC}"
+            if [[ "$removal_recorded" == "true" ]]; then
+                if [[ "$dry_run_mode" == "1" ]]; then
+                    echo -e "${GREEN}${ICON_SUCCESS}${NC} [DRY RUN] $project_path, $artifact_type${NC}, ${GREEN}$size_human${NC}"
+                else
+                    echo -e "${GREEN}${ICON_SUCCESS}${NC} $project_path, $artifact_type${NC}, ${GREEN}$size_human${NC}"
+                fi
+            fi
         fi
     done
     # Update count

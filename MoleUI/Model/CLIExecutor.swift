@@ -73,10 +73,17 @@ final class CLIExecutor {
             throw ExecutionError.commandNotFound("mole")
         }
 
-        var command = "\(molePath) \(subcommand)"
+        guard let moleRoot = Self.findMoleRoot() else {
+            throw ExecutionError.commandNotFound("mole root")
+        }
+
+        // Set working directory to mole root and execute
+        // This ensures SCRIPT_DIR is correctly resolved in mole scripts
+        // Quote the path to handle spaces in "Mole UI.app"
+        var command = "cd '\(moleRoot.path)' && '\(molePath)' \(subcommand)"
         let forceDryRun = options.dryRun || ProcessInfo.processInfo.arguments.contains("UI_TESTING")
         if forceDryRun {
-            command = "MOLE_DRY_RUN=1 DRY_RUN=true \(command)"
+            command = "cd '\(moleRoot.path)' && MOLE_DRY_RUN=1 DRY_RUN=true '\(molePath)' \(subcommand)"
         }
 
         return try await execute(
@@ -356,7 +363,9 @@ extension CLIExecutor {
             throw ExecutionError.commandNotFound("mole")
         }
         let scriptPath = root.appendingPathComponent(relativePath).path
-        return try await run("bash '\(scriptPath)'")
+        // Set SCRIPT_DIR environment variable to help scripts locate dependencies
+        let moleRootPath = root.path
+        return try await run("cd '\(moleRootPath)' && SCRIPT_DIR='\(moleRootPath)' bash '\(scriptPath)'")
     }
 
     /// Locate the Mole executable binary.

@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-# Format Homebrew update label for display
-format_brew_update_label() {
+# Format Homebrew update details for display
+format_brew_update_detail() {
     local total="${BREW_OUTDATED_COUNT:-0}"
     if [[ -z "$total" || "$total" -le 0 ]]; then
         return
@@ -18,14 +18,50 @@ format_brew_update_label() {
     ((formulas > 0)) && details+=("${formulas} formula")
     ((casks > 0)) && details+=("${casks} cask")
 
-    local detail_str=", ${total} updates"
+    local detail_str="${total} updates"
     if ((${#details[@]} > 0)); then
-        detail_str=", $(
+        detail_str="$(
             IFS=', '
             printf '%s' "${details[*]}"
         )"
     fi
-    printf "  %s Homebrew%s" "$ICON_LIST" "$detail_str"
+    printf "%s" "$detail_str"
+}
+
+# Keep for compatibility with existing callers/tests.
+format_brew_update_label() {
+    local detail
+    detail=$(format_brew_update_detail || true)
+    [[ -n "$detail" ]] && printf "Homebrew, %s" "$detail"
+}
+
+populate_brew_update_counts_if_unset() {
+    local need_probe=false
+    [[ -z "${BREW_OUTDATED_COUNT:-}" ]] && need_probe=true
+    [[ -z "${BREW_FORMULA_OUTDATED_COUNT:-}" ]] && need_probe=true
+    [[ -z "${BREW_CASK_OUTDATED_COUNT:-}" ]] && need_probe=true
+
+    if [[ "$need_probe" == "false" ]]; then
+        return 0
+    fi
+
+    local formula_count="${BREW_FORMULA_OUTDATED_COUNT:-0}"
+    local cask_count="${BREW_CASK_OUTDATED_COUNT:-0}"
+
+    if command -v brew > /dev/null 2>&1; then
+        local formula_outdated=""
+        local cask_outdated=""
+
+        formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null || true)
+        cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null || true)
+
+        formula_count=$(printf '%s\n' "$formula_outdated" | awk 'NF {count++} END {print count + 0}')
+        cask_count=$(printf '%s\n' "$cask_outdated" | awk 'NF {count++} END {print count + 0}')
+    fi
+
+    BREW_FORMULA_OUTDATED_COUNT="$formula_count"
+    BREW_CASK_OUTDATED_COUNT="$cask_count"
+    BREW_OUTDATED_COUNT="$((formula_count + cask_count))"
 }
 
 brew_has_outdated() {
@@ -42,61 +78,53 @@ brew_has_outdated() {
 # Ask user if they want to update
 # Returns: 0 if yes, 1 if no
 ask_for_updates() {
-    local has_updates=false
-    local -a update_list=()
+    populate_brew_update_counts_if_unset
 
-    local brew_entry
-    brew_entry=$(format_brew_update_label || true)
-    if [[ -n "$brew_entry" ]]; then
+    local has_updates=false
+    if [[ -n "${BREW_OUTDATED_COUNT:-}" && "${BREW_OUTDATED_COUNT:-0}" -gt 0 ]]; then
         has_updates=true
-        update_list+=("$brew_entry")
     fi
 
     if [[ -n "${APPSTORE_UPDATE_COUNT:-}" && "${APPSTORE_UPDATE_COUNT:-0}" -gt 0 ]]; then
         has_updates=true
-        update_list+=("  ${ICON_LIST} App Store, ${APPSTORE_UPDATE_COUNT} apps")
     fi
 
     if [[ -n "${MACOS_UPDATE_AVAILABLE:-}" && "${MACOS_UPDATE_AVAILABLE}" == "true" ]]; then
         has_updates=true
-        update_list+=("  ${ICON_LIST} macOS system")
     fi
 
     if [[ -n "${MOLE_UPDATE_AVAILABLE:-}" && "${MOLE_UPDATE_AVAILABLE}" == "true" ]]; then
         has_updates=true
-        update_list+=("  ${ICON_LIST} Mole")
     fi
 
     if [[ "$has_updates" == "false" ]]; then
         return 1
     fi
 
-    echo -e "${BLUE}AVAILABLE UPDATES${NC}"
-    for item in "${update_list[@]}"; do
-        echo -e "$item"
-    done
-    echo ""
-    # If only Mole is relevant for automation, prompt just for Mole
     if [[ "${MOLE_UPDATE_AVAILABLE:-}" == "true" ]]; then
-        echo ""
         echo -ne "${YELLOW}Update Mole now?${NC} ${GRAY}Enter confirm / ESC cancel${NC}: "
 
         local key
         if ! key=$(read_key); then
             echo "skip"
-            echo ""
             return 1
         fi
 
         if [[ "$key" == "ENTER" ]]; then
             echo "yes"
-            echo ""
             return 0
         fi
     fi
 
-    echo ""
-    echo -e "${ICON_REVIEW} Run ${GREEN}brew upgrade${NC} to update"
+    if [[ -n "${BREW_OUTDATED_COUNT:-}" && "${BREW_OUTDATED_COUNT:-0}" -gt 0 ]]; then
+        echo -e "  ${GRAY}${ICON_REVIEW}${NC} Run ${GREEN}brew upgrade${NC} to update"
+    fi
+    if [[ -n "${MACOS_UPDATE_AVAILABLE:-}" && "${MACOS_UPDATE_AVAILABLE}" == "true" ]]; then
+        echo -e "  ${GRAY}${ICON_REVIEW}${NC} Open ${GREEN}System Settings${NC} → ${GREEN}General${NC} → ${GREEN}Software Update${NC}"
+    fi
+    if [[ -n "${APPSTORE_UPDATE_COUNT:-}" && "${APPSTORE_UPDATE_COUNT:-0}" -gt 0 ]]; then
+        echo -e "  ${GRAY}${ICON_REVIEW}${NC} Open ${GREEN}App Store${NC} → ${GREEN}Updates${NC}"
+    fi
 
     return 1
 }

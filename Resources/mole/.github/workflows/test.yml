@@ -1,0 +1,88 @@
+name: Validation
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  tests:
+    name: Unit & Integration Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Install tools
+        run: brew install bats-core shellcheck
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        with:
+          go-version: "1.24.6"
+
+      - name: Run test script
+        env:
+          MOLE_PERF_BYTES_TO_HUMAN_LIMIT_MS: "6000"
+          MOLE_PERF_GET_FILE_SIZE_LIMIT_MS: "3000"
+          BATS_FORMATTER: tap
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
+        run: ./scripts/test.sh
+
+  compatibility:
+    name: macOS
+    strategy:
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Test on ${{ matrix.os }}
+        run: |
+          echo "Testing on ${{ matrix.os }}..."
+          bash -n mole
+          source lib/core/common.sh
+          echo "✓ Successfully loaded on ${{ matrix.os }}"
+
+  security:
+    name: Security Checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Check for unsafe rm usage
+        run: |
+          echo "Checking for unsafe rm patterns..."
+          if grep -r "rm -rf" --include="*.sh" lib/ | grep -v "safe_remove\|validate_path\|# "; then
+            echo "✗ Unsafe rm -rf usage found"
+            exit 1
+          fi
+          echo "✓ No unsafe rm usage found"
+
+      - name: Verify app protection
+        run: |
+          echo "Verifying critical file protection..."
+          bash -c '
+          source lib/core/common.sh
+          if should_protect_from_uninstall "com.apple.Safari"; then
+            echo "✓ Safari is protected"
+          else
+            echo "✗ Safari protection failed"
+            exit 1
+          fi
+          '
+
+      - name: Check for secrets
+        run: |
+          echo "Checking for hardcoded secrets..."
+          matches=$(grep -r "password\|secret\|api_key" --include="*.sh" . \
+            | grep -v "# \|test" \
+            | grep -v -E "lib/core/sudo\.sh|lib/core/app_protection\.sh|lib/clean/user\.sh|lib/clean/brew\.sh|bin/optimize\.sh|lib/clean/apps\.sh|lib/uninstall/batch\.sh" || true)
+          if [[ -n "$matches" ]]; then
+            echo "$matches"
+            echo "✗ Potential secrets found"
+            exit 1
+          fi
+          echo "✓ No secrets found"

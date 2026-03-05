@@ -29,6 +29,12 @@ struct MoleApp: App {
                 .environment(safetyController)
                 .environment(versionModel)
                 .frame(width: 904, height: 580)
+                .onAppear {
+                    // Wire up model references for metrics pause coordination
+                    // This must be done after models are initialized
+                    metricsModel.cleanModel = cleanModel
+                    metricsModel.optimizeModel = optimizeModel
+                }
         }
         .defaultSize(width: 904, height: 580)
         .windowResizability(.contentSize)

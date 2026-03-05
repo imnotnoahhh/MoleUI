@@ -1021,11 +1021,11 @@ perform_cleanup() {
     local -a summary_details=()
 
     if [[ $total_size_cleaned -gt 0 ]]; then
-        local freed_gb
-        freed_gb=$(echo "$total_size_cleaned" | awk '{printf "%.2f", $1/1024/1024}')
+        local freed_size_human
+        freed_size_human=$(bytes_to_human_kb "$total_size_cleaned")
 
         if [[ "$DRY_RUN" == "true" ]]; then
-            local stats="Potential space: ${GREEN}${freed_gb}GB${NC}"
+            local stats="Potential space: ${GREEN}${freed_size_human}${NC}"
             [[ $files_cleaned -gt 0 ]] && stats+=" | Items: $files_cleaned"
             [[ $total_items -gt 0 ]] && stats+=" | Categories: $total_items"
             summary_details+=("$stats")
@@ -1035,7 +1035,7 @@ perform_cleanup() {
                 echo "# ============================================"
                 echo "# Summary"
                 echo "# ============================================"
-                echo "# Potential cleanup: ${freed_gb}GB"
+                echo "# Potential cleanup: ${freed_size_human}"
                 echo "# Items: $files_cleaned"
                 echo "# Categories: $total_items"
             } >> "$EXPORT_LIST_FILE"
@@ -1043,7 +1043,7 @@ perform_cleanup() {
             summary_details+=("Detailed file list: ${GRAY}$EXPORT_LIST_FILE${NC}")
             summary_details+=("Use ${GRAY}mo clean --whitelist${NC} to add protection rules")
         else
-            local summary_line="Space freed: ${GREEN}${freed_gb}GB${NC}"
+            local summary_line="Space freed: ${GREEN}${freed_size_human}${NC}"
 
             if [[ $files_cleaned -gt 0 && $total_items -gt 0 ]]; then
                 summary_line+=" | Items cleaned: $files_cleaned | Categories: $total_items"
@@ -1055,9 +1055,11 @@ perform_cleanup() {
 
             summary_details+=("$summary_line")
 
-            if [[ $(echo "$freed_gb" | awk '{print ($1 >= 1) ? 1 : 0}') -eq 1 ]]; then
-                local movies
-                movies=$(echo "$freed_gb" | awk '{printf "%.0f", $1/4.5}')
+            # Movie comparison only if >= 1GB (1048576 KB)
+            if ((total_size_cleaned >= 1048576)); then
+                local freed_gb=$((total_size_cleaned / 1048576))
+                local movies=$((freed_gb * 10 / 45))
+
                 if [[ $movies -gt 0 ]]; then
                     if [[ $movies -eq 1 ]]; then
                         summary_details+=("Equivalent to ~$movies 4K movie of storage.")

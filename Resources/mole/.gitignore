@@ -1,0 +1,82 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+*~
+*.swp
+*.swo
+.idea/
+.vscode/*.code-workspace
+.vscode/settings.json
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.dmg
+tests/tmp-*
+
+# Cache
+.cache/
+*.cache
+.gocache/
+.gomod/
+
+# Backup files
+*.bak
+*.backup
+
+# System files
+*.pid
+*.lock
+
+# AI Assistant Instructions
+.claude/
+.agents/
+.gemini/
+.kiro/
+CLAUDE.md
+GEMINI.md
+ANTIGRAVITY.md
+WARP.md
+AGENTS.md
+.cursorrules
+
+# Go build artifacts (development)
+cmd/analyze/analyze
+cmd/status/status
+/status
+/analyze
+mole-analyze
+# Go binaries
+bin/analyze-go
+bin/status-go
+bin/analyze-darwin-*
+bin/status-darwin-*
+
+# Test artifacts
+tests/tmp-*/
+tests/*.tmp
+tests/*.log
+
+# Go test coverage files
+*.out
+coverage.out
+coverage.html
+
+session.json
+run_tests.ps1
+AGENTS.md
+mole_guidelines.md
+CLAUDE.md
