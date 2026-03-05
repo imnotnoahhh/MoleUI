@@ -20,6 +20,7 @@ struct OptimizeView: View {
             Group {
                 if service.isScanning, service.report == nil {
                     ProgressView("Scanning system health...")
+                        .controlSize(.regular)
                 } else if let error = service.errorMessage, service.report == nil {
                     ContentUnavailableView(
                         "Health Check Failed",
@@ -51,6 +52,7 @@ struct OptimizeView: View {
         HStack(spacing: 12) {
             ProgressView()
                 .controlSize(.small)
+                .frame(width: 16, height: 16)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(dryRunMode ? "Previewing..." : "Optimizing...")

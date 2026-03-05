@@ -65,6 +65,7 @@ struct CleanView: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
+                .frame(width: 16, height: 16)
             Text(dryRunMode ? "Previewing..." : "Cleaning...")
                 .font(.system(size: 12, weight: .medium))
             Text("Please wait, this may take a while")

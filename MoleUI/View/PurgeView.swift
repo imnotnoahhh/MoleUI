@@ -65,6 +65,7 @@ struct PurgeView: View {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning project directories...")
+                        .controlSize(.regular)
                     Text("Looking for build artifacts")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -143,6 +144,7 @@ struct PurgeView: View {
                 if isCleaning {
                     ProgressView()
                         .controlSize(.small)
+                        .frame(width: 16, height: 16)
                         .frame(width: 60)
                 } else if isCompleted {
                     Image(systemName: "checkmark.circle.fill")

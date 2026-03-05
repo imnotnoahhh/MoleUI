@@ -195,6 +195,7 @@ struct DashboardView: View {
                 )
             } else {
                 ProgressView("Loading system metrics...")
+                    .controlSize(.regular)
             }
         }
         .task {

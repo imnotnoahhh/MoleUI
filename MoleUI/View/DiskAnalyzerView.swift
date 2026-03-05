@@ -149,6 +149,8 @@ struct DiskAnalyzerView: View {
     private var scanningView: some View {
         VStack(spacing: 16) {
             ProgressView()
+                .controlSize(.large)
+                .frame(width: 32, height: 32)
                 .scaleEffect(1.2)
             if let prog = scanner.progress {
                 Text("Scanning: \(prog.itemsScanned) items")

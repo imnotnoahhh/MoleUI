@@ -84,6 +84,7 @@ struct UninstallView: View {
             VStack {
                 Spacer()
                 ProgressView("Scanning /Applications...")
+                    .controlSize(.regular)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -91,6 +92,7 @@ struct UninstallView: View {
             VStack {
                 Spacer()
                 ProgressView("Moving to Trash...")
+                    .controlSize(.regular)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

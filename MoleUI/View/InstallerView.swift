@@ -65,6 +65,7 @@ struct InstallerView: View {
             GroupBox {
                 VStack(spacing: 8) {
                     ProgressView("Scanning for installers...")
+                        .controlSize(.regular)
                     Text("Checking Downloads, Desktop, iCloud and more")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -136,6 +137,7 @@ struct InstallerView: View {
                 if isDeleting {
                     ProgressView()
                         .controlSize(.small)
+                        .frame(width: 16, height: 16)
                         .frame(width: 60)
                 } else if isCompleted {
                     Image(systemName: "checkmark.circle.fill")
