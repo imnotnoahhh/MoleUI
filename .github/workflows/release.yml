@@ -49,6 +49,8 @@ jobs:
           xcodebuild -scheme "$SCHEME" \
             -configuration Release \
             -archivePath $RUNNER_TEMP/MoleUI.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
             archive
 
