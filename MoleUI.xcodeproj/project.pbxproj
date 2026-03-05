@@ -23,7 +23,6 @@
 		AA44444444444444AAAAAAAA /* MetricsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB44444444444444BBBBBBBB /* MetricsModel.swift */; };
 		AA55555555555555AAAAAAAA /* OptimizeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB55555555555555BBBBBBBB /* OptimizeModel.swift */; };
 		AA66666666666666AAAAAAAA /* PurgeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB66666666666666BBBBBBBB /* PurgeModel.swift */; };
-		AA77777777777777AAAAAAAA /* SettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB77777777777777BBBBBBBB /* SettingsModel.swift */; };
 		AA88888888888888AAAAAAAA /* UninstallModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB88888888888888BBBBBBBB /* UninstallModel.swift */; };
 		AA99999999999999AAAAAAAA /* VersionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB99999999999999BBBBBBBB /* VersionModel.swift */; };
 		ABB844CFA71DA286E6198BF2 /* SafetyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B5D757BF68A417AB45A5E9F /* SafetyController.swift */; };
@@ -67,7 +66,6 @@
 		BB44444444444444BBBBBBBB /* MetricsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsModel.swift; sourceTree = "<group>"; };
 		BB55555555555555BBBBBBBB /* OptimizeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptimizeModel.swift; sourceTree = "<group>"; };
 		BB66666666666666BBBBBBBB /* PurgeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PurgeModel.swift; sourceTree = "<group>"; };
-		BB77777777777777BBBBBBBB /* SettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModel.swift; sourceTree = "<group>"; };
 		BB87FF57E870C70574208B01 /* MoleUI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MoleUI.entitlements; sourceTree = "<group>"; };
 		BB88888888888888BBBBBBBB /* UninstallModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UninstallModel.swift; sourceTree = "<group>"; };
 		BB99999999999999BBBBBBBB /* VersionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionModel.swift; sourceTree = "<group>"; };
@@ -123,7 +121,6 @@
 				BB55555555555555BBBBBBBB /* OptimizeModel.swift */,
 				BB66666666666666BBBBBBBB /* PurgeModel.swift */,
 				8B5D757BF68A417AB45A5E9F /* SafetyController.swift */,
-				BB77777777777777BBBBBBBB /* SettingsModel.swift */,
 				FBD57E8C4DB424E21B6455F8 /* SudoHelper.swift */,
 				BB88888888888888BBBBBBBB /* UninstallModel.swift */,
 				BB99999999999999BBBBBBBB /* VersionModel.swift */,
@@ -302,7 +299,6 @@
 				AA66666666666666AAAAAAAA /* PurgeModel.swift in Sources */,
 				54506156DDF34D0FED1B3332 /* PurgeView.swift in Sources */,
 				ABB844CFA71DA286E6198BF2 /* SafetyController.swift in Sources */,
-				AA77777777777777AAAAAAAA /* SettingsModel.swift in Sources */,
 				97433759C25EA852940B3133 /* SettingsView.swift in Sources */,
 				D455E75FE1409E6AB1A61E12 /* SidebarView.swift in Sources */,
 				B10B12EF48384CF315BCF0FD /* SudoHelper.swift in Sources */,

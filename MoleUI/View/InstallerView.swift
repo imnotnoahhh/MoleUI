@@ -2,7 +2,6 @@ import SwiftUI
 
 struct InstallerView: View {
     @Environment(InstallerModel.self) var service
-    @State private var selectedFiles: Set<String> = []
     @State private var showConfirmation = false
     @State private var searchText = ""
 
@@ -18,6 +17,9 @@ struct InstallerView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
+                if !service.hasFullDiskAccess {
+                    permissionBanner
+                }
                 headerCard
                 contentArea
             }
@@ -26,13 +28,38 @@ struct InstallerView: View {
         .task {
             await service.scan()
         }
-        .alert("Confirm Delete", isPresented: $showConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Move to Trash", role: .destructive) {
-                Task { await service.deleteSelected(ids: selectedFiles) }
+    }
+
+    // MARK: - Permission Banner
+
+    private var permissionBanner: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.shield")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Full Disk Access Recommended")
+                        .fontWeight(.semibold)
+                    Text("First scan will request access to multiple directories. Grant Full Disk Access in System Settings for the best experience.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Open Settings") {
+                    service.openSystemPreferences()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Dismiss") {
+                    service.hasFullDiskAccess = true
+                }
+                .buttonStyle(.bordered)
             }
-        } message: {
-            Text("Move \(selectedFiles.count) installer files to Trash?")
+            .padding(.vertical, 4)
         }
     }
 
@@ -61,13 +88,6 @@ struct InstallerView: View {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
                 .disabled(service.isScanning)
-
-                Button {
-                    showConfirmation = true
-                } label: {
-                    Label("Trash Selected", systemImage: "trash")
-                }
-                .disabled(selectedFiles.isEmpty || service.isScanning || service.deletingFile != nil)
             }
             .padding(.vertical, 2)
         }
@@ -116,23 +136,11 @@ struct InstallerView: View {
     // MARK: - File Row
 
     private func fileRow(_ file: InstallerFile) -> some View {
-        let isSelected = selectedFiles.contains(file.id)
         let isDeleting = service.deletingFile == file.id
         let isCompleted = service.completedFiles.contains(file.id)
 
         return GroupBox {
             HStack(spacing: 10) {
-                Toggle(isOn: Binding(
-                    get: { isSelected },
-                    set: { on in
-                        if on { selectedFiles.insert(file.id) } else { selectedFiles.remove(file.id) }
-                    }
-                )) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-
                 Image(systemName: iconForExtension(file.fileExtension))
                     .frame(width: 20)
                     .foregroundStyle(.secondary)

@@ -86,10 +86,11 @@ struct CleanView: View {
         GroupBox {
             HStack(spacing: 8) {
                 Text("Clean")
+                    .font(.title2)
                     .fontWeight(.bold)
                 Text("System cleanup will free up disk space")
                     .foregroundStyle(.secondary)
-                    .font(.caption)
+                    .font(.callout)
 
                 Spacer()
 
@@ -98,23 +99,23 @@ struct CleanView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(cleanedBytes == 0 ? Color.secondary : Color.green)
-                            .font(.caption)
+                            .font(.body)
                         if cleanedBytes == 0 {
                             Text("Already clean")
                                 .foregroundStyle(.secondary)
-                                .font(.caption)
+                                .font(.callout)
                         } else {
                             Text("Cleaned:")
                                 .foregroundStyle(.secondary)
-                                .font(.caption)
+                                .font(.callout)
                             Text(MetricsFormatter.humanBytes(cleanedBytes))
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.green)
-                                .font(.caption)
+                                .font(.callout)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(
                         cleanedBytes == 0 ? Color.secondary.opacity(0.1) : Color.green.opacity(0.1),
                         in: RoundedRectangle(cornerRadius: 6)
@@ -142,7 +143,7 @@ struct CleanView: View {
                 .disabled(service.isScanning || service.cleaningCategory != nil)
                 .buttonStyle(.borderedProminent)
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 6)
         }
     }
 
@@ -154,42 +155,45 @@ struct CleanView: View {
             GroupBox {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
+                    .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 8)
             }
         }
 
         // Show what will be cleaned
         GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("Ready to Clean:")
-                    .font(.headline)
+                    .font(.title3)
+                    .fontWeight(.semibold)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 12) {
                     cleanItemRow(icon: "folder.badge.gearshape", text: "System caches and logs")
                     cleanItemRow(icon: "safari", text: "Browser caches")
                     cleanItemRow(icon: "hammer", text: "Development tool caches")
                     cleanItemRow(icon: "app.badge", text: "Application caches")
                     cleanItemRow(icon: "trash", text: "Trash and temporary files")
                 }
-                .font(.callout)
 
                 Text("Note: Active applications and protected files will be skipped for safety.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 4)
+            .padding(.vertical, 8)
         }
     }
 
     private func cleanItemRow(icon: String, text: String) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: icon)
-                .frame(width: 20)
+                .font(.title3)
+                .frame(width: 28)
                 .foregroundStyle(.secondary)
             Text(text)
+                .font(.body)
         }
     }
 

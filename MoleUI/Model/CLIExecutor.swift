@@ -105,6 +105,13 @@ final class CLIExecutor {
                 proc.executableURL = URL(fileURLWithPath: "/bin/bash")
                 proc.arguments = ["-c", command]
 
+                // Set environment variables - Process doesn't inherit by default
+                var env = ProcessInfo.processInfo.environment
+                env["HOME"] = NSHomeDirectory()
+                env["USER"] = NSUserName()
+                env["SHELL"] = "/bin/bash"
+                proc.environment = env
+
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
                 proc.standardOutput = stdoutPipe

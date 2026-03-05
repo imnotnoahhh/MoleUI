@@ -3,7 +3,6 @@ import SwiftUI
 
 struct DiskAnalyzerView: View {
     @Environment(DiskModel.self) var scanner
-    @State private var hasInitialScan = false
     @AppStorage("showHiddenFiles") private var showHiddenFiles = false
     @State private var entryToDelete: DirEntry?
     @State private var hoveredEntry: String?
@@ -22,12 +21,8 @@ struct DiskAnalyzerView: View {
             breadcrumbBar
             contentArea
         }
-        .onAppear {
-            // Only scan on first appear
-            if !hasInitialScan {
-                scanner.scan(directory: scanner.currentPath)
-                hasInitialScan = true
-            }
+        .task {
+            scanner.navigateToCurrentIfNeeded()
         }
     }
 
@@ -69,6 +64,15 @@ struct DiskAnalyzerView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Show hidden files toggle
+            Toggle(isOn: $showHiddenFiles) {
+                Image(systemName: showHiddenFiles ? "eye" : "eye.slash")
+                    .font(.system(size: 12))
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.borderless)
+            .help("Show hidden files")
+
             // Refresh button
             Button {
                 scanner.refresh()
@@ -92,24 +96,28 @@ struct DiskAnalyzerView: View {
     }
 
     private var breadcrumbPath: some View {
-        HStack(spacing: 3) {
-            let allPaths = scanner.pathStack + [scanner.currentPath]
-            ForEach(Array(allPaths.enumerated()), id: \.offset) { index, url in
-                if index > 0 {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                }
-                if index < allPaths.count - 1 {
-                    Button(url.lastPathComponent) {
-                        scanner.navigateToBreadcrumb(index: index)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                let allPaths = scanner.pathStack + [scanner.currentPath]
+                ForEach(Array(allPaths.enumerated()), id: \.offset) { index, url in
+                    if index > 0 {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.tertiary)
                     }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                } else {
-                    Text(url.lastPathComponent)
-                        .font(.system(size: 13, weight: .semibold))
+                    if index < allPaths.count - 1 {
+                        Button(url.lastPathComponent) {
+                            scanner.navigateToBreadcrumb(index: index)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    } else {
+                        Text(url.lastPathComponent)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                    }
                 }
             }
         }
