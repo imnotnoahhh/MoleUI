@@ -6,6 +6,7 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [dev, main]
+  workflow_dispatch:
 
 jobs:
   code-quality:
