@@ -69,6 +69,13 @@ struct UninstallView: View {
 
             Spacer()
 
+            // Cache status
+            if let lastScan = scanService.lastScanTime {
+                Text("Scanned \(relativeTime(from: lastScan))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             if !selectedApps.isEmpty {
                 Button(role: .destructive) {
                     showBatchConfirmation = true
@@ -80,7 +87,7 @@ struct UninstallView: View {
             }
 
             Button {
-                scanService.scan()
+                scanService.refresh()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -238,6 +245,22 @@ struct UninstallView: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func relativeTime(from date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 {
+            return "just now"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes)m ago"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "\(hours)h ago"
+        } else {
+            let days = Int(interval / 86400)
+            return "\(days)d ago"
+        }
     }
 
     // MARK: - Actions
