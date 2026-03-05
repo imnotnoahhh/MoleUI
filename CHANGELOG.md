@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.2] - 2026-03-06
 
+Official release with Mole CLI v1.29.0.
+
 ### Added
 - Caching mechanism for disk analyzer and app scanner
   - Disk analyzer caches scan results with timestamp display
