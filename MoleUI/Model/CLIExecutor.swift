@@ -28,7 +28,7 @@ final class CLIExecutor {
         )
     }
 
-    enum ExecutionError: LocalizedError {
+    enum ExecutionError: LocalizedError, Equatable {
         case timeout
         case cancelled
         case commandNotFound(String)
@@ -47,6 +47,23 @@ final class CLIExecutor {
                 "Command failed (exit code: \(code))\n\(stderr)"
             case .invalidOutput(let msg):
                 "Output parsing failed: \(msg)"
+            }
+        }
+
+        static func == (lhs: ExecutionError, rhs: ExecutionError) -> Bool {
+            switch (lhs, rhs) {
+            case (.timeout, .timeout):
+                return true
+            case (.cancelled, .cancelled):
+                return true
+            case (.commandNotFound(let a), .commandNotFound(let b)):
+                return a == b
+            case (.nonZeroExit(let a1, let a2), .nonZeroExit(let b1, let b2)):
+                return a1 == b1 && a2 == b2
+            case (.invalidOutput(let a), .invalidOutput(let b)):
+                return a == b
+            default:
+                return false
             }
         }
     }

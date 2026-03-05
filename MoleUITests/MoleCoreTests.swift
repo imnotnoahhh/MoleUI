@@ -432,3 +432,281 @@ struct CIAssumptionTests {
         }
     }
 }
+
+// MARK: - Async & Concurrency Tests (P0)
+
+@Suite("Async & Concurrency Tests")
+struct AsyncConcurrencyTests {
+
+    @Test("CLIExecutor timeout works correctly")
+    func testCLIExecutorTimeout() async throws {
+        let executor = await CLIExecutor()
+
+        do {
+            _ = try await executor.execute(
+                command: "sleep 10",
+                options: CLIExecutor.ExecutionOptions(
+                    timeout: 0.5,
+                    captureStderr: false,
+                    parseProgress: false,
+                    dryRun: false
+                )
+            )
+            Issue.record("Should have thrown timeout or cancellation error")
+        } catch let error as CLIExecutor.ExecutionError {
+            // Accept either timeout or process termination (SIGTERM = exit 15)
+            switch error {
+            case .timeout:
+                break // Expected
+            case .nonZeroExit(15, _):
+                break // Also expected (process terminated)
+            default:
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    @Test("CLIExecutor cancellation works")
+    func testCLIExecutorCancellation() async throws {
+        let executor = await CLIExecutor()
+
+        let task = Task {
+            try await executor.execute(
+                command: "sleep 10",
+                options: CLIExecutor.ExecutionOptions(
+                    timeout: 30,
+                    captureStderr: false,
+                    parseProgress: false,
+                    dryRun: false
+                )
+            )
+        }
+
+        // Cancel after a short delay
+        try? await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Should have been cancelled")
+        } catch {
+            // Expected to throw
+        }
+    }
+
+    @Test("Concurrent scans are safe")
+    func testConcurrentScansAreSafe() async throws {
+        let model = await InstallerModel()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<3 {
+                group.addTask {
+                    await model.scan()
+                }
+            }
+        }
+
+        // Should complete without crash
+        let isScanning = await model.isScanning
+        #expect(isScanning == false, "Should finish scanning")
+    }
+
+    @Test("Model state transitions correctly during scan")
+    func testScanningStateTransitions() async throws {
+        let model = await InstallerModel()
+
+        let initialState = await model.isScanning
+        #expect(initialState == false, "Should start not scanning")
+
+        // Start scan in background
+        let scanTask = Task {
+            await model.scan()
+        }
+
+        // Give it time to start
+        try? await Task.sleep(for: .milliseconds(200))
+
+        // Wait for completion
+        await scanTask.value
+
+        let finalState = await model.isScanning
+        #expect(finalState == false, "Should finish scanning")
+    }
+}
+
+// MARK: - Error Recovery Tests (P0)
+
+@Suite("Error Recovery Tests")
+struct ErrorRecoveryTests {
+
+    @Test("Scan recovers after error")
+    func testScanRecoveryAfterError() async throws {
+        let model = await InstallerModel()
+
+        // Simulate error state
+        await MainActor.run {
+            model.errorMessage = "Test error"
+        }
+
+        // Scan should clear error
+        await model.scan()
+
+        let errorMessage = await model.errorMessage
+        #expect(errorMessage == nil || !errorMessage!.contains("Test error"),
+                "Error should be cleared after new scan")
+    }
+
+    @Test("Multiple errors don't accumulate")
+    func testMultipleErrorsDontAccumulate() async throws {
+        let model = await InstallerModel()
+
+        // Trigger multiple scans (some may fail)
+        for _ in 0..<3 {
+            await model.scan()
+        }
+
+        // Should only have one error message at most
+        let errorMessage = await model.errorMessage
+        if let error = errorMessage {
+            let errorCount = error.components(separatedBy: "Failed").count - 1
+            #expect(errorCount <= 1, "Should not accumulate errors")
+        }
+    }
+}
+
+// MARK: - Data Validation Tests (P0)
+
+@Suite("Data Validation Tests")
+struct DataValidationTests {
+
+    @Test("Handles invalid JSON gracefully")
+    func testHandlesInvalidJSON() async throws {
+        let executor = await CLIExecutor()
+
+        do {
+            let _: MetricsSnapshot = try await executor.executeAndParseJSON(
+                command: "echo 'invalid json'"
+            )
+            Issue.record("Should have thrown parsing error")
+        } catch {
+            // Expected to throw
+            #expect(error is CLIExecutor.ExecutionError)
+        }
+    }
+
+    @Test("Handles empty JSON response")
+    func testHandlesEmptyJSON() async throws {
+        let executor = await CLIExecutor()
+
+        do {
+            struct EmptyResponse: Codable {}
+            let _: EmptyResponse = try await executor.executeAndParseJSON(
+                command: "echo '{}'"
+            )
+            // Should succeed with empty object
+        } catch {
+            Issue.record("Should handle empty JSON: \(error)")
+        }
+    }
+
+    @Test("Handles malformed version strings")
+    func testHandlesMalformedVersions() async {
+        let model = await VersionModel()
+
+        await MainActor.run {
+            model.currentVersion = "invalid"
+            model.latestVersion = "also-invalid"
+        }
+
+        let hasUpdate = await model.hasUpdate
+        #expect(hasUpdate == false, "Should handle malformed versions gracefully")
+    }
+}
+
+// MARK: - Memory & Performance Tests (P2)
+
+@Suite("Memory & Performance Tests")
+struct MemoryPerformanceTests {
+
+    @Test("Large file list doesn't cause memory issues")
+    func testLargeFileListPerformance() async throws {
+        let model = await InstallerModel()
+
+        // Simulate large file list
+        await MainActor.run {
+            model.files = (0..<1000).map { i in
+                InstallerFile(
+                    path: URL(fileURLWithPath: "/tmp/file\(i).dmg"),
+                    name: "file\(i).dmg",
+                    sizeBytes: UInt64(i * 1000),
+                    source: "Downloads"
+                )
+            }
+        }
+
+        let fileCount = await model.files.count
+        #expect(fileCount == 1000, "Should handle 1000 files")
+    }
+
+    @Test("Metrics history doesn't grow unbounded")
+    func testMetricsHistoryBounded() async throws {
+        let model = await MetricsModel()
+
+        // Add many data points
+        await MainActor.run {
+            for _ in 0..<200 {
+                model.cpuHistory.append(50.0)
+            }
+        }
+
+        let historySize = await model.cpuHistory.count
+        #expect(historySize <= 120, "History should be bounded to maxHistoryPoints")
+    }
+}
+
+// MARK: - Edge Cases Tests (P1)
+
+@Suite("Edge Cases Tests")
+struct EdgeCasesTests {
+
+    @Test("Empty file paths are handled")
+    func testEmptyFilePathsHandled() {
+        let file = InstallerFile(
+            path: URL(fileURLWithPath: ""),
+            name: "",
+            sizeBytes: 0,
+            source: ""
+        )
+
+        #expect(file.name == "")
+        #expect(file.sizeBytes == 0)
+    }
+
+    @Test("Very large file sizes are formatted correctly")
+    func testVeryLargeFileSizes() {
+        let petabyte: UInt64 = 1_125_899_906_842_624 // 1 PB
+        let formatted = MetricsFormatter.humanBytes(petabyte)
+        #expect(formatted.contains("TB") || formatted.contains("PB"))
+    }
+
+    @Test("Zero byte files are handled")
+    func testZeroByteFiles() {
+        let formatted = MetricsFormatter.humanBytes(0)
+        #expect(formatted == "0.0 B")
+    }
+
+    @Test("Negative age days are handled")
+    func testNegativeAgeDays() {
+        let target = PurgeTarget(
+            path: URL(fileURLWithPath: "/tmp/test"),
+            projectName: "test",
+            artifactName: "build",
+            sizeBytes: 1000,
+            ageDays: -1
+        )
+
+        // Should treat as recent
+        #expect(target.isRecent == true)
+    }
+}
+
