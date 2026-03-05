@@ -62,13 +62,6 @@ final class DiskModel {
 
     // MARK: - Navigation
 
-    func navigateToCurrentIfNeeded() {
-        // If no entries loaded yet, perform initial scan
-        if entries.isEmpty, !isScanning {
-            loadOrScan(directory: currentPath)
-        }
-    }
-
     func scan(directory: URL) {
         scanTask?.cancel()
         isScanning = true
@@ -108,7 +101,7 @@ final class DiskModel {
     }
 
     /// Restore from cache if available and valid; otherwise scan.
-    func loadOrScan(directory: URL) {
+    private func loadOrScan(directory: URL) {
         if let cached = cache[directory.path], !cached.dirty {
             // Check if cache is still valid
             let cacheAge = Date().timeIntervalSince(cached.timestamp)
@@ -242,7 +235,7 @@ final class DiskModel {
             throw NSError(
                 domain: "DiskModel",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
+                userInfo: [NSLocalizedDescriptionKey: "找不到 mole 可执行文件"]
             )
         }
 

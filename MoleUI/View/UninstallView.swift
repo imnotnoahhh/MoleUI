@@ -12,13 +12,15 @@ struct UninstallView: View {
 
     @State private var searchText = ""
     @State private var sortOrder: AppSortOrder = .size
+    @State private var selectedApps: Set<String> = []
     @State private var appToUninstall: AppInfo?
-    @State private var relatedFilesCount = 0
     @State private var showConfirmation = false
+    @State private var showBatchConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            Divider()
             content
         }
         .onAppear {
@@ -30,7 +32,16 @@ struct UninstallView: View {
                 performUninstall(app)
             }
         } message: { app in
-            Text("Move \"\(app.name)\" and \(relatedFilesCount) related file\(relatedFilesCount == 1 ? "" : "s") to Trash?")
+            let count = uninstallService.findRelatedFiles(for: app).count
+            Text("Move \"\(app.name)\" and \(count) related file\(count == 1 ? "" : "s") to Trash?")
+        }
+        .alert("Uninstall Selected Apps", isPresented: $showBatchConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move to Trash", role: .destructive) {
+                performBatchUninstall()
+            }
+        } message: {
+            Text("Move \(selectedApps.count) selected app\(selectedApps.count == 1 ? "" : "s") to Trash?")
         }
     }
 
@@ -65,6 +76,16 @@ struct UninstallView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !selectedApps.isEmpty {
+                Button(role: .destructive) {
+                    showBatchConfirmation = true
+                } label: {
+                    Label("Uninstall Selected (\(selectedApps.count))", systemImage: "trash")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+
             Button {
                 scanService.refresh()
             } label: {
@@ -84,7 +105,6 @@ struct UninstallView: View {
             VStack {
                 Spacer()
                 ProgressView("Scanning /Applications...")
-                    .controlSize(.regular)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -92,7 +112,6 @@ struct UninstallView: View {
             VStack {
                 Spacer()
                 ProgressView("Moving to Trash...")
-                    .controlSize(.regular)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -127,10 +146,22 @@ struct UninstallView: View {
     // MARK: - App Row
 
     private func appRow(_ app: AppInfo) -> some View {
+        let isSelected = selectedApps.contains(app.id)
         let wasUninstalled = uninstallService.uninstalledApps.contains(app.id)
 
         return GroupBox {
             HStack(spacing: 10) {
+                Toggle(isOn: Binding(
+                    get: { isSelected },
+                    set: { checked in
+                        if checked { selectedApps.insert(app.id) } else { selectedApps.remove(app.id) }
+                    }
+                )) {
+                    EmptyView()
+                }
+                .toggleStyle(.checkbox)
+                .disabled(wasUninstalled)
+
                 Image(nsImage: app.icon)
                     .resizable()
                     .frame(width: 32, height: 32)
@@ -173,7 +204,6 @@ struct UninstallView: View {
                 } else {
                     Button("Uninstall") {
                         appToUninstall = app
-                        relatedFilesCount = uninstallService.findRelatedFiles(for: app).count
                         showConfirmation = true
                     }
                     .buttonStyle(.bordered)
@@ -240,9 +270,26 @@ struct UninstallView: View {
         Task {
             do {
                 try await uninstallService.uninstall(app: app, relatedFiles: related)
+                selectedApps.remove(app.id)
             } catch {
                 uninstallService.errorMessage = "Failed to uninstall \(app.name): \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func performBatchUninstall() {
+        let appsToRemove = scanService.apps.filter { selectedApps.contains($0.id) }
+        Task {
+            for app in appsToRemove {
+                let related = uninstallService.findRelatedFiles(for: app)
+                do {
+                    try await uninstallService.uninstall(app: app, relatedFiles: related)
+                } catch {
+                    uninstallService.errorMessage = "Failed to uninstall \(app.name): \(error.localizedDescription)"
+                    break
+                }
+            }
+            selectedApps.removeAll()
         }
     }
 }

@@ -11,16 +11,9 @@ struct OptimizeView: View {
             if dryRunMode {
                 dryRunBanner
             }
-
-            // Global optimizing progress banner
-            if service.isOptimizing {
-                optimizingBanner
-            }
-
             Group {
                 if service.isScanning, service.report == nil {
                     ProgressView("Scanning system health...")
-                        .controlSize(.regular)
                 } else if let error = service.errorMessage, service.report == nil {
                     ContentUnavailableView(
                         "Health Check Failed",
@@ -46,33 +39,6 @@ struct OptimizeView: View {
         .task {
             await service.loadReport()
         }
-    }
-
-    private var optimizingBanner: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 16, height: 16)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(dryRunMode ? "Previewing..." : "Optimizing...")
-                    .font(.system(size: 13, weight: .semibold))
-
-                if let currentTask = service.currentTask {
-                    Text(currentTask)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
     }
 
     private var dryRunBanner: some View {
