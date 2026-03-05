@@ -95,7 +95,8 @@ clean_dev_npm() {
 }
 # Python/pip ecosystem caches.
 clean_dev_python() {
-    if command -v pip3 > /dev/null 2>&1; then
+    # Check pip3 is functional (not just macOS stub that triggers CLT install dialog)
+    if command -v pip3 > /dev/null 2>&1 && pip3 --version > /dev/null 2>&1; then
         clean_tool_cache "pip cache" bash -c 'pip3 cache purge > /dev/null 2>&1 || true'
         note_activity
     fi
@@ -115,10 +116,35 @@ clean_dev_python() {
 }
 # Go build/module caches.
 clean_dev_go() {
-    if command -v go > /dev/null 2>&1; then
-        clean_tool_cache "Go cache" bash -c 'go clean -modcache > /dev/null 2>&1 || true; go clean -cache > /dev/null 2>&1 || true'
-        note_activity
+    command -v go > /dev/null 2>&1 || return 0
+
+    local go_build_cache go_mod_cache
+    go_build_cache=$(go env GOCACHE 2> /dev/null || echo "$HOME/Library/Caches/go-build")
+    go_mod_cache=$(go env GOMODCACHE 2> /dev/null || echo "$HOME/go/pkg/mod")
+
+    local build_protected=false mod_protected=false
+    is_path_whitelisted "$go_build_cache" && build_protected=true
+    is_path_whitelisted "$go_mod_cache" && mod_protected=true
+
+    if [[ "$build_protected" == "true" && "$mod_protected" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Go cache · would skip (whitelist)"
+        else
+            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Go cache · skipped (whitelist)"
+        fi
+        return 0
     fi
+
+    if [[ "$build_protected" != "true" && "$mod_protected" != "true" ]]; then
+        clean_tool_cache "Go cache" bash -c 'go clean -modcache > /dev/null 2>&1 || true; go clean -cache > /dev/null 2>&1 || true'
+    elif [[ "$build_protected" == "true" ]]; then
+        clean_tool_cache "Go module cache" bash -c 'go clean -modcache > /dev/null 2>&1 || true'
+        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Go build cache · skipped (whitelist)"
+    else
+        clean_tool_cache "Go build cache" bash -c 'go clean -cache > /dev/null 2>&1 || true'
+        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Go module cache · skipped (whitelist)"
+    fi
+    note_activity
 }
 # Rust/cargo caches.
 clean_dev_rust() {
@@ -311,6 +337,76 @@ clean_xcode_documentation_cache() {
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode documentation cache · no items removed"
         note_activity
     fi
+}
+
+# Clean old Xcode DeviceSupport versions, keeping the most recent ones.
+# Each version holds debug symbols (1-3 GB) for a specific iOS/watchOS/tvOS version.
+# Symbols regenerate automatically when a device running that version is connected.
+# Args: $1=directory path, $2=display name (e.g. "iOS DeviceSupport")
+clean_xcode_device_support() {
+    local ds_dir="$1"
+    local display_name="$2"
+    local keep_count="${MOLE_XCODE_DEVICE_SUPPORT_KEEP:-2}"
+    [[ "$keep_count" =~ ^[0-9]+$ ]] || keep_count=2
+
+    [[ -d "$ds_dir" ]] || return 0
+
+    # Collect version directories (each is a platform version like "17.5 (21F79)")
+    local -a version_dirs=()
+    while IFS= read -r -d '' entry; do
+        # Skip non-directories (e.g. .log files at the top level)
+        [[ -d "$entry" ]] || continue
+        version_dirs+=("$entry")
+    done < <(command find "$ds_dir" -mindepth 1 -maxdepth 1 -print0 2> /dev/null)
+
+    # Sort by modification time (most recent first)
+    local -a sorted_dirs=()
+    while IFS= read -r line; do
+        sorted_dirs+=("${line#* }")
+    done < <(
+        for entry in "${version_dirs[@]}"; do
+            printf '%s %s\n' "$(stat -f%m "$entry" 2> /dev/null || echo 0)" "$entry"
+        done | sort -rn
+    )
+
+    # Get stale versions (everything after keep_count)
+    local -a stale_dirs=("${sorted_dirs[@]:$keep_count}")
+
+    if [[ ${#stale_dirs[@]} -gt 0 ]]; then
+        # Calculate total size of stale versions
+        local stale_size_kb=0 entry_size_kb
+        for stale_entry in "${stale_dirs[@]}"; do
+            entry_size_kb=$(get_path_size_kb "$stale_entry" 2> /dev/null || echo 0)
+            stale_size_kb=$((stale_size_kb + entry_size_kb))
+        done
+        local stale_size_human
+        stale_size_human=$(bytes_to_human "$((stale_size_kb * 1024))")
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} ${display_name} · would remove ${#stale_dirs[@]} old versions (${stale_size_human}), keeping ${keep_count} most recent"
+            note_activity
+        else
+            # Remove old versions
+            local removed_count=0
+            for stale_entry in "${stale_dirs[@]}"; do
+                if should_protect_path "$stale_entry" || is_path_whitelisted "$stale_entry"; then
+                    continue
+                fi
+                if safe_remove "$stale_entry"; then
+                    removed_count=$((removed_count + 1))
+                fi
+            done
+
+            if [[ $removed_count -gt 0 ]]; then
+                echo -e "  ${GREEN}${ICON_SUCCESS}${NC} ${display_name} · removed ${removed_count} old versions, ${stale_size_human}"
+                note_activity
+            fi
+        fi
+    fi
+
+    # Clean caches/logs inside kept versions
+    safe_clean "$ds_dir"/*/Symbols/System/Library/Caches/* "$display_name symbol cache"
+    safe_clean "$ds_dir"/*.log "$display_name logs"
 }
 
 _sim_runtime_mount_points() {
@@ -548,62 +644,137 @@ clean_dev_mobile() {
         local -a unavailable_udids=()
         local unavailable_udid=""
 
-        unavailable_before=$(xcrun simctl list devices unavailable 2> /dev/null | command awk '/\(unavailable/ { count++ } END { print count+0 }' || echo "0")
-        [[ "$unavailable_before" =~ ^[0-9]+$ ]] || unavailable_before=0
-        while IFS= read -r unavailable_udid; do
-            [[ -n "$unavailable_udid" ]] && unavailable_udids+=("$unavailable_udid")
-        done < <(
-            xcrun simctl list devices unavailable 2> /dev/null |
-                command sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*\(unavailable.*/\1/p' || true
-        )
-        if [[ ${#unavailable_udids[@]} -gt 0 ]]; then
-            local udid
-            for udid in "${unavailable_udids[@]}"; do
-                local simulator_device_path="$HOME/Library/Developer/CoreSimulator/Devices/$udid"
-                if [[ -d "$simulator_device_path" ]]; then
-                    unavailable_size_kb=$((unavailable_size_kb + $(get_path_size_kb "$simulator_device_path")))
-                fi
-            done
+        # Check if simctl is accessible and working
+        local simctl_available=true
+        if ! xcrun simctl list devices > /dev/null 2>&1; then
+            debug_log "simctl not accessible or CoreSimulator service not running"
+            echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators · simctl not available"
+            note_activity
+            simctl_available=false
         fi
-        unavailable_size_human=$(bytes_to_human "$((unavailable_size_kb * 1024))")
 
-        if [[ "$DRY_RUN" == "true" ]]; then
-            if ((unavailable_before > 0)); then
-                echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Xcode unavailable simulators · would clean ${unavailable_before}, ${unavailable_size_human}"
-            else
-                echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · already clean"
+        if [[ "$simctl_available" == "true" ]]; then
+            unavailable_before=$(xcrun simctl list devices unavailable 2> /dev/null | command awk '/\(unavailable/ { count++ } END { print count+0 }' || echo "0")
+            [[ "$unavailable_before" =~ ^[0-9]+$ ]] || unavailable_before=0
+            while IFS= read -r unavailable_udid; do
+                [[ -n "$unavailable_udid" ]] && unavailable_udids+=("$unavailable_udid")
+            done < <(
+                xcrun simctl list devices unavailable 2> /dev/null |
+                    command sed -nE 's/.*\(([0-9A-Fa-f-]{36})\).*\(unavailable.*/\1/p' || true
+            )
+            if [[ ${#unavailable_udids[@]} -gt 0 ]]; then
+                local udid
+                for udid in "${unavailable_udids[@]}"; do
+                    local simulator_device_path="$HOME/Library/Developer/CoreSimulator/Devices/$udid"
+                    if [[ -d "$simulator_device_path" ]]; then
+                        unavailable_size_kb=$((unavailable_size_kb + $(get_path_size_kb "$simulator_device_path")))
+                    fi
+                done
             fi
-        else
-            start_section_spinner "Checking unavailable simulators..."
-            if xcrun simctl delete unavailable > /dev/null 2>&1; then
-                stop_section_spinner
-                unavailable_after=$(xcrun simctl list devices unavailable 2> /dev/null | command awk '/\(unavailable/ { count++ } END { print count+0 }' || echo "0")
-                [[ "$unavailable_after" =~ ^[0-9]+$ ]] || unavailable_after=0
+            unavailable_size_human=$(bytes_to_human "$((unavailable_size_kb * 1024))")
 
-                removed_unavailable=$((unavailable_before - unavailable_after))
-                if ((removed_unavailable < 0)); then
-                    removed_unavailable=0
+            if [[ "$DRY_RUN" == "true" ]]; then
+                if ((unavailable_before > 0)); then
+                    echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Xcode unavailable simulators · would clean ${unavailable_before}, ${unavailable_size_human}"
+                else
+                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · already clean"
                 fi
-
+            else
+                # Skip if no unavailable simulators
                 if ((unavailable_before == 0)); then
                     echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · already clean"
-                elif ((removed_unavailable > 0)); then
-                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${unavailable_size_human}"
+                    note_activity
                 else
-                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${unavailable_size_human}"
+                    start_section_spinner "Checking unavailable simulators..."
+
+                    # Capture error output for diagnostics
+                    local delete_output
+                    local delete_exit_code=0
+                    delete_output=$(xcrun simctl delete unavailable 2>&1) || delete_exit_code=$?
+
+                    if [[ $delete_exit_code -eq 0 ]]; then
+                        stop_section_spinner
+                        unavailable_after=$(xcrun simctl list devices unavailable 2> /dev/null | command awk '/\(unavailable/ { count++ } END { print count+0 }' || echo "0")
+                        [[ "$unavailable_after" =~ ^[0-9]+$ ]] || unavailable_after=0
+
+                        removed_unavailable=$((unavailable_before - unavailable_after))
+                        if ((removed_unavailable < 0)); then
+                            removed_unavailable=0
+                        fi
+
+                        if ((removed_unavailable > 0)); then
+                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${unavailable_size_human}"
+                        else
+                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${unavailable_size_human}"
+                        fi
+                    else
+                        stop_section_spinner
+
+                        # Analyze error and provide helpful message
+                        local error_hint=""
+                        if echo "$delete_output" | grep -qi "permission denied"; then
+                            error_hint=" (permission denied)"
+                        elif echo "$delete_output" | grep -qi "in use\|busy"; then
+                            error_hint=" (device in use)"
+                        elif echo "$delete_output" | grep -qi "unable to boot\|failed to boot"; then
+                            error_hint=" (boot failure)"
+                        elif echo "$delete_output" | grep -qi "service"; then
+                            error_hint=" (CoreSimulator service issue)"
+                        fi
+
+                        # Try fallback: manual deletion of unavailable device directories
+                        if [[ ${#unavailable_udids[@]} -gt 0 ]]; then
+                            debug_log "Attempting fallback: manual deletion of unavailable simulators"
+                            local manually_removed=0
+                            local manual_failed=0
+
+                            for udid in "${unavailable_udids[@]}"; do
+                                # Validate UUID format (36 chars: 8-4-4-4-12 hex pattern)
+                                if [[ ! "$udid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+                                    debug_log "Invalid UUID format, skipping: $udid"
+                                    ((manual_failed++)) || true
+                                    continue
+                                fi
+
+                                local device_path="$HOME/Library/Developer/CoreSimulator/Devices/$udid"
+                                if [[ -d "$device_path" ]]; then
+                                    # Use safe_remove for validated simulator device directory
+                                    if safe_remove "$device_path" true; then
+                                        ((manually_removed++)) || true
+                                        debug_log "Manually removed simulator: $udid"
+                                    else
+                                        ((manual_failed++)) || true
+                                        debug_log "Failed to manually remove simulator: $udid"
+                                    fi
+                                fi
+                            done
+
+                            if ((manually_removed > 0)); then
+                                if ((manual_failed == 0)); then
+                                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${manually_removed} (fallback), ${unavailable_size_human}"
+                                else
+                                    echo -e "  ${YELLOW}${ICON_WARNING}${NC} Xcode unavailable simulators · partially cleaned ${manually_removed}/${#unavailable_udids[@]}, ${unavailable_size_human}"
+                                fi
+                            else
+                                echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators cleanup failed${error_hint}"
+                                debug_log "simctl delete error: $delete_output"
+                            fi
+                        else
+                            echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators cleanup failed${error_hint}"
+                            debug_log "simctl delete error: $delete_output"
+                        fi
+                    fi
                 fi
-            else
-                stop_section_spinner
-                echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators cleanup failed"
-            fi
-        fi
-        note_activity
+            fi # Close if ((unavailable_before == 0))
+            note_activity
+        fi # End of simctl_available check
     fi
-    # DeviceSupport caches/logs (preserve core support files).
-    safe_clean ~/Library/Developer/Xcode/iOS\ DeviceSupport/*/Symbols/System/Library/Caches/* "iOS device symbol cache"
-    safe_clean ~/Library/Developer/Xcode/iOS\ DeviceSupport/*.log "iOS device support logs"
-    safe_clean ~/Library/Developer/Xcode/watchOS\ DeviceSupport/*/Symbols/System/Library/Caches/* "watchOS device symbol cache"
-    safe_clean ~/Library/Developer/Xcode/tvOS\ DeviceSupport/*/Symbols/System/Library/Caches/* "tvOS device symbol cache"
+    # Old iOS/watchOS/tvOS DeviceSupport versions (debug symbols for connected devices).
+    # Each iOS version creates a 1-3 GB folder of debug symbols. Only the versions
+    # matching currently used devices are needed; older ones regenerate on device connect.
+    clean_xcode_device_support ~/Library/Developer/Xcode/iOS\ DeviceSupport "iOS DeviceSupport"
+    clean_xcode_device_support ~/Library/Developer/Xcode/watchOS\ DeviceSupport "watchOS DeviceSupport"
+    clean_xcode_device_support ~/Library/Developer/Xcode/tvOS\ DeviceSupport "tvOS DeviceSupport"
     # Simulator runtime caches.
     safe_clean ~/Library/Developer/CoreSimulator/Profiles/Runtimes/*/Contents/Resources/RuntimeRoot/System/Library/Caches/* "Simulator runtime cache"
     safe_clean ~/Library/Caches/Google/AndroidStudio*/* "Android Studio cache"

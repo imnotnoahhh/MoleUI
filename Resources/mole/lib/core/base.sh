@@ -188,11 +188,6 @@ is_sip_enabled() {
     fi
 }
 
-# Check if running in an interactive terminal
-is_interactive() {
-    [[ -t 1 ]]
-}
-
 # Detect CPU architecture
 # Returns: "Apple Silicon" or "Intel"
 detect_architecture() {
@@ -261,30 +256,6 @@ is_root_user() {
     [[ "$(id -u)" == "0" ]]
 }
 
-get_user_home() {
-    local user="$1"
-    local home=""
-
-    if [[ -z "$user" ]]; then
-        echo ""
-        return 0
-    fi
-
-    if command -v dscl > /dev/null 2>&1; then
-        home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2> /dev/null | awk '{print $2}' | head -1 || true)
-    fi
-
-    if [[ -z "$home" ]]; then
-        home=$(eval echo "~$user" 2> /dev/null || true)
-    fi
-
-    if [[ "$home" == "~"* ]]; then
-        home=""
-    fi
-
-    echo "$home"
-}
-
 get_invoking_user() {
     if [[ -n "${_MOLE_INVOKING_USER_CACHE:-}" ]]; then
         echo "$_MOLE_INVOKING_USER_CACHE"
@@ -331,6 +302,30 @@ get_invoking_home() {
     fi
 
     echo "${HOME:-}"
+}
+
+get_user_home() {
+    local user="$1"
+    local home=""
+
+    if [[ -z "$user" ]]; then
+        echo ""
+        return 0
+    fi
+
+    if command -v dscl > /dev/null 2>&1; then
+        home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2> /dev/null | awk '{print $2}' | head -1 || true)
+    fi
+
+    if [[ -z "$home" ]]; then
+        home=$(eval echo "~$user" 2> /dev/null || true)
+    fi
+
+    if [[ "$home" == "~"* ]]; then
+        home=""
+    fi
+
+    echo "$home"
 }
 
 ensure_user_dir() {
@@ -450,38 +445,6 @@ ensure_user_file() {
 # Formatting Utilities
 # ============================================================================
 
-# Convert bytes to human-readable format (e.g., 1.5GB)
-# macOS (since Snow Leopard) uses Base-10 calculation (1 KB = 1000 bytes)
-bytes_to_human() {
-    local bytes="$1"
-    [[ "$bytes" =~ ^[0-9]+$ ]] || {
-        echo "0B"
-        return 1
-    }
-
-    # GB: >= 1,000,000,000 bytes
-    if ((bytes >= 1000000000)); then
-        local scaled=$(((bytes * 100 + 500000000) / 1000000000))
-        printf "%d.%02dGB\n" $((scaled / 100)) $((scaled % 100))
-    # MB: >= 1,000,000 bytes
-    elif ((bytes >= 1000000)); then
-        local scaled=$(((bytes * 10 + 500000) / 1000000))
-        printf "%d.%01dMB\n" $((scaled / 10)) $((scaled % 10))
-    # KB: >= 1,000 bytes (round up to nearest KB instead of decimal)
-    elif ((bytes >= 1000)); then
-        printf "%dKB\n" $(((bytes + 500) / 1000))
-    else
-        printf "%dB\n" "$bytes"
-    fi
-}
-
-# Convert kilobytes to human-readable format
-# Args: $1 - size in KB
-# Returns: formatted string
-bytes_to_human_kb() {
-    bytes_to_human "$((${1:-0} * 1024))"
-}
-
 # Get brand-friendly localized name for an application
 get_brand_name() {
     local name="$1"
@@ -536,6 +499,38 @@ get_brand_name() {
             *) echo "$name" ;;
         esac
     fi
+}
+
+# Convert bytes to human-readable format (e.g., 1.5GB)
+# macOS (since Snow Leopard) uses Base-10 calculation (1 KB = 1000 bytes)
+bytes_to_human() {
+    local bytes="$1"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || {
+        echo "0B"
+        return 1
+    }
+
+    # GB: >= 1,000,000,000 bytes
+    if ((bytes >= 1000000000)); then
+        local scaled=$(((bytes * 100 + 500000000) / 1000000000))
+        printf "%d.%02dGB\n" $((scaled / 100)) $((scaled % 100))
+    # MB: >= 1,000,000 bytes
+    elif ((bytes >= 1000000)); then
+        local scaled=$(((bytes * 10 + 500000) / 1000000))
+        printf "%d.%01dMB\n" $((scaled / 10)) $((scaled % 10))
+    # KB: >= 1,000 bytes (round up to nearest KB instead of decimal)
+    elif ((bytes >= 1000)); then
+        printf "%dKB\n" $(((bytes + 500) / 1000))
+    else
+        printf "%dB\n" "$bytes"
+    fi
+}
+
+# Convert kilobytes to human-readable format
+# Args: $1 - size in KB
+# Returns: formatted string
+bytes_to_human_kb() {
+    bytes_to_human "$((${1:-0} * 1024))"
 }
 
 # ============================================================================
@@ -730,91 +725,6 @@ update_progress_if_needed() {
 }
 
 # ============================================================================
-# Spinner Stack Management (prevents nesting issues)
-# ============================================================================
-
-# Global spinner stack
-declare -a MOLE_SPINNER_STACK=()
-
-# Push current spinner state onto stack
-# Usage: push_spinner_state
-push_spinner_state() {
-    local current_state=""
-
-    # Save current spinner PID if running
-    if [[ -n "${MOLE_SPINNER_PID:-}" ]] && kill -0 "$MOLE_SPINNER_PID" 2> /dev/null; then
-        current_state="running:$MOLE_SPINNER_PID"
-    else
-        current_state="stopped"
-    fi
-
-    MOLE_SPINNER_STACK+=("$current_state")
-    debug_log "Pushed spinner state: $current_state, stack depth: ${#MOLE_SPINNER_STACK[@]}"
-}
-
-# Pop and restore spinner state from stack
-# Usage: pop_spinner_state
-pop_spinner_state() {
-    if [[ ${#MOLE_SPINNER_STACK[@]} -eq 0 ]]; then
-        debug_log "Warning: Attempted to pop from empty spinner stack"
-        return 1
-    fi
-
-    # Stack depth safety check
-    if [[ ${#MOLE_SPINNER_STACK[@]} -gt 10 ]]; then
-        debug_log "Warning: Spinner stack depth excessive, ${#MOLE_SPINNER_STACK[@]}, possible leak"
-    fi
-
-    local last_idx=$((${#MOLE_SPINNER_STACK[@]} - 1))
-    local state="${MOLE_SPINNER_STACK[$last_idx]}"
-
-    # Remove from stack (Bash 3.2 compatible way)
-    # Instead of unset, rebuild array without last element
-    local -a new_stack=()
-    local i
-    for ((i = 0; i < last_idx; i++)); do
-        new_stack+=("${MOLE_SPINNER_STACK[$i]}")
-    done
-    MOLE_SPINNER_STACK=("${new_stack[@]}")
-
-    debug_log "Popped spinner state: $state, remaining depth: ${#MOLE_SPINNER_STACK[@]}"
-
-    # Restore state if needed
-    if [[ "$state" == running:* ]]; then
-        # Previous spinner was running - we don't restart it automatically
-        # This is intentional to avoid UI conflicts
-        :
-    fi
-
-    return 0
-}
-
-# Safe spinner start with stack management
-# Usage: safe_start_spinner <message>
-safe_start_spinner() {
-    local message="${1:-Working...}"
-
-    # Push current state
-    push_spinner_state
-
-    # Stop any existing spinner
-    stop_section_spinner 2> /dev/null || true
-
-    # Start new spinner
-    start_section_spinner "$message"
-}
-
-# Safe spinner stop with stack management
-# Usage: safe_stop_spinner
-safe_stop_spinner() {
-    # Stop current spinner
-    stop_section_spinner 2> /dev/null || true
-
-    # Pop previous state
-    pop_spinner_state || true
-}
-
-# ============================================================================
 # Terminal Compatibility Checks
 # ============================================================================
 
@@ -846,68 +756,4 @@ is_ansi_supported() {
             return 1
             ;;
     esac
-}
-
-# Get terminal capability info
-# Usage: get_terminal_info
-get_terminal_info() {
-    local info="Terminal: ${TERM:-unknown}"
-
-    if is_ansi_supported; then
-        info+=", ANSI supported"
-
-        if command -v tput > /dev/null 2>&1; then
-            local cols=$(tput cols 2> /dev/null || echo "?")
-            local lines=$(tput lines 2> /dev/null || echo "?")
-            local colors=$(tput colors 2> /dev/null || echo "?")
-            info+=" ${cols}x${lines}, ${colors} colors"
-        fi
-    else
-        info+=", ANSI not supported"
-    fi
-
-    echo "$info"
-}
-
-# Validate terminal environment before running
-# Usage: validate_terminal_environment
-# Returns: 0 if OK, 1 with warning if issues detected
-validate_terminal_environment() {
-    local warnings=0
-
-    # Check if TERM is set
-    if [[ -z "${TERM:-}" ]]; then
-        log_warning "TERM environment variable not set"
-        warnings=$((warnings + 1))
-    fi
-
-    # Check if running in a known problematic terminal
-    case "${TERM:-}" in
-        dumb)
-            log_warning "Running in 'dumb' terminal, limited functionality"
-            warnings=$((warnings + 1))
-            ;;
-        unknown)
-            log_warning "Terminal type unknown, may have display issues"
-            warnings=$((warnings + 1))
-            ;;
-    esac
-
-    # Check terminal size if available
-    if command -v tput > /dev/null 2>&1; then
-        local cols=$(tput cols 2> /dev/null || echo "80")
-        if [[ "$cols" -lt 60 ]]; then
-            log_warning "Terminal width, $cols cols, is narrow, output may wrap"
-            warnings=$((warnings + 1))
-        fi
-    fi
-
-    # Report compatibility
-    if [[ $warnings -eq 0 ]]; then
-        debug_log "Terminal environment validated: $(get_terminal_info)"
-        return 0
-    else
-        debug_log "Terminal compatibility warnings: $warnings"
-        return 1
-    fi
 }

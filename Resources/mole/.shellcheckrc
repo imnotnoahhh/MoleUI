@@ -1,0 +1,7 @@
+# Mole project shellcheck configuration
+
+disable=SC2155  # Declare and assign separately
+disable=SC2034  # Unused variables
+disable=SC2059  # Don't use variables in printf format
+disable=SC1091  # Not following sourced files
+disable=SC2038  # Use find -print0 | xargs -0 pattern

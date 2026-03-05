@@ -403,7 +403,7 @@ opt_launch_services_rebuild() {
     fi
 
     if [[ -t 1 ]]; then
-        start_inline_spinner ""
+        MOLE_SPINNER_PREFIX="  " start_inline_spinner "Repairing LaunchServices..."
     fi
 
     local lsregister
@@ -475,6 +475,7 @@ opt_font_cache_rebuild() {
             "Opera"
             "Vivaldi"
             "Zen Browser"
+            "Helium"
         )
         for browser_name in "${browser_checks[@]}"; do
             if pgrep -ix "$browser_name" > /dev/null 2>&1; then

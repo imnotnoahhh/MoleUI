@@ -1,0 +1,43 @@
+# golangci-lint configuration for Mole
+# https://golangci-lint.run/usage/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  # Only lint Go code in cmd directory
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Default linters
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - shadow
+        - fieldalignment # struct field alignment optimization is noisy
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os/exec.Cmd).Run
+        - (*os/exec.Cmd).Start
+    staticcheck:
+      checks: ["all", "-QF1003", "-SA9003"]
+
+  exclusions:
+    rules:
+      # Ignore certain patterns in test files
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Ignore errors from os.Remove in cleanup code
+      - text: "os.Remove"
+        linters:
+          - errcheck

@@ -108,14 +108,41 @@ request_sudo_access() {
         return 0
     fi
 
-    # Get TTY path
+    # Detect if running in TTY environment
     local tty_path="/dev/tty"
+    local is_gui_mode=false
+
     if [[ ! -r "$tty_path" || ! -w "$tty_path" ]]; then
         tty_path=$(tty 2> /dev/null || echo "")
         if [[ -z "$tty_path" || ! -r "$tty_path" || ! -w "$tty_path" ]]; then
-            log_error "No interactive terminal available"
+            is_gui_mode=true
+        fi
+    fi
+
+    # GUI mode: use osascript for password dialog
+    if [[ "$is_gui_mode" == true ]]; then
+        # Clear sudo cache before attempting authentication
+        sudo -k 2> /dev/null
+
+        # Display native macOS password dialog
+        local password
+        password=$(osascript -e "display dialog \"$prompt_msg\" default answer \"\" with title \"Mole\" with icon caution with hidden answer" -e 'text returned of result' 2> /dev/null)
+
+        if [[ -z "$password" ]]; then
+            # User cancelled the dialog
+            unset password
             return 1
         fi
+
+        # Attempt sudo authentication with the provided password
+        if printf '%s\n' "$password" | sudo -S -p "" -v > /dev/null 2>&1; then
+            unset password
+            return 0
+        fi
+
+        # Password was incorrect
+        unset password
+        return 1
     fi
 
     sudo -k

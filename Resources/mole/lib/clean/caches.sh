@@ -146,6 +146,8 @@ clean_project_caches() {
         done
         if [[ "$spinner_active" == "true" ]]; then
             stop_inline_spinner 2> /dev/null || true
+            # Extra clear to prevent spinner character remnants in terminal
+            [[ -t 1 ]] && printf "\r\033[2K" >&2 || true
         fi
         [[ "$has_dev_projects" == "false" ]] && return 0
     fi

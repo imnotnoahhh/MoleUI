@@ -318,18 +318,14 @@ final class CleanModel {
     var cleaningCategory: String?
     var completedCategories: Set<String> = []
     var errorMessage: String?
-    var needsFullDiskAccess: Bool = false
     var lastOutput: String?
+    var lastCleanedBytes: UInt64? // Track actual cleaned size
+
+    /// Flag to indicate if a privileged clean operation is in progress.
+    /// MetricsModel should pause refreshing when this is true to avoid resource contention.
+    var isCleaningWithPrivileges: Bool = false
 
     init() {}
-
-    /// Check if the app has Full Disk Access by trying to read ~/.Trash.
-    nonisolated static func checkFullDiskAccess() -> Bool {
-        let trashURL = URL(fileURLWithPath: NSHomeDirectory() + "/.Trash")
-        return (try? FileManager.default.contentsOfDirectory(
-            at: trashURL, includingPropertiesForKeys: nil
-        )) != nil
-    }
 
     // MARK: - Scan
 
@@ -337,37 +333,19 @@ final class CleanModel {
         isScanning = true
         errorMessage = nil
         completedCategories = []
-        needsFullDiskAccess = !Self.checkFullDiskAccess()
 
+        // No longer calculate sizes - just show categories
         let categories = CleanCategory.allCategories
-        var results: [CleanScanResult] = []
-
-        for category in categories {
-            let result = await scanCategory(category)
-            results.append(result)
-        }
-
-        scanResults = results
-        isScanning = false
-    }
-
-    private func scanCategory(_ category: CleanCategory) async -> CleanScanResult {
-        do {
-            let result = try await scanCategoryWithMoleCore(category)
-            return CleanScanResult(
-                id: category.id,
-                category: category,
-                totalBytes: result.bytes,
-                itemCount: result.count
-            )
-        } catch {
-            return CleanScanResult(
+        scanResults = categories.map { category in
+            CleanScanResult(
                 id: category.id,
                 category: category,
                 totalBytes: 0,
                 itemCount: 0
             )
         }
+
+        isScanning = false
     }
 
     // MARK: - Clean
@@ -387,16 +365,138 @@ final class CleanModel {
             lastOutput = output
             completedCategories.insert(category.id)
 
-            // Re-scan to update sizes
-            let updated = await scanCategory(category.category)
-            if let idx = scanResults.firstIndex(where: { $0.id == category.id }) {
-                scanResults[idx] = updated
-            }
+            // No need to re-scan - we don't show sizes anymore
         } catch {
             errorMessage = error.localizedDescription
         }
 
         cleaningCategory = nil
+    }
+
+    /// Clean all categories at once using mole clean command
+    func cleanAll(dryRun: Bool) async {
+        cleaningCategory = "all"
+        errorMessage = nil
+        lastOutput = nil
+        lastCleanedBytes = nil
+
+        // Set flag to pause metrics refresh during privileged operations
+        if !dryRun {
+            isCleaningWithPrivileges = true
+        }
+
+        defer {
+            cleaningCategory = nil
+            isCleaningWithPrivileges = false
+        }
+
+        do {
+            let output: String
+            if dryRun {
+                // Dry run doesn't need sudo
+                output = try await CLIExecutor.runMole("clean --dry-run", dryRun: true)
+            } else {
+                // Normal mode: use sudo
+                guard let moleBinary = CLIExecutor.findMoleBinary() else {
+                    throw NSError(
+                        domain: "CleanModel",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
+                    )
+                }
+                let command = "\(moleBinary.path) clean"
+                output = try await SudoHelper.runWithAdmin(command)
+            }
+
+            lastOutput = output
+
+            // Parse output to extract cleaned size
+            // mole clean output format: "Space freed: 147KB" at the end
+            print("📊 Output length: \(output.count) characters")
+            print("📊 Output contains 'Space freed': \(output.contains("Space freed"))")
+
+            // Print the last 1000 characters to see the complete summary
+            let lastChars = String(output.suffix(1000))
+            print("📊 Last 1000 chars of output:")
+            print(lastChars)
+            print("📊 End of output")
+
+            if let cleanedBytes = parseCleanedSize(from: output) {
+                lastCleanedBytes = cleanedBytes
+                print("✅ Parsed cleaned size: \(cleanedBytes) bytes (\(MetricsFormatter.humanBytes(cleanedBytes)))")
+            } else {
+                print("⚠️ Failed to parse cleaned size from output")
+            }
+
+            // Mark all categories as completed
+            completedCategories = Set(scanResults.map(\.id))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Parse cleaned size from mole clean output
+    private func parseCleanedSize(from output: String) -> UInt64? {
+        // Look for patterns like:
+        // "Space freed: 147KB"
+        // "Space freed: 1.2MB"
+        // "Space freed: 0.00GB" (when size is very small)
+        // Strategy: Don't strip ANSI codes (causes data loss)
+        // Instead: Find "Space freed" line, extract all number+unit pairs, take the last one
+
+        let lines = output.components(separatedBy: .newlines)
+
+        for line in lines where line.contains("Space freed") {
+            print("🔍 Found 'Space freed' line: '\(line)'")
+
+            // Find all number+unit combinations in this line
+            let pattern = #"([\d.]+)(KB|MB|GB)"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                print("🔍 Failed to create regex")
+                continue
+            }
+
+            let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            print("🔍 Found \(matches.count) number+unit matches")
+
+            // Take the last match (the actual freed size, not ANSI code numbers)
+            if let lastMatch = matches.last,
+               let sizeRange = Range(lastMatch.range(at: 1), in: line),
+               let unitRange = Range(lastMatch.range(at: 2), in: line),
+               let size = Double(line[sizeRange])
+            {
+                let unit = String(line[unitRange]).uppercased()
+                print("🔍 Extracted last match: size=\(size), unit=\(unit)")
+
+                let bytes = switch unit {
+                case "KB":
+                    UInt64(size * 1024)
+                case "MB":
+                    UInt64(size * 1024 * 1024)
+                case "GB":
+                    UInt64(size * 1024 * 1024 * 1024)
+                default:
+                    UInt64(0)
+                }
+
+                // If size is 0, check if trash was emptied
+                if bytes == 0, output.contains("Trash · emptied") {
+                    print("🔍 Trash was emptied but size is 0 (mole bug)")
+                    // Return 0 but we know trash was cleaned
+                }
+
+                return bytes
+            }
+        }
+
+        // Check if system was already clean
+        if output.contains("already clean") || output.contains("no additional space freed") {
+            print("🔍 System was already clean")
+            return 0
+        }
+
+        print("🔍 No valid 'Space freed' line found")
+        return nil
     }
 
     private func generatePreview(category: CleanScanResult) -> String {

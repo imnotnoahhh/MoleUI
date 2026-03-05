@@ -11,6 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Batch uninstall with a single confirmation.
 
+get_lsregister_path() {
+    echo "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+}
+
+is_uninstall_dry_run() {
+    [[ "${MOLE_DRY_RUN:-0}" == "1" ]]
+}
+
 # High-performance sensitive data detection (pure Bash, no subprocess)
 # Faster than grep for batch operations, especially when processing many apps
 has_sensitive_data() {
@@ -77,6 +85,11 @@ stop_launch_services() {
     local bundle_id="$1"
     local has_system_files="${2:-false}"
 
+    if is_uninstall_dry_run; then
+        debug_log "[DRY RUN] Would unload launch services for bundle: $bundle_id"
+        return 0
+    fi
+
     [[ -z "$bundle_id" || "$bundle_id" == "unknown" ]] && return 0
 
     # Validate bundle_id format: must be reverse-DNS style (e.g., com.example.app)
@@ -135,22 +148,35 @@ refresh_launch_services_after_uninstall() {
 
     local success=0
     set +e
-    "$lsregister" -gc > /dev/null 2>&1 || true
-    "$lsregister" -r -f -domain local -domain user -domain system > /dev/null 2>&1
+    # Add 10s timeout to prevent hanging (gc is usually fast)
+    # run_with_timeout falls back to shell implementation if timeout command unavailable
+    run_with_timeout 10 "$lsregister" -gc > /dev/null 2>&1 || true
+    # Add 15s timeout for rebuild (can be slow on some systems)
+    run_with_timeout 15 "$lsregister" -r -f -domain local -domain user -domain system > /dev/null 2>&1
     success=$?
-    if [[ $success -ne 0 ]]; then
-        "$lsregister" -r -f -domain local -domain user > /dev/null 2>&1
+    # 124 = timeout exit code (from run_with_timeout or timeout command)
+    if [[ $success -eq 124 ]]; then
+        debug_log "LaunchServices rebuild timed out, trying lighter version"
+        run_with_timeout 10 "$lsregister" -r -f -domain local -domain user > /dev/null 2>&1
+        success=$?
+    elif [[ $success -ne 0 ]]; then
+        run_with_timeout 10 "$lsregister" -r -f -domain local -domain user > /dev/null 2>&1
         success=$?
     fi
     set -e
 
-    [[ $success -eq 0 ]]
+    [[ $success -eq 0 || $success -eq 124 ]]
 }
 
 # Remove macOS Login Items for an app
 remove_login_item() {
     local app_name="$1"
     local bundle_id="$2"
+
+    if is_uninstall_dry_run; then
+        debug_log "[DRY RUN] Would remove login item: ${app_name:-$bundle_id}"
+        return 0
+    fi
 
     # Skip if no identifiers provided
     [[ -z "$app_name" && -z "$bundle_id" ]] && return 0
@@ -201,7 +227,12 @@ remove_file_list() {
             safe_remove_symlink "$file" "$use_sudo" && ((++count)) || true
         else
             if [[ "$use_sudo" == "true" ]]; then
-                safe_sudo_remove "$file" && ((++count)) || true
+                if is_uninstall_dry_run; then
+                    debug_log "[DRY RUN] Would sudo remove: $file"
+                    ((++count))
+                else
+                    safe_sudo_remove "$file" && ((++count)) || true
+                fi
             else
                 safe_remove "$file" true && ((++count)) || true
             fi
@@ -226,10 +257,8 @@ batch_uninstall_applications() {
     old_trap_term=$(trap -p TERM)
 
     _cleanup_sudo_keepalive() {
-        if [[ -n "${sudo_keepalive_pid:-}" ]]; then
-            kill "$sudo_keepalive_pid" 2> /dev/null || true
-            wait "$sudo_keepalive_pid" 2> /dev/null || true
-            sudo_keepalive_pid=""
+        if command -v stop_sudo_session > /dev/null 2>&1; then
+            stop_sudo_session
         fi
     }
 
@@ -347,9 +376,7 @@ batch_uninstall_applications() {
 
     local size_display=$(bytes_to_human "$((total_estimated_size * 1024))")
 
-    echo ""
-    echo -e "${PURPLE_BOLD}Files to be removed:${NC}"
-    echo ""
+    echo -e "\n${PURPLE_BOLD}Files to be removed:${NC}"
 
     # Warn if brew cask apps are present.
     local has_brew_cask=false
@@ -359,9 +386,10 @@ batch_uninstall_applications() {
     done
 
     if [[ "$has_brew_cask" == "true" ]]; then
-        echo -e "${GRAY}${ICON_WARNING}${NC} ${YELLOW}Homebrew apps will be fully cleaned (--zap: removes configs & data)${NC}"
-        echo ""
+        echo -e "${GRAY}${ICON_WARNING} Homebrew apps will be fully cleaned, --zap removes configs and data${NC}"
     fi
+
+    echo ""
 
     for detail in "${app_details[@]}"; do
         IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo_flag is_brew_cask cask_name encoded_diag_system <<< "$detail"
@@ -436,31 +464,21 @@ batch_uninstall_applications() {
     # that user explicitly chose to uninstall. System-critical components remain protected.
     export MOLE_UNINSTALL_MODE=1
 
-    # Request sudo if needed.
-    if [[ ${#sudo_apps[@]} -gt 0 ]]; then
-        if ! sudo -n true 2> /dev/null; then
-            if ! request_sudo_access "Admin required for system apps: ${sudo_apps[*]}"; then
-                echo ""
-                log_error "Admin access denied"
-                _restore_uninstall_traps
-                return 1
-            fi
+    # Request sudo if needed for non-Homebrew removal operations.
+    # Note: Homebrew resets sudo timestamp at process startup, so pre-auth would
+    # cause duplicate password prompts in cask-only flows.
+    if [[ ${#sudo_apps[@]} -gt 0 && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
+        if ! ensure_sudo_session "Admin required for system apps: ${sudo_apps[*]}"; then
+            echo ""
+            log_error "Admin access denied"
+            _restore_uninstall_traps
+            return 1
         fi
-        # Keep sudo alive during uninstall.
-        parent_pid=$$
-        (while true; do
-            if ! kill -0 "$parent_pid" 2> /dev/null; then
-                exit 0
-            fi
-            sudo -n true
-            sleep 60
-        done 2> /dev/null) &
-        sudo_keepalive_pid=$!
     fi
 
     # Perform uninstallations with per-app progress feedback
     local success_count=0 failed_count=0
-    local brew_apps_removed=0 # Track successful brew uninstalls for autoremove tip
+    local brew_apps_removed=0 # Track successful brew uninstalls for silent autoremove
     local -a failed_items=()
     local -a success_items=()
     local current_index=0
@@ -547,12 +565,18 @@ batch_uninstall_applications() {
                         fi
                     fi
                 else
-                    local ret=0
-                    safe_sudo_remove "$app_path" || ret=$?
-                    if [[ $ret -ne 0 ]]; then
-                        local diagnosis
-                        diagnosis=$(diagnose_removal_failure "$ret" "$app_name")
-                        IFS='|' read -r reason suggestion <<< "$diagnosis"
+                    if is_uninstall_dry_run; then
+                        if ! safe_remove "$app_path" true; then
+                            reason="dry-run path validation failed"
+                        fi
+                    else
+                        local ret=0
+                        safe_sudo_remove "$app_path" || ret=$?
+                        if [[ $ret -ne 0 ]]; then
+                            local diagnosis
+                            diagnosis=$(diagnose_removal_failure "$ret" "$app_name")
+                            IFS='|' read -r reason suggestion <<< "$diagnosis"
+                        fi
                     fi
                 fi
             else
@@ -583,10 +607,14 @@ batch_uninstall_applications() {
                 remove_file_list "$system_all" "true" > /dev/null
             fi
 
-            # Clean up macOS defaults (preference domains).
+            # Defaults writes are side effects that should never run in dry-run mode.
             if [[ -n "$bundle_id" && "$bundle_id" != "unknown" ]]; then
-                if defaults read "$bundle_id" &> /dev/null; then
-                    defaults delete "$bundle_id" 2> /dev/null || true
+                if is_uninstall_dry_run; then
+                    debug_log "[DRY RUN] Would clear defaults domain: $bundle_id"
+                else
+                    if defaults read "$bundle_id" &> /dev/null; then
+                        defaults delete "$bundle_id" 2> /dev/null || true
+                    fi
                 fi
 
                 # ByHost preferences (machine-specific).
@@ -644,8 +672,15 @@ batch_uninstall_applications() {
         local success_text="app"
         [[ $success_count -gt 1 ]] && success_text="apps"
         local success_line="Removed ${success_count} ${success_text}"
+        if is_uninstall_dry_run; then
+            success_line="Would remove ${success_count} ${success_text}"
+        fi
         if [[ -n "$freed_display" ]]; then
-            success_line+=", freed ${GREEN}${freed_display}${NC}"
+            if is_uninstall_dry_run; then
+                success_line+=", would free ${GREEN}${freed_display}${NC}"
+            else
+                success_line+=", freed ${GREEN}${freed_display}${NC}"
+            fi
         fi
 
         # Format app list with max 3 per line.
@@ -730,24 +765,34 @@ batch_uninstall_applications() {
     if [[ "$summary_status" == "warn" ]]; then
         title="Uninstall incomplete"
     fi
+    if is_uninstall_dry_run; then
+        title="Uninstall dry run complete"
+    fi
 
     echo ""
     print_summary_block "$title" "${summary_details[@]}"
     printf '\n'
 
-    if [[ $success_count -gt 0 && ${#success_items[@]} -gt 0 ]]; then
-        # Kick off LaunchServices rebuild in background immediately after summary.
-        # The caller shows a 3s "Press Enter" prompt, giving the rebuild time to finish
-        # before the user returns to the app list — fixes stale Spotlight entries (#490).
+    # Run brew autoremove silently in background to avoid interrupting UX.
+    if [[ $brew_apps_removed -gt 0 && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
         (
-            refresh_launch_services_after_uninstall 2> /dev/null || true
-            remove_apps_from_dock "${success_items[@]}" 2> /dev/null || true
-        ) > /dev/null 2>&1 &
+            HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+                run_with_timeout 30 brew autoremove > /dev/null 2>&1 || true
+        ) &
+        disown $! 2> /dev/null || true
     fi
 
-    # brew autoremove can be slow — run in background so the prompt returns quickly.
-    if [[ $brew_apps_removed -gt 0 ]]; then
-        (HOMEBREW_NO_ENV_HINTS=1 brew autoremove > /dev/null 2>&1 || true) &
+    # Clean up Dock entries for uninstalled apps.
+    if [[ $success_count -gt 0 && ${#success_items[@]} -gt 0 ]]; then
+        if is_uninstall_dry_run; then
+            log_info "[DRY RUN] Would refresh LaunchServices and update Dock entries"
+        else
+            (
+                remove_apps_from_dock "${success_items[@]}" > /dev/null 2>&1 || true
+                refresh_launch_services_after_uninstall > /dev/null 2>&1 || true
+            ) &
+            disown $! 2> /dev/null || true
+        fi
     fi
 
     _cleanup_sudo_keepalive

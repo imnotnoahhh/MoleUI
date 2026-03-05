@@ -3,25 +3,9 @@ import SwiftUI
 
 struct CleanView: View {
     @Environment(CleanModel.self) var service
-    @Environment(SafetyController.self) var safety
-    @State private var selectedCategories: Set<String> = []
     @State private var showConfirmation = false
-    @State private var showError = false
-    @State private var currentError: ErrorTranslator.UserFriendlyError?
-    @State private var showAdvancedOptions = false
     @AppStorage("dryRunMode") private var dryRunMode = false
     @AppStorage("confirmBeforeClean") private var confirmBeforeClean = true
-    @AppStorage("autoSelectSafeItems") private var autoSelectSafeItems = true
-
-    private var totalReclaimable: UInt64 {
-        service.scanResults.reduce(0) { $0 + $1.totalBytes }
-    }
-
-    private var totalSelectedSize: UInt64 {
-        service.scanResults
-            .filter { selectedCategories.contains($0.id) }
-            .reduce(0) { $0 + $1.totalBytes }
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,24 +13,14 @@ struct CleanView: View {
                 dryRunBanner
             }
 
-            // 进度显示（新增）
-            if safety.isExecuting {
-                progressBanner
+            // Global cleaning progress banner
+            if service.cleaningCategory != nil {
+                cleaningBanner
             }
 
             ScrollView {
                 VStack(spacing: 12) {
                     headerCard
-
-                    // 结果显示（新增）
-                    if let result = safety.lastResult {
-                        resultCard(result)
-                    }
-
-                    if let output = service.lastOutput {
-                        outputCard(output)
-                    }
-
                     contentArea
                 }
                 .padding()
@@ -55,117 +29,17 @@ struct CleanView: View {
         .task {
             await service.scan()
         }
-        .onChange(of: service.scanResults) { _, newValue in
-            // Auto-select safe categories after scan
-            if autoSelectSafeItems, !newValue.isEmpty, selectedCategories.isEmpty {
-                selectedCategories = Set(newValue.filter(\.category.safe).map(\.id))
-            }
-        }
         .alert(dryRunMode ? "Confirm Preview" : "Confirm Clean", isPresented: $showConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button(dryRunMode ? "Preview" : "Clean", role: dryRunMode ? .none : .destructive) {
-                Task { await runCleanThroughSafety() }
+                Task { await runCleanAll() }
             }
         } message: {
-            let safeCount = selectedCategories.count(where: { id in
-                service.scanResults.first(where: { $0.id == id })?.category.safe ?? false
-            })
-            let unsafeCount = selectedCategories.count - safeCount
-
             if dryRunMode {
-                Text("Preview \(selectedCategories.count) selected categories? No files will be deleted.")
-            } else if unsafeCount > 0 {
-                Text("Clean \(selectedCategories.count) categories (\(unsafeCount) advanced)? This cannot be undone.")
+                Text("Preview system cleanup? No files will be deleted.")
             } else {
-                Text("Clean \(selectedCategories.count) safe categories? This cannot be undone.")
+                Text("Clean system caches, logs, and temporary files? This cannot be undone.")
             }
-        }
-        .sheet(item: Bindable(safety).currentRequest) { request in
-            SafetyConfirmationView(request: request)
-        }
-        .sheet(isPresented: $showError) {
-            if let error = currentError {
-                ErrorView(
-                    error: error,
-                    onDismiss: { showError = false },
-                    onRetry: nil
-                )
-            }
-        }
-    }
-
-    // MARK: - Progress Banner (新增)
-
-    private var progressBanner: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                ProgressView(value: safety.progress)
-                    .frame(width: 200)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(safety.progressMessage)
-                        .font(.caption)
-                    Text("\(Int(safety.progress * 100))%")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button("取消") {
-                    safety.cancel()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-            .padding(.vertical, 4)
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-    }
-
-    // MARK: - Result Card (新增)
-
-    private func resultCard(_ result: SafetyController.ExecutionResult) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(result.success ? .green : .red)
-                        .font(.title3)
-
-                    Text(result.message)
-                        .font(.headline)
-
-                    Spacer()
-
-                    Button {
-                        safety.lastResult = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if let cleanedSize = result.cleanedSize {
-                    HStack {
-                        Text("释放空间:")
-                            .foregroundStyle(.secondary)
-                        Text(MetricsFormatter.humanBytes(cleanedSize))
-                            .fontWeight(.semibold)
-                    }
-                    .font(.callout)
-                }
-
-                HStack {
-                    Text("耗时:")
-                        .foregroundStyle(.secondary)
-                    Text(String(format: "%.1f 秒", result.duration))
-                }
-                .font(.caption)
-            }
-            .padding(.vertical, 4)
         }
     }
 
@@ -187,6 +61,25 @@ struct CleanView: View {
         .padding(.bottom, 6)
     }
 
+    private var cleaningBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(dryRunMode ? "Previewing..." : "Cleaning...")
+                .font(.system(size: 12, weight: .medium))
+            Text("Please wait, this may take a while")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
     // MARK: - Header
 
     private var headerCard: some View {
@@ -194,13 +87,39 @@ struct CleanView: View {
             HStack(spacing: 8) {
                 Text("Clean")
                     .fontWeight(.bold)
-                Text("Reclaimable")
+                Text("System cleanup will free up disk space")
                     .foregroundStyle(.secondary)
-                Text(MetricsFormatter.humanBytes(totalReclaimable))
-                    .fontWeight(.bold)
-                    .foregroundStyle(.orange)
+                    .font(.caption)
 
                 Spacer()
+
+                // Show cleaned size after cleaning
+                if let cleanedBytes = service.lastCleanedBytes {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(cleanedBytes == 0 ? Color.secondary : Color.green)
+                            .font(.caption)
+                        if cleanedBytes == 0 {
+                            Text("Already clean")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        } else {
+                            Text("Cleaned:")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                            Text(MetricsFormatter.humanBytes(cleanedBytes))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        cleanedBytes == 0 ? Color.secondary.opacity(0.1) : Color.green.opacity(0.1),
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                }
 
                 Button {
                     Task { await service.scan() }
@@ -213,50 +132,17 @@ struct CleanView: View {
                     if confirmBeforeClean {
                         showConfirmation = true
                     } else {
-                        Task { await runCleanThroughSafety() }
+                        Task { await runCleanAll() }
                     }
                 } label: {
-                    let size = MetricsFormatter.humanBytes(totalSelectedSize)
-                    let text = dryRunMode ? "Preview All (\(size))" : "Clean All (\(size))"
+                    let text = dryRunMode ? "Preview" : "Clean All"
                     let icon = dryRunMode ? "eye" : "trash"
                     Label(text, systemImage: icon)
                 }
-                .disabled(selectedCategories.isEmpty || service.isScanning || service.cleaningCategory != nil)
+                .disabled(service.isScanning || service.cleaningCategory != nil)
                 .buttonStyle(.borderedProminent)
             }
             .padding(.vertical, 2)
-        }
-    }
-
-    // MARK: - Output Card
-
-    private func outputCard(_ output: String) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Label(dryRunMode ? "Preview Output" : "Execution Output", systemImage: "terminal")
-                        .font(.headline)
-                    Spacer()
-                    Button {
-                        service.lastOutput = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                ScrollView(.vertical, showsIndicators: true) {
-                    Text(output)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                }
-                .frame(maxHeight: 200)
-            }
-            .padding(.vertical, 4)
         }
     }
 
@@ -264,42 +150,7 @@ struct CleanView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-        if service.needsFullDiskAccess {
-            GroupBox {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield")
-                        .foregroundStyle(.orange)
-                        .font(.title3)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Full Disk Access Required")
-                            .fontWeight(.medium)
-                        Text("Some directories (Trash, browser caches) are protected. Grant Full Disk Access to get accurate scan results.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Open Settings") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
-
-        if service.isScanning, service.scanResults.isEmpty {
-            GroupBox {
-                VStack(spacing: 8) {
-                    ProgressView("Scanning...")
-                    Text("Calculating directory sizes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-            }
-        } else if let error = service.errorMessage {
+        if let error = service.errorMessage {
             GroupBox {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
@@ -308,123 +159,42 @@ struct CleanView: View {
             }
         }
 
-        if !service.scanResults.isEmpty {
-            // Safe categories (always visible)
-            ForEach(service.scanResults.filter(\.category.safe)) { result in
-                categoryRow(result)
-            }
+        // Show what will be cleaned
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Ready to Clean:")
+                    .font(.headline)
 
-            // Advanced options (collapsible)
-            let advancedResults = service.scanResults.filter { !$0.category.safe }
-            if !advancedResults.isEmpty {
-                GroupBox {
-                    DisclosureGroup(
-                        isExpanded: $showAdvancedOptions,
-                        content: {
-                            VStack(spacing: 12) {
-                                ForEach(advancedResults) { result in
-                                    categoryRow(result)
-                                }
-                            }
-                            .padding(.top, 8)
-                        },
-                        label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle")
-                                    .foregroundStyle(.orange)
-                                Text("Advanced Options")
-                                    .fontWeight(.medium)
-                                Text("(\(advancedResults.count) items)")
-                                    .foregroundStyle(.secondary)
-                                    .font(.caption)
-                            }
-                        }
-                    )
-                    .padding(.vertical, 4)
+                VStack(alignment: .leading, spacing: 6) {
+                    cleanItemRow(icon: "folder.badge.gearshape", text: "System caches and logs")
+                    cleanItemRow(icon: "safari", text: "Browser caches")
+                    cleanItemRow(icon: "hammer", text: "Development tool caches")
+                    cleanItemRow(icon: "app.badge", text: "Application caches")
+                    cleanItemRow(icon: "trash", text: "Trash and temporary files")
                 }
+                .font(.callout)
+
+                Text("Note: Active applications and protected files will be skipped for safety.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
         }
     }
 
-    // MARK: - Category Row
-
-    private func categoryRow(_ result: CleanScanResult) -> some View {
-        let isSelected = selectedCategories.contains(result.id)
-        let isCleaning = service.cleaningCategory == result.id
-        let isCompleted = service.completedCategories.contains(result.id)
-
-        return GroupBox {
-            HStack(spacing: 10) {
-                Toggle(isOn: Binding(
-                    get: { isSelected },
-                    set: { on in
-                        if on { selectedCategories.insert(result.id) } else { selectedCategories.remove(result.id) }
-                    }
-                )) {
-                    EmptyView()
-                }
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-
-                Image(systemName: result.category.icon)
-                    .frame(width: 20)
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(result.category.name)
-                        if result.category.safe {
-                            Text("safe")
-                                .font(.caption2)
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(.green.opacity(0.1), in: Capsule())
-                        }
-                    }
-                }
-                .frame(width: 150, alignment: .leading)
-
-                Spacer()
-
-                Text("\(result.itemCount) items")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-
-                Text(MetricsFormatter.humanBytes(result.totalBytes))
-                    .font(.system(.caption, design: .monospaced))
-                    .fontWeight(.medium)
-                    .frame(width: 80, alignment: .trailing)
-
-                if isCleaning {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(dryRunMode ? "Preview..." : "Cleaning...")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 70)
-                } else if isCompleted {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .frame(width: 70)
-                }
-            }
-            .padding(.vertical, 2)
+    private func cleanItemRow(icon: String, text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .frame(width: 20)
+                .foregroundStyle(.secondary)
+            Text(text)
         }
     }
 
-    private func runCleanThroughSafety() async {
-        do {
-            try await safety.executeClean(
-                target: "all",
-                dryRun: dryRunMode
-            )
-            await service.scan()
-        } catch {
-            currentError = ErrorTranslator.translate(error: error, context: "clean")
-            showError = true
-        }
+    private func runCleanAll() async {
+        // Run mole clean without any category filter - it will clean everything
+        await service.cleanAll(dryRun: dryRunMode)
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DiskAnalyzerView: View {
     @Environment(DiskModel.self) var scanner
+    @State private var hasInitialScan = false
     @AppStorage("showHiddenFiles") private var showHiddenFiles = false
     @State private var entryToDelete: DirEntry?
     @State private var hoveredEntry: String?
@@ -22,7 +23,11 @@ struct DiskAnalyzerView: View {
             contentArea
         }
         .onAppear {
-            scanner.scan(directory: scanner.currentPath)
+            // Only scan on first appear
+            if !hasInitialScan {
+                scanner.scan(directory: scanner.currentPath)
+                hasInitialScan = true
+            }
         }
     }
 
@@ -56,6 +61,26 @@ struct DiskAnalyzerView: View {
             breadcrumbPath
 
             Spacer()
+
+            // Cache status
+            if let lastScan = scanner.lastScanTime {
+                Text(relativeTime(from: lastScan))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            // Refresh button
+            Button {
+                scanner.refresh()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12))
+                    .frame(width: 28, height: 28)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.borderless)
+            .disabled(scanner.isScanning)
 
             Text(MetricsFormatter.humanBytes(scanner.totalSize))
                 .font(.system(size: 15, weight: .bold, design: .rounded))
@@ -310,6 +335,24 @@ struct DiskAnalyzerView: View {
         case 0.10...: .yellow
         case 0.03...: .blue
         default: .teal
+        }
+    }
+
+    // MARK: - Time Helper
+
+    private func relativeTime(from date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 {
+            return "Just now"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes)m ago"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "\(hours)h ago"
+        } else {
+            let days = Int(interval / 86400)
+            return "\(days)d ago"
         }
     }
 }

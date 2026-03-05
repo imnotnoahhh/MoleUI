@@ -35,9 +35,45 @@ final class AppScanModel {
     var isScanning: Bool = false
     var errorMessage: String?
 
+    // Cache
+    private var cachedApps: [AppInfo] = []
+    private var cacheTimestamp: Date?
+    private var cachedModificationDate: Date?
+    private let cacheValidityDuration: TimeInterval = 300 // 5 minutes
+
+    var lastScanTime: Date? {
+        cacheTimestamp
+    }
+
     init() {}
 
     func scan() {
+        // Check if cache is valid
+        if !cachedApps.isEmpty,
+           let cacheTime = cacheTimestamp,
+           let cachedModDate = cachedModificationDate
+        {
+            let cacheAge = Date().timeIntervalSince(cacheTime)
+            let isCacheValid = cacheAge < cacheValidityDuration
+
+            // Check if /Applications directory has been modified
+            let applicationsPath = "/Applications"
+            if let currentModDate = try? FileManager.default.attributesOfItem(atPath: applicationsPath)[.modificationDate] as? Date {
+                let isDirectoryUnmodified = cachedModDate == currentModDate
+
+                if isCacheValid, isDirectoryUnmodified {
+                    // Use cached data
+                    apps = cachedApps
+                    return
+                }
+            }
+        }
+
+        // Cache miss or invalid - perform scan
+        performScan()
+    }
+
+    private func performScan() {
         guard !isScanning else { return }
         isScanning = true
         errorMessage = nil
@@ -46,9 +82,15 @@ final class AppScanModel {
         Task.detached { [weak self] in
             guard let self else { return }
             do {
-                let scanned = try performScan()
+                let scanned = try performScanSync()
+                let applicationsPath = "/Applications"
+                let modDate = try? FileManager.default.attributesOfItem(atPath: applicationsPath)[.modificationDate] as? Date
+
                 await MainActor.run {
                     self.apps = scanned
+                    self.cachedApps = scanned
+                    self.cacheTimestamp = Date()
+                    self.cachedModificationDate = modDate
                     self.isScanning = false
                 }
             } catch {
@@ -60,7 +102,15 @@ final class AppScanModel {
         }
     }
 
-    private nonisolated func performScan() throws -> [AppInfo] {
+    /// Manually refresh (clear cache and rescan)
+    func refresh() {
+        cachedApps = []
+        cacheTimestamp = nil
+        cachedModificationDate = nil
+        performScan()
+    }
+
+    private nonisolated func performScanSync() throws -> [AppInfo] {
         guard let root = CLIExecutor.findMoleRoot() else { return [] }
         let command = """
         bash -lc \(shellEscape("""
