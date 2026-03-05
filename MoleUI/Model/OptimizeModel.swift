@@ -41,11 +41,15 @@ struct OptimizationTask: Codable, Sendable, Identifiable, Equatable {
 final class OptimizeModel {
     var report: HealthReport?
     var isScanning: Bool = false
-    var runningTask: String?
-    var completedTasks: Set<String> = []
-    var failedTasks: Set<String> = []
+    var isOptimizing: Bool = false
+    var currentTask: String? // 当前正在执行的任务名称
     var errorMessage: String?
     var lastOutput: String?
+    var executionDuration: TimeInterval? // 执行耗时
+
+    /// Flag to indicate if a privileged optimize operation is in progress.
+    /// MetricsModel should pause refreshing when this is true to avoid resource contention.
+    var isOptimizingWithPrivileges: Bool = false
 
     private let decoder: JSONDecoder = .init()
 
@@ -66,29 +70,126 @@ final class OptimizeModel {
         }
     }
 
-    func runTask(_ task: OptimizationTask, dryRun: Bool = false) async {
-        runningTask = task.action
+    /// Run all optimization tasks at once (matches mole CLI behavior)
+    func runOptimize(dryRun: Bool = false) async {
+        isOptimizing = true
         lastOutput = nil
+        errorMessage = nil
+        currentTask = nil
+        executionDuration = nil
+
+        let startTime = Date()
+
+        // Set flag to pause metrics refresh during privileged operations
+        if !dryRun {
+            isOptimizingWithPrivileges = true
+        }
+
+        defer {
+            isOptimizing = false
+            isOptimizingWithPrivileges = false
+            executionDuration = Date().timeIntervalSince(startTime)
+            // Don't clear currentTask here - let it show the completion message
+        }
 
         do {
-            let command = dryRun ? "optimize --dry-run \(task.action)" : "optimize \(task.action)"
-            let output = try await CLIExecutor.runMole(command, dryRun: dryRun)
-            lastOutput = output
-            completedTasks.insert(task.action)
+            // Find mole binary
+            guard let moleBinary = CLIExecutor.findMoleBinary() else {
+                throw NSError(
+                    domain: "OptimizeModel",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
+                )
+            }
+
+            if dryRun {
+                // Dry run doesn't need sudo, can show real-time output
+                let executor = CLIExecutor()
+
+                // Set up real-time output callback to parse current task
+                executor.onStdout = { [weak self] line in
+                    Task { @MainActor in
+                        self?.parseOutputLine(line)
+                    }
+                }
+
+                let result = try await executor.executeMole(
+                    "optimize --dry-run",
+                    options: .init(timeout: 300, captureStderr: true, parseProgress: false, dryRun: true)
+                )
+                lastOutput = result.stdout
+            } else {
+                // Normal mode: use osascript (no real-time output, but only asks password once)
+                currentTask = "Requesting administrator privileges..."
+                let command = "\(moleBinary.path) optimize"
+                let output = try await SudoHelper.runWithAdmin(command)
+
+                // Parse the complete output to show the last task
+                parseCompleteOutput(output)
+                lastOutput = output
+            }
         } catch {
-            failedTasks.insert(task.action)
             errorMessage = error.localizedDescription
+            currentTask = nil // Clear on error
         }
-        runningTask = nil
     }
 
-    func runAllSafe(dryRun: Bool = false) async {
-        guard let tasks = report?.optimizations.filter(\.safe) else { return }
-        for task in tasks {
-            if failedTasks.contains(task.action) || completedTasks.contains(task.action) {
-                continue
+    /// Parse a single line of output to extract current task name
+    private func parseOutputLine(_ line: String) {
+        // Match task headers like: "➤ DNS & Spotlight Check"
+        // ANSI color codes: ESC[1;34m for blue bold
+        if line.contains("➤") || line.contains("→") {
+            // Remove ANSI codes and extract task name
+            // ESC is \u{001B} in Swift
+            let cleaned = line.replacingOccurrences(
+                of: "\u{001B}\\[[0-9;]*m",
+                with: "",
+                options: .regularExpression
+            )
+
+            // Extract text after arrow
+            if let arrowRange = cleaned.range(of: "[➤→]", options: .regularExpression) {
+                let taskName = cleaned[arrowRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                if !taskName.isEmpty {
+                    currentTask = taskName
+                }
             }
-            await runTask(task, dryRun: dryRun)
+        }
+
+        // Append to output
+        if lastOutput == nil {
+            lastOutput = line + "\n"
+        } else {
+            lastOutput? += line + "\n"
+        }
+    }
+
+    /// Parse complete output (for sudo execution which returns all at once)
+    private func parseCompleteOutput(_ output: String) {
+        let lines = output.components(separatedBy: .newlines)
+
+        // Find all task names and show progress through them
+        for line in lines {
+            if line.contains("➤") || line.contains("→") {
+                let cleaned = line.replacingOccurrences(
+                    of: "\u{001B}\\[[0-9;]*m",
+                    with: "",
+                    options: .regularExpression
+                )
+
+                if let arrowRange = cleaned.range(of: "[➤→]", options: .regularExpression) {
+                    let taskName = cleaned[arrowRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                    if !taskName.isEmpty {
+                        // Update to show the last task (will show "Completed" feeling)
+                        currentTask = taskName
+                    }
+                }
+            }
+        }
+
+        // If we found tasks, show completion message
+        if currentTask != nil {
+            currentTask = "Optimization completed"
         }
     }
 }
