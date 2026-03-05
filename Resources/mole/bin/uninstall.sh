@@ -790,6 +790,7 @@ load_applications() {
 
 # Cleanup: restore cursor and kill keepalive.
 cleanup() {
+    local exit_code="${1:-$?}"
     if [[ "${MOLE_ALT_SCREEN_ACTIVE:-}" == "1" ]]; then
         leave_alt_screen
         unset MOLE_ALT_SCREEN_ACTIVE
@@ -802,7 +803,7 @@ cleanup() {
     # Log session end
     log_operation_session_end "uninstall" "${files_cleaned:-0}" "${total_size_cleaned:-0}"
     show_cursor
-    exit "${1:-0}"
+    exit "$exit_code"
 }
 
 trap cleanup EXIT INT TERM
@@ -822,10 +823,33 @@ main() {
             "--debug")
                 export MO_DEBUG=1
                 ;;
+            "--dry-run" | "-n")
+                export MOLE_DRY_RUN=1
+                ;;
+            "--whitelist")
+                echo "Unknown uninstall option: $arg"
+                echo "Whitelist management is currently supported by: mo clean --whitelist / mo optimize --whitelist"
+                echo "Use 'mo uninstall --help' for supported options."
+                exit 1
+                ;;
+            -*)
+                echo "Unknown uninstall option: $arg"
+                echo "Use 'mo uninstall --help' for supported options."
+                exit 1
+                ;;
+            *)
+                echo "Unknown uninstall argument: $arg"
+                echo "Use 'mo uninstall --help' for supported options."
+                exit 1
+                ;;
         esac
     done
 
     hide_cursor
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No app files or settings will be modified"
+        printf '\n'
+    fi
 
     local first_scan=true
     while true; do

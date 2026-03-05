@@ -1,0 +1,97 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    name: Format
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref) || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Homebrew
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Cellar/shfmt
+            /usr/local/Cellar/shellcheck
+            /usr/local/Cellar/golangci-lint
+          key: ${{ runner.os }}-brew-quality-v2-${{ hashFiles('**/Brewfile') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-quality-v2-
+
+      - name: Install tools
+        run: brew install shfmt shellcheck golangci-lint
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        with:
+          go-version: '1.24.6'
+
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Format all code
+        run: |
+          export PATH=$(go env GOPATH)/bin:$PATH
+          ./scripts/check.sh --format
+
+      - name: Commit formatting changes
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          git config user.name "Tw93"
+          git config user.email "tw93@qq.com"
+          if [[ -n $(git status --porcelain) ]]; then
+            git add .
+            git commit -m "chore: auto format code"
+            git push
+            echo "✓ Formatting changes committed"
+          else
+            echo "✓ No formatting changes needed"
+          fi
+
+  quality:
+    name: Check
+    runs-on: macos-latest
+    needs: format
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref) || github.ref }}
+
+      - name: Cache Homebrew
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Cellar/shfmt
+            /usr/local/Cellar/shellcheck
+            /usr/local/Cellar/golangci-lint
+          key: ${{ runner.os }}-brew-quality-v2-${{ hashFiles('**/Brewfile') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-quality-v2-
+
+      - name: Install tools
+        run: brew install shfmt shellcheck golangci-lint
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        with:
+          go-version: '1.24.6'
+
+      - name: Run check script
+        run: ./scripts/check.sh --no-format

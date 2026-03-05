@@ -1,0 +1,181 @@
+#!/usr/bin/env bats
+
+setup_file() {
+    PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
+    export PROJECT_ROOT
+
+    ORIGINAL_HOME="${HOME:-}"
+    export ORIGINAL_HOME
+
+    HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-safe-functions.XXXXXX")"
+    export HOME
+
+    mkdir -p "$HOME"
+}
+
+teardown_file() {
+    rm -rf "$HOME"
+    if [[ -n "${ORIGINAL_HOME:-}" ]]; then
+        export HOME="$ORIGINAL_HOME"
+    fi
+}
+
+setup() {
+    source "$PROJECT_ROOT/lib/core/common.sh"
+    TEST_DIR="$HOME/test_safe_functions"
+    mkdir -p "$TEST_DIR"
+}
+
+teardown() {
+    rm -rf "$TEST_DIR"
+}
+
+@test "validate_path_for_deletion rejects empty path" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion ''"
+    [ "$status" -eq 1 ]
+}
+
+@test "validate_path_for_deletion rejects relative path" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion 'relative/path'"
+    [ "$status" -eq 1 ]
+}
+
+@test "validate_path_for_deletion rejects path traversal" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/tmp/../etc'"
+    [ "$status" -eq 1 ]
+
+    # Test other path traversal patterns
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/var/log/../../etc'"
+    [ "$status" -eq 1 ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$TEST_DIR/..'"
+    [ "$status" -eq 1 ]
+}
+
+@test "validate_path_for_deletion accepts Firefox-style ..files directories" {
+    # Firefox uses ..files suffix in IndexedDB directory names
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$TEST_DIR/2753419432nreetyfallipx..files'"
+    [ "$status" -eq 0 ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$TEST_DIR/storage/default/https+++www.netflix.com/idb/name..files/data'"
+    [ "$status" -eq 0 ]
+
+    # Directories with .. in the middle of names should be allowed
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$TEST_DIR/test..backup/file.txt'"
+    [ "$status" -eq 0 ]
+}
+
+@test "validate_path_for_deletion rejects system directories" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/System'"
+    [ "$status" -eq 1 ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/usr/bin'"
+    [ "$status" -eq 1 ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/etc'"
+    [ "$status" -eq 1 ]
+}
+
+@test "validate_path_for_deletion accepts valid path" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$TEST_DIR/valid'"
+    [ "$status" -eq 0 ]
+}
+
+@test "safe_remove validates path before deletion" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '/System/test' 2>&1"
+    [ "$status" -eq 1 ]
+}
+
+@test "safe_remove successfully removes file" {
+    local test_file="$TEST_DIR/test_file.txt"
+    echo "test" > "$test_file"
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '$test_file' true"
+    [ "$status" -eq 0 ]
+    [ ! -f "$test_file" ]
+}
+
+@test "safe_remove successfully removes directory" {
+    local test_subdir="$TEST_DIR/test_subdir"
+    mkdir -p "$test_subdir"
+    touch "$test_subdir/file.txt"
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '$test_subdir' true"
+    [ "$status" -eq 0 ]
+    [ ! -d "$test_subdir" ]
+}
+
+@test "safe_remove handles non-existent path gracefully" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '$TEST_DIR/nonexistent' true"
+    [ "$status" -eq 0 ]
+}
+
+@test "safe_remove preserves interrupt exit codes" {
+    local test_file="$TEST_DIR/interrupt_file"
+    echo "test" > "$test_file"
+
+    run bash -c "
+        source '$PROJECT_ROOT/lib/core/common.sh'
+        rm() { return 130; }
+        safe_remove '$test_file' true
+    "
+    [ "$status" -eq 130 ]
+    [ -f "$test_file" ]
+}
+
+@test "safe_remove in silent mode suppresses error output" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '/System/test' true 2>&1"
+    [ "$status" -eq 1 ]
+}
+
+
+@test "safe_find_delete validates base directory" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '/nonexistent' '*.tmp' 7 'f' 2>&1"
+    [ "$status" -eq 1 ]
+}
+
+@test "safe_find_delete rejects symlinked directory" {
+    local real_dir="$TEST_DIR/real"
+    local link_dir="$TEST_DIR/link"
+    mkdir -p "$real_dir"
+    ln -s "$real_dir" "$link_dir"
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '$link_dir' '*.tmp' 7 'f' 2>&1"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"symlink"* ]]
+
+    rm -rf "$link_dir" "$real_dir"
+}
+
+@test "safe_find_delete validates type filter" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '$TEST_DIR' '*.tmp' 7 'x' 2>&1"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Invalid type filter"* ]]
+}
+
+@test "safe_find_delete deletes old files" {
+    local old_file="$TEST_DIR/old.tmp"
+    local new_file="$TEST_DIR/new.tmp"
+
+    touch "$old_file"
+    touch "$new_file"
+
+    touch -t "$(date -v-8d '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '8 days ago' '+%Y%m%d%H%M.%S')" "$old_file" 2>/dev/null || true
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '$TEST_DIR' '*.tmp' 7 'f'"
+    [ "$status" -eq 0 ]
+}
+
+@test "MOLE_* constants are defined" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; echo \$MOLE_TEMP_FILE_AGE_DAYS"
+    [ "$status" -eq 0 ]
+    [ "$output" = "7" ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; echo \$MOLE_MAX_PARALLEL_JOBS"
+    [ "$status" -eq 0 ]
+    [ "$output" = "15" ]
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; echo \$MOLE_TM_BACKUP_SAFE_HOURS"
+    [ "$status" -eq 0 ]
+    [ "$output" = "48" ]
+}

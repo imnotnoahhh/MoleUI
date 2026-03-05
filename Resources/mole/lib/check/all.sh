@@ -243,6 +243,99 @@ get_software_updates() {
     fi
 }
 
+check_homebrew_updates() {
+    # Check whitelist
+    if command -v is_whitelisted > /dev/null && is_whitelisted "check_homebrew_updates"; then return; fi
+
+    export BREW_OUTDATED_COUNT=0
+    export BREW_FORMULA_OUTDATED_COUNT=0
+    export BREW_CASK_OUTDATED_COUNT=0
+
+    if ! command -v brew > /dev/null 2>&1; then
+        printf "  ${GRAY}${ICON_EMPTY}${NC} %-12s %s\n" "Homebrew" "Not installed"
+        return
+    fi
+
+    local cache_file="$CACHE_DIR/brew_updates"
+    local formula_count=0
+    local cask_count=0
+    local total_count=0
+    local use_cache=false
+
+    if is_cache_valid "$cache_file"; then
+        local cached_formula=""
+        local cached_cask=""
+        IFS=' ' read -r cached_formula cached_cask < "$cache_file" || true
+        if [[ "$cached_formula" =~ ^[0-9]+$ && "$cached_cask" =~ ^[0-9]+$ ]]; then
+            formula_count="$cached_formula"
+            cask_count="$cached_cask"
+            use_cache=true
+        fi
+    fi
+
+    if [[ "$use_cache" == "false" ]]; then
+        local formula_outdated=""
+        local cask_outdated=""
+        local formula_status=0
+        local cask_status=0
+        local spinner_started=false
+
+        if [[ -t 1 ]]; then
+            MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking Homebrew updates..."
+            spinner_started=true
+        fi
+
+        if formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null); then
+            :
+        else
+            formula_status=$?
+        fi
+
+        if cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null); then
+            :
+        else
+            cask_status=$?
+        fi
+
+        if [[ "$spinner_started" == "true" ]]; then
+            stop_inline_spinner
+        fi
+
+        if [[ $formula_status -eq 0 || $cask_status -eq 0 ]]; then
+            formula_count=$(printf '%s\n' "$formula_outdated" | awk 'NF {count++} END {print count + 0}')
+            cask_count=$(printf '%s\n' "$cask_outdated" | awk 'NF {count++} END {print count + 0}')
+            ensure_user_file "$cache_file"
+            printf '%s %s\n' "$formula_count" "$cask_count" > "$cache_file" 2> /dev/null || true
+        elif [[ $formula_status -eq 124 || $cask_status -eq 124 ]]; then
+            printf "  ${GRAY}${ICON_WARNING}${NC} %-12s ${YELLOW}%s${NC}\n" "Homebrew" "Check timed out"
+            return
+        else
+            printf "  ${GRAY}${ICON_WARNING}${NC} %-12s ${YELLOW}%s${NC}\n" "Homebrew" "Check failed"
+            return
+        fi
+    fi
+
+    total_count=$((formula_count + cask_count))
+    export BREW_FORMULA_OUTDATED_COUNT="$formula_count"
+    export BREW_CASK_OUTDATED_COUNT="$cask_count"
+    export BREW_OUTDATED_COUNT="$total_count"
+
+    if [[ $total_count -gt 0 ]]; then
+        local detail=""
+        if [[ $formula_count -gt 0 ]]; then
+            detail="${formula_count} formula"
+        fi
+        if [[ $cask_count -gt 0 ]]; then
+            [[ -n "$detail" ]] && detail="${detail}, "
+            detail="${detail}${cask_count} cask"
+        fi
+        [[ -z "$detail" ]] && detail="${total_count} updates"
+        printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "Homebrew" "${detail} available"
+    else
+        printf "  ${GREEN}✓${NC} %-12s %s\n" "Homebrew" "Up to date"
+    fi
+}
+
 check_appstore_updates() {
     # Skipped for speed optimization - consolidated into check_macos_update
     # We can't easily distinguish app store vs macos updates without the slow softwareupdate -l call
@@ -298,9 +391,9 @@ check_macos_update() {
     export MACOS_UPDATE_AVAILABLE="$updates_available"
 
     if [[ "$updates_available" == "true" ]]; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} macOS        ${YELLOW}Update available${NC}"
+        printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "Update available"
     else
-        echo -e "  ${GREEN}✓${NC} macOS        System up to date"
+        printf "  ${GREEN}✓${NC} %-12s %s\n" "macOS" "System up to date"
     fi
 }
 
@@ -366,12 +459,12 @@ check_mole_update() {
         # Compare versions
         if [[ "$(printf '%s\n' "$current_version" "$latest_version" | sort -V | head -1)" == "$current_version" ]]; then
             export MOLE_UPDATE_AVAILABLE="true"
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Mole         ${YELLOW}${latest_version} available${NC}, running ${current_version}"
+            printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}, running %s\n" "$ICON_WARNING" "Mole" "${latest_version} available" "${current_version}"
         else
-            echo -e "  ${GREEN}✓${NC} Mole         Latest version ${current_version}"
+            printf "  ${GREEN}✓${NC} %-12s %s\n" "Mole" "Latest version ${current_version}"
         fi
     else
-        echo -e "  ${GREEN}✓${NC} Mole         Latest version ${current_version}"
+        printf "  ${GREEN}✓${NC} %-12s %s\n" "Mole" "Latest version ${current_version}"
     fi
 }
 
@@ -384,6 +477,7 @@ check_all_updates() {
     get_software_updates > /dev/null
 
     echo -e "${BLUE}${ICON_ARROW}${NC} System Updates"
+    check_homebrew_updates
     check_appstore_updates
     check_macos_update
     check_mole_update
