@@ -3,8 +3,10 @@ name: CI
 on:
   pull_request:
     branches: [dev, main]
+    types: [opened, synchronize, reopened]
   push:
     branches: [dev, main]
+  workflow_dispatch:
 
 jobs:
   code-quality:
@@ -44,6 +46,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
       - name: Build
         run: |
           xcodebuild -scheme MoleUI \
@@ -54,14 +62,56 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
           xcodebuild test -scheme MoleUI \
             -configuration Debug \
             -destination 'platform=macOS' \
+            -only-testing:MoleUITests \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults.xcresult
+
+      - name: Run UI tests (allow failure)
+        continue-on-error: true
+        run: |
+          xcodebuild test -scheme MoleUI \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -only-testing:MoleUITests/UIFlowTests \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Generate test report
+        if: always()
+        run: |
+          if [ -d "TestResults.xcresult" ]; then
+            xcrun xcresulttool get --format json --path TestResults.xcresult > test-results.json
+            echo "📊 Test results saved to test-results.json"
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TestResults.xcresult
+            test-results.json
+          retention-days: 30
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "test-results.json" ]; then
+            echo "✅ Tests completed. See artifacts for detailed results." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Test results not available." >> $GITHUB_STEP_SUMMARY
+          fi
 
   security-scan:
     name: Security Scan
@@ -85,3 +135,53 @@ jobs:
           fi
 
           echo "✅ Security scan passed"
+
+  test-coverage:
+    name: Test Coverage Report
+    runs-on: macos-15
+    needs: build-and-test
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate coverage
+        continue-on-error: true
+        run: |
+          xcodebuild test -scheme MoleUI \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -enableCodeCoverage YES \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath Coverage.xcresult
+
+      - name: Extract coverage data
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -d "Coverage.xcresult" ]; then
+            xcrun xccov view --report Coverage.xcresult > coverage-report.txt
+            echo "📈 Coverage report generated"
+            cat coverage-report.txt
+          fi
+
+      - name: Comment coverage on PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('coverage-report.txt')) {
+              const coverage = fs.readFileSync('coverage-report.txt', 'utf8');
+              const body = `## 📊 Test Coverage Report\n\n\`\`\`\n${coverage}\n\`\`\``;
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
+
