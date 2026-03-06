@@ -53,17 +53,17 @@ final class CLIExecutor {
         static func == (lhs: ExecutionError, rhs: ExecutionError) -> Bool {
             switch (lhs, rhs) {
             case (.timeout, .timeout):
-                return true
+                true
             case (.cancelled, .cancelled):
-                return true
+                true
             case (.commandNotFound(let a), .commandNotFound(let b)):
-                return a == b
+                a == b
             case (.nonZeroExit(let a1, let a2), .nonZeroExit(let b1, let b2)):
-                return a1 == b1 && a2 == b2
+                a1 == b1 && a2 == b2
             case (.invalidOutput(let a), .invalidOutput(let b)):
-                return a == b
+                a == b
             default:
-                return false
+                false
             }
         }
     }
