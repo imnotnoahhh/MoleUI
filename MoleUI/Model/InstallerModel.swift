@@ -125,7 +125,7 @@ final class InstallerModel {
         let output = result.stdout
 
         // Step 2: Parse the pipe-delimited output
-        let results = output
+        return output
             .split(separator: "\n")
             .compactMap { line -> InstallerFile? in
                 let parts = line.split(separator: "|", omittingEmptySubsequences: false)
@@ -143,8 +143,6 @@ final class InstallerModel {
                     source: source
                 )
             }
-
-        return results
     }
 
     private func deleteWithMole(_ path: String) async throws {
