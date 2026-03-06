@@ -88,7 +88,7 @@ jobs:
         if: always()
         run: |
           if [ -d "TestResults.xcresult" ]; then
-            xcrun xcresulttool get --format json --path TestResults.xcresult > test-results.json
+            xcrun xcresulttool get object --legacy --format json --path TestResults.xcresult > test-results.json
             echo "📊 Test results saved to test-results.json"
           fi
 
