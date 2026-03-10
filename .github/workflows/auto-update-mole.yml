@@ -73,14 +73,15 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true'
         working-directory: Resources/mole
         run: |
-          make build
-          # Verify binaries were built
-          ls -la bin/analyze-go bin/status-go
-
-      - name: Update version files
-        if: steps.check_update.outputs.update_needed == 'true'
-        run: |
-          echo "${{ steps.latest_release.outputs.version }}" > .mole-cli-version
+          # Build universal (fat) binaries for both Intel and Apple Silicon
+          make release-amd64
+          make release-arm64
+          lipo -create -output bin/status-go bin/status-darwin-amd64 bin/status-darwin-arm64
+          lipo -create -output bin/analyze-go bin/analyze-darwin-amd64 bin/analyze-darwin-arm64
+          # Clean up arch-specific binaries
+          rm -f bin/*-darwin-amd64 bin/*-darwin-arm64
+          # Verify universal binaries
+          file bin/status-go bin/analyze-go
 
       - name: Compatibility check
         if: steps.check_update.outputs.update_needed == 'true'
@@ -116,7 +117,7 @@ jobs:
 
           # 3. Go binaries are executable
           for bin in Resources/mole/bin/status-go Resources/mole/bin/analyze-go; do
-            if [ -f "$bin" ] && [ ! -x "$bin" ]; then
+            if [ ! -x "$bin" ]; then
               ERRORS="$ERRORS\n- Binary not executable: $bin"
             fi
           done
@@ -135,7 +136,7 @@ jobs:
 
           # 5. Verify Go binaries are valid Mach-O (not corrupted)
           for bin in Resources/mole/bin/status-go Resources/mole/bin/analyze-go; do
-            if [ -f "$bin" ] && ! file "$bin" | grep -q "Mach-O"; then
+            if ! file "$bin" | grep -q "Mach-O"; then
               ERRORS="$ERRORS\n- Invalid binary (not Mach-O): $bin"
             fi
           done
@@ -153,6 +154,11 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
         id: version_update
         run: |
+          # Update Mole CLI version files
+          VERSION="${{ steps.latest_release.outputs.version }}"
+          echo "$VERSION" > .mole-cli-version
+          echo "$VERSION" > MoleUI/.mole-cli-version
+
           # Read current MoleUI version from project.pbxproj
           CURRENT_VERSION=$(grep "MARKETING_VERSION = " MoleUI.xcodeproj/project.pbxproj | head -1 | sed 's/.*MARKETING_VERSION = \(.*\);/\1/')
           echo "Current MoleUI version: $CURRENT_VERSION"
@@ -188,9 +194,9 @@ jobs:
             - Bundled Mole CLI: ${{ steps.current_version.outputs.version }} → ${{ steps.latest_release.outputs.version }}
 
             **Compatibility Checks:**
-            - ✅ All required files present
-            - ✅ Commands execute successfully
-            - ℹ️ status-go not tested (MoleUI uses native Swift implementation)
+            - ✅ All required files and directories present
+            - ✅ Go binaries are valid universal Mach-O executables
+            - ✅ Shell scripts are executable
 
             **Note:** MoleUI uses a native Swift implementation for system monitoring instead of calling `status-go` due to TTY dependency issues. See [NATIVE_IMPLEMENTATION.md](https://github.com/imnotnoahhh/MoleUI/blob/main/NATIVE_IMPLEMENTATION.md) for details.
 
