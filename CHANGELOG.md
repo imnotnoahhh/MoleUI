@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-03-10
+
+### Changed
+- **Bundled Mole CLI upgraded to v1.30.0** (from v1.29.0)
+- Auto-update workflow rewritten
+  - Downloads source tarball from GitHub Releases instead of Homebrew
+  - Builds universal (Intel + Apple Silicon) Go binaries via `lipo`
+  - Uses `gh api` with auth token to avoid rate limiting
+  - Validates file structure, executability, and Mach-O binary format
+  - Removed auto-merge and tag creation (manual review only)
+  - Updates both root and bundled `.mole-cli-version`
+
 ## [0.1.2] - 2026-03-06
 
 Official release with Mole CLI v1.29.0.
@@ -189,7 +201,8 @@ Official release with Mole CLI v1.29.0.
 - NavigationSplitView for native macOS experience
 - Requires macOS 14.0 (Sonoma) or later
 
-[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.3
 [0.1.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2
 [0.1.2-beta.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.2
 [0.1.2-beta.1]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.1
