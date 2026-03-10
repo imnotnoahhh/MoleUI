@@ -60,7 +60,7 @@ EOF
 }
 
 @test "is_bundle_orphaned returns true for old uninstalled bundle" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" ORPHAN_AGE_THRESHOLD=60 bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" ORPHAN_AGE_THRESHOLD=30 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
@@ -116,12 +116,12 @@ safe_clean() {
 # Create required Library structure for permission check
 mkdir -p "$HOME/Library/Caches"
 
-# Create test structure with spaces in path (old modification time: 61 days ago)
+# Create test structure with spaces in path (old modification time: 31 days ago)
 mkdir -p "$HOME/Library/Saved Application State/com.test.orphan.savedState"
 # Create a file with some content so directory size > 0
 echo "test data" > "$HOME/Library/Saved Application State/com.test.orphan.savedState/data.plist"
-# Set modification time to 61 days ago (older than 60-day threshold)
-touch -t "$(date -v-61d +%Y%m%d%H%M.%S 2>/dev/null || date -d '61 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Saved Application State/com.test.orphan.savedState" 2>/dev/null || true
+# Set modification time to 31 days ago (older than 30-day threshold)
+touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Saved Application State/com.test.orphan.savedState" 2>/dev/null || true
 
 # Disable spinner for test
 start_section_spinner() { :; }
@@ -165,15 +165,15 @@ run_with_timeout() { shift; "$@"; }
 # Create required Library structure for permission check
 mkdir -p "$HOME/Library/Caches"
 
-# Create test files (old modification time: 61 days ago)
+# Create test files (old modification time: 31 days ago)
 mkdir -p "$HOME/Library/Caches/com.test.orphan1"
 mkdir -p "$HOME/Library/Caches/com.test.orphan2"
 # Create files with content so size > 0
 echo "data1" > "$HOME/Library/Caches/com.test.orphan1/data"
 echo "data2" > "$HOME/Library/Caches/com.test.orphan2/data"
-# Set modification time to 61 days ago
-touch -t "$(date -v-61d +%Y%m%d%H%M.%S 2>/dev/null || date -d '61 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan1" 2>/dev/null || true
-touch -t "$(date -v-61d +%Y%m%d%H%M.%S 2>/dev/null || date -d '61 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan2" 2>/dev/null || true
+# Set modification time to 31 days ago
+touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan1" 2>/dev/null || true
+touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan2" 2>/dev/null || true
 
 # Mock safe_clean to fail on first item, succeed on second
 safe_clean() {
@@ -208,6 +208,135 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"PASS: Failed deletion preserved"* ]]
     [[ "$output" == *"PASS: Successful deletion removed"* ]]
+}
+
+@test "clean_orphaned_app_data removes orphaned Claude VM bundle" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+scan_installed_apps() {
+    : > "$1"
+}
+
+mdfind() {
+    return 0
+}
+
+pgrep() {
+    return 1
+}
+
+run_with_timeout() { shift; "$@"; }
+get_file_mtime() { echo 0; }
+get_path_size_kb() { echo 4; }
+
+safe_clean() {
+    echo "$2"
+    rm -rf "$1"
+}
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+mkdir -p "$HOME/Library/Caches"
+mkdir -p "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+echo "vm data" > "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img"
+
+clean_orphaned_app_data
+
+if [[ ! -d "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle" ]]; then
+    echo "PASS: Claude VM removed"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Orphaned Claude workspace VM"* ]]
+    [[ "$output" == *"PASS: Claude VM removed"* ]]
+}
+
+@test "clean_orphaned_app_data keeps recent Claude VM bundle when Claude lookup misses" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+scan_installed_apps() {
+    : > "$1"
+}
+
+mdfind() {
+    return 0
+}
+
+pgrep() {
+    return 1
+}
+
+run_with_timeout() { shift; "$@"; }
+get_file_mtime() { date +%s; }
+
+safe_clean() {
+    echo "UNEXPECTED:$2"
+    return 1
+}
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+mkdir -p "$HOME/Library/Caches"
+mkdir -p "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+echo "vm data" > "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img"
+
+clean_orphaned_app_data
+
+if [[ -d "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle" ]]; then
+    echo "PASS: Recent Claude VM kept"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"UNEXPECTED:Orphaned Claude workspace VM"* ]]
+    [[ "$output" == *"PASS: Recent Claude VM kept"* ]]
+}
+
+@test "clean_orphaned_app_data keeps Claude VM bundle when Claude is installed" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+scan_installed_apps() {
+    echo "com.anthropic.claudefordesktop" > "$1"
+}
+
+pgrep() {
+    return 1
+}
+
+safe_clean() {
+    echo "UNEXPECTED:$2"
+    return 1
+}
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+mkdir -p "$HOME/Library/Caches"
+mkdir -p "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+echo "vm data" > "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img"
+
+clean_orphaned_app_data
+
+if [[ -d "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle" ]]; then
+    echo "PASS: Claude VM kept"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"UNEXPECTED:Orphaned Claude workspace VM"* ]]
+    [[ "$output" == *"PASS: Claude VM kept"* ]]
 }
 
 

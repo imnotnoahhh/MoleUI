@@ -600,7 +600,7 @@ EOF
 @test "get_homebrew_latest_version prefers brew outdated verbose target version" {
     run bash --noprofile --norc <<'EOF'
 set -euo pipefail
-MOLE_SKIP_MAIN=1 source "$PROJECT_ROOT/mole"
+MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1 source "$PROJECT_ROOT/mole"
 
 brew() {
   if [[ "${1:-}" == "outdated" ]]; then
@@ -625,7 +625,7 @@ EOF
 @test "get_homebrew_latest_version parses brew info fallback with heading prefix" {
     run bash --noprofile --norc <<'EOF'
 set -euo pipefail
-MOLE_SKIP_MAIN=1 source "$PROJECT_ROOT/mole"
+MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1 source "$PROJECT_ROOT/mole"
 
 brew() {
   if [[ "${1:-}" == "outdated" ]]; then

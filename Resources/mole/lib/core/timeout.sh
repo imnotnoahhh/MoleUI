@@ -20,12 +20,18 @@ readonly MOLE_TIMEOUT_LOADED=1
 # Recommendation: Install coreutils for reliable timeout support
 #   brew install coreutils
 #
+# Fallback order:
+#   1. gtimeout / timeout
+#   2. perl helper with dedicated process group cleanup
+#   3. shell-based fallback (last resort)
+#
 # The shell-based fallback has known limitations:
 #   - May not clean up all child processes
 #   - Has race conditions in edge cases
-#   - Less reliable than native timeout command
+#   - Less reliable than native timeout/perl helper
 if [[ -z "${MO_TIMEOUT_INITIALIZED:-}" ]]; then
     MO_TIMEOUT_BIN=""
+    MO_TIMEOUT_PERL_BIN=""
     for candidate in gtimeout timeout; do
         if command -v "$candidate" > /dev/null 2>&1; then
             MO_TIMEOUT_BIN="$candidate"
@@ -36,8 +42,15 @@ if [[ -z "${MO_TIMEOUT_INITIALIZED:-}" ]]; then
         fi
     done
 
+    if command -v perl > /dev/null 2>&1; then
+        MO_TIMEOUT_PERL_BIN="$(command -v perl)"
+        if [[ -z "$MO_TIMEOUT_BIN" ]] && [[ "${MO_DEBUG:-0}" == "1" ]]; then
+            echo "[TIMEOUT] Using perl fallback: $MO_TIMEOUT_PERL_BIN" >&2
+        fi
+    fi
+
     # Log warning if no timeout command available
-    if [[ -z "$MO_TIMEOUT_BIN" ]] && [[ "${MO_DEBUG:-0}" == "1" ]]; then
+    if [[ -z "$MO_TIMEOUT_BIN" && -z "$MO_TIMEOUT_PERL_BIN" ]] && [[ "${MO_DEBUG:-0}" == "1" ]]; then
         echo "[TIMEOUT] No timeout command found, using shell fallback" >&2
         echo "[TIMEOUT] Install coreutils for better reliability: brew install coreutils" >&2
     fi
@@ -92,6 +105,67 @@ run_with_timeout() {
             echo "[TIMEOUT] Running with ${duration}s timeout: $*" >&2
         fi
         "$MO_TIMEOUT_BIN" "$duration" "$@"
+        return $?
+    fi
+
+    # Use perl helper when timeout command is unavailable.
+    if [[ -n "${MO_TIMEOUT_PERL_BIN:-}" ]]; then
+        if [[ "${MO_DEBUG:-0}" == "1" ]]; then
+            echo "[TIMEOUT] Perl fallback, ${duration}s: $*" >&2
+        fi
+        # shellcheck disable=SC2016  # Embedded Perl uses Perl variables inside single quotes.
+        "$MO_TIMEOUT_PERL_BIN" -e '
+            use strict;
+            use warnings;
+            use POSIX qw(:sys_wait_h setsid);
+            use Time::HiRes qw(time sleep);
+
+            my $duration = 0 + shift @ARGV;
+            $duration = 1 if $duration <= 0;
+
+            my $pid = fork();
+            defined $pid or exit 125;
+
+            if ($pid == 0) {
+                setsid() or exit 125;
+                exec @ARGV;
+                exit 127;
+            }
+
+            my $deadline = time() + $duration;
+
+            while (1) {
+                my $result = waitpid($pid, WNOHANG);
+                if ($result == $pid) {
+                    if (WIFEXITED($?)) {
+                        exit WEXITSTATUS($?);
+                    }
+                    if (WIFSIGNALED($?)) {
+                        exit 128 + WTERMSIG($?);
+                    }
+                    exit 1;
+                }
+
+                if (time() >= $deadline) {
+                    kill "TERM", -$pid;
+                    sleep 0.5;
+
+                    for (1 .. 6) {
+                        $result = waitpid($pid, WNOHANG);
+                        if ($result == $pid) {
+                            exit 124;
+                        }
+                        sleep 0.25;
+                    }
+
+                    kill "KILL", -$pid;
+                    waitpid($pid, 0);
+                    exit 124;
+                }
+
+                sleep 0.1;
+            }
+        ' "$duration" "$@"
         return $?
     fi
 

@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.29.0"
+VERSION="1.30.0"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
@@ -737,11 +737,11 @@ show_main_menu() {
 
     if [[ -t 0 ]]; then
         printf '\r\033[2K\n'
-        local controls="${GRAY}↑↓  |  Enter  |  M More  |  "
+        local controls="${GRAY}↑↓  |  Enter  |  M More"
         if ! is_touchid_configured; then
-            controls="${controls}T TouchID"
-        else
-            controls="${controls}U Update"
+            controls="${controls}  |  T TouchID"
+        elif [[ "${MAIN_MENU_SHOW_UPDATE:-false}" == "true" ]]; then
+            controls="${controls}  |  U Update"
         fi
         controls="${controls}  |  Q Quit${NC}"
         printf '\r\033[2K%s\n' "$controls"
@@ -765,6 +765,7 @@ interactive_main_menu() {
         update_message="$(cat "$msg_cache" 2> /dev/null || echo "")"
     fi
     MAIN_MENU_UPDATE_MESSAGE="$update_message"
+    MAIN_MENU_SHOW_UPDATE="$([[ -n "$update_message" ]] && echo true || echo false)"
 
     cleanup_and_exit() {
         show_cursor
@@ -835,6 +836,7 @@ interactive_main_menu() {
                 exec "$SCRIPT_DIR/bin/touchid.sh"
                 ;;
             "UPDATE")
+                [[ "${MAIN_MENU_SHOW_UPDATE:-false}" == "true" ]] || continue
                 show_cursor
                 clear
                 update_mole
@@ -940,6 +942,8 @@ main() {
     esac
 }
 
-if [[ "${MOLE_SKIP_MAIN:-0}" != "1" ]]; then
+if [[ "${MOLE_TEST_MODE:-0}" == "1" && "${MOLE_SKIP_MAIN:-0}" == "1" ]]; then
+    :
+else
     main "$@"
 fi

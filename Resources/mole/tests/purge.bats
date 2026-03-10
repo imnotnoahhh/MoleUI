@@ -683,6 +683,25 @@ EOF
 	[[ "$status" -eq 0 ]] || [[ "$status" -eq 2 ]]
 }
 
+@test "clean_project_artifacts: handles empty menu options under set -u" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+mkdir -p "$HOME/www/test-project/node_modules"
+touch "$HOME/www/test-project/package.json"
+
+PURGE_SEARCH_PATHS=("$HOME/www")
+get_dir_size_kb() { echo 0; }
+
+clean_project_artifacts </dev/null
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"No artifacts found to purge"* ]]
+}
+
 @test "clean_project_artifacts: dry-run does not count failed removals" {
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail

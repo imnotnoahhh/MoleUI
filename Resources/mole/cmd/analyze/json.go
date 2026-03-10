@@ -58,6 +58,8 @@ func performScanForJSON(path string) jsonOutput {
 			info, err := item.Info()
 			if err == nil {
 				size = info.Size()
+				atomic.AddInt64(&filesScanned, 1)
+				atomic.AddInt64(&bytesScanned, size)
 			}
 		}
 
@@ -74,6 +76,6 @@ func performScanForJSON(path string) jsonOutput {
 		Path:       path,
 		Entries:    entries,
 		TotalSize:  totalSize,
-		TotalFiles: filesScanned,
+		TotalFiles: atomic.LoadInt64(&filesScanned),
 	}
 }
