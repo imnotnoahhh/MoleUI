@@ -2,7 +2,8 @@
 # Application Data Cleanup Module
 set -euo pipefail
 
-readonly ORPHAN_AGE_THRESHOLD=${ORPHAN_AGE_THRESHOLD:-${MOLE_ORPHAN_AGE_DAYS:-60}}
+readonly ORPHAN_AGE_THRESHOLD=${ORPHAN_AGE_THRESHOLD:-${MOLE_ORPHAN_AGE_DAYS:-30}}
+readonly CLAUDE_VM_ORPHAN_AGE_THRESHOLD=${MOLE_CLAUDE_VM_ORPHAN_AGE_DAYS:-7}
 # Args: $1=target_dir, $2=label
 clean_ds_store_tree() {
     local target="$1"
@@ -59,7 +60,7 @@ clean_ds_store_tree() {
         note_activity
     fi
 }
-# Orphaned app data (60+ days inactive). Env: ORPHAN_AGE_THRESHOLD, DRY_RUN
+# Orphaned app data (30+ days inactive). Env: ORPHAN_AGE_THRESHOLD, DRY_RUN
 # Usage: scan_installed_apps "output_file"
 scan_installed_apps() {
     local installed_bundles="$1"
@@ -201,13 +202,13 @@ is_bundle_orphaned() {
             ;;
     esac
 
-    # 5. Fast path: 60-day modification check (stat call, fast)
+    # 5. Fast path: 30-day modification check (stat call, fast)
     if [[ -e "$directory_path" ]]; then
         local last_modified_epoch=$(get_file_mtime "$directory_path")
         local current_epoch
         current_epoch=$(get_epoch_seconds)
         local days_since_modified=$(((current_epoch - last_modified_epoch) / 86400))
-        if [[ $days_since_modified -lt ${ORPHAN_AGE_THRESHOLD:-60} ]]; then
+        if [[ $days_since_modified -lt ${ORPHAN_AGE_THRESHOLD:-30} ]]; then
             return 1
         fi
     fi
@@ -244,6 +245,55 @@ is_bundle_orphaned() {
     # All checks passed - this is an orphan
     return 0
 }
+
+is_claude_vm_bundle_orphaned() {
+    local vm_bundle_path="$1"
+    local installed_bundles="$2"
+    local claude_bundle_id="com.anthropic.claudefordesktop"
+
+    [[ -d "$vm_bundle_path" ]] || return 1
+
+    # Extra guard in case the running-app scan missed Claude Desktop.
+    if pgrep -x "Claude" > /dev/null 2>&1; then
+        return 1
+    fi
+
+    if grep -Fxq "$claude_bundle_id" "$installed_bundles" 2> /dev/null; then
+        return 1
+    fi
+
+    if [[ -e "$vm_bundle_path" ]]; then
+        local last_modified_epoch
+        last_modified_epoch=$(get_file_mtime "$vm_bundle_path")
+        local current_epoch
+        current_epoch=$(get_epoch_seconds)
+        local days_since_modified=$(((current_epoch - last_modified_epoch) / 86400))
+        if [[ $days_since_modified -lt ${CLAUDE_VM_ORPHAN_AGE_THRESHOLD:-7} ]]; then
+            return 1
+        fi
+    fi
+
+    if [[ -z "$ORPHAN_MDFIND_CACHE_FILE" ]]; then
+        ORPHAN_MDFIND_CACHE_FILE=$(mktemp "${TMPDIR:-/tmp}/mole_mdfind_cache.XXXXXX")
+        register_temp_file "$ORPHAN_MDFIND_CACHE_FILE"
+    fi
+
+    if grep -Fxq "FOUND:$claude_bundle_id" "$ORPHAN_MDFIND_CACHE_FILE" 2> /dev/null; then
+        return 1
+    fi
+    if ! grep -Fxq "NOTFOUND:$claude_bundle_id" "$ORPHAN_MDFIND_CACHE_FILE" 2> /dev/null; then
+        local app_exists
+        app_exists=$(run_with_timeout 2 mdfind "kMDItemCFBundleIdentifier == '$claude_bundle_id'" 2> /dev/null | head -1 || echo "")
+        if [[ -n "$app_exists" ]]; then
+            echo "FOUND:$claude_bundle_id" >> "$ORPHAN_MDFIND_CACHE_FILE"
+            return 1
+        fi
+        echo "NOTFOUND:$claude_bundle_id" >> "$ORPHAN_MDFIND_CACHE_FILE"
+    fi
+
+    return 0
+}
+
 # Orphaned app data sweep.
 clean_orphaned_app_data() {
     if ! ls "$HOME/Library/Caches" > /dev/null 2>&1; then
@@ -260,6 +310,19 @@ clean_orphaned_app_data() {
     local orphaned_count=0
     local total_orphaned_kb=0
     start_section_spinner "Scanning orphaned app resources..."
+
+    local claude_vm_bundle="$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+    if is_claude_vm_bundle_orphaned "$claude_vm_bundle" "$installed_bundles"; then
+        local claude_vm_size_kb
+        claude_vm_size_kb=$(get_path_size_kb "$claude_vm_bundle")
+        if [[ -n "$claude_vm_size_kb" && "$claude_vm_size_kb" != "0" ]]; then
+            if safe_clean "$claude_vm_bundle" "Orphaned Claude workspace VM"; then
+                orphaned_count=$((orphaned_count + 1))
+                total_orphaned_kb=$((total_orphaned_kb + claude_vm_size_kb))
+            fi
+        fi
+    fi
+
     # CRITICAL: NEVER add LaunchAgents or LaunchDaemons (breaks login items/startup apps).
     local -a resource_types=(
         "$HOME/Library/Caches|Caches|com.*:org.*:net.*:io.*"
@@ -269,7 +332,6 @@ clean_orphaned_app_data() {
         "$HOME/Library/HTTPStorages|HTTP|com.*:org.*:net.*:io.*"
         "$HOME/Library/Cookies|Cookies|*.binarycookies"
     )
-    orphaned_count=0
     for resource_type in "${resource_types[@]}"; do
         IFS='|' read -r base_path label patterns <<< "$resource_type"
         if [[ ! -d "$base_path" ]]; then

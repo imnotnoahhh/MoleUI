@@ -1,158 +1,200 @@
 # Mole Security Reference
 
-Version 1.28.0 | 2026-02-27
+Version 1.30.0 | 2026-03-08
+
+This document describes the security-relevant behavior of the current codebase on `main`.
 
 ## Path Validation
 
-Every deletion goes through `lib/core/file_ops.sh`. The `validate_path_for_deletion()` function rejects empty paths, paths with `/../` in them, and anything containing control characters like newlines or null bytes.
+All destructive file operations go through `lib/core/file_ops.sh`.
 
-Direct `find ... -delete` is not used for security-sensitive cleanup paths. Deletions go through validated safe wrappers like `safe_sudo_find_delete()`, `safe_sudo_remove()`, and `safe_remove()`.
+- `validate_path_for_deletion()` rejects empty paths, relative paths, traversal segments such as `/../`, and control characters.
+- Security-sensitive cleanup paths do not use raw `find ... -delete`.
+- Removal flows use guarded helpers such as `safe_remove()`, `safe_sudo_remove()`, `safe_find_delete()`, and `safe_sudo_find_delete()`.
 
-**Blocked paths**, even with sudo:
+Blocked paths remain protected even with sudo, including:
 
 ```text
-/                    # root
-/System              # macOS system
-/bin, /sbin, /usr    # binaries
-/etc, /var           # config
-/Library/Extensions  # kexts
-/private             # system private
+/
+/System
+/bin
+/sbin
+/usr
+/etc
+/var
+/private
+/Library/Extensions
 ```
 
-Some system caches are OK to delete:
+Some subpaths under protected roots are explicitly allowlisted for bounded cache and log cleanup, for example:
 
-- `/System/Library/Caches/com.apple.coresymbolicationd/data`
-- `/private/tmp`, `/private/var/tmp`, `/private/var/log`, `/private/var/folders`
-- `/private/var/db/diagnostics`, `/private/var/db/DiagnosticPipeline`, `/private/var/db/powerlog`, `/private/var/db/reportmemoryexception`
+- `/private/tmp`
+- `/private/var/tmp`
+- `/private/var/log`
+- `/private/var/folders`
+- `/private/var/db/diagnostics`
+- `/private/var/db/DiagnosticPipeline`
+- `/private/var/db/powerlog`
+- `/private/var/db/reportmemoryexception`
 
-See `lib/core/file_ops.sh:60-78`.
-
-When running with sudo, `safe_sudo_recursive_delete()` also checks for symlinks. Refuses to follow symlinks pointing to system files.
+When running with sudo, symlinked targets are validated before deletion and system-target symlinks are refused.
 
 ## Cleanup Rules
 
-**Orphan detection** at `lib/clean/apps.sh:orphan_detection()`:
+### Orphan Detection
 
-App data is only considered orphaned if the app itself is gone from all three locations: `/Applications`, `~/Applications`, `/System/Applications`. On top of that, the data must be untouched for at least 60 days. Adobe, Microsoft, and Google stuff is whitelisted regardless.
+Orphaned app data is handled in `lib/clean/apps.sh`.
 
-**Uninstall matching** at `lib/clean/apps.sh:uninstall_app()`:
+- Generic orphaned app data requires both:
+  - the app is not found by installed-app scanning and fallback checks, and
+  - the target has been inactive for at least 30 days.
+- Claude VM bundles use a stricter app-specific window:
+  - `~/Library/Application Support/Claude/vm_bundles/claudevm.bundle` must appear orphaned, and
+  - it must be inactive for at least 7 days before cleanup.
+- Sensitive categories such as keychains, password-manager data, and protected app families are excluded from generic orphan cleanup.
 
-App names need at least 3 characters. Otherwise "Go" would match "Google" and that's bad. Fuzzy matching is off. Receipt scans only look under `/Applications` and `/Library/Application Support`, not in shared places like `/Library/Frameworks`.
+Installed-app detection is broader than a simple `/Applications` scan and includes:
 
-**Dev tools:**
+- `/Applications`
+- `/System/Applications`
+- `~/Applications`
+- Homebrew Caskroom locations
+- Setapp application paths
 
-Cache dirs like `~/.cargo/registry/cache` or `~/.gradle/caches` get cleaned. But `~/.cargo/bin`, `~/.mix/archives`, `~/.rustup` toolchains, `~/.stack/programs` stay untouched.
+Spotlight fallback checks are bounded with short timeouts to avoid hangs.
 
-**Application Support and Caches:**
+### Uninstall Matching
 
-- Cache entries are evaluated and removed safely on an item-by-item basis using `safe_remove()` (e.g., `process_container_cache`, `clean_application_support_logs`).
-- Group Containers strictly filter against whitelists before deletion.
-- Targets safe, age-gated resources natively (e.g., CrashReporter > 30 days, cached Steam/Simulator/Adobe/Teams log rot).
-- Explicitly protects high-risk locations: `/private/var/folders/*` sweeping, iOS Backups (`MobileSync`), browser history/cookies, and destructive container/image pruning.
+App uninstall behavior is implemented in `lib/uninstall/batch.sh` and related helpers.
 
-**LaunchAgent removal:**
+- LaunchAgent and LaunchDaemon lookups require a valid reverse-DNS bundle identifier.
+- Deletion candidates are decoded and validated as absolute paths before removal.
+- Homebrew casks are preferentially removed with `brew uninstall --cask --zap`.
+- LaunchServices unregister and rebuild steps are skipped safely if `lsregister` is unavailable.
 
-Only removed when uninstalling the app that owns them. All `com.apple.*` items are skipped. Services get stopped via `launchctl` first. Generic names like Music, Notes, Photos are excluded from the search.
+### Developer and Project Cleanup
 
-`stop_launch_services()` checks bundle_id is valid reverse-DNS before using it in find patterns, stopping glob injection. `find_app_files()` skips LaunchAgents named after common words like Music or Notes.
+Project artifact cleanup in `lib/clean/project.sh` protects recently modified targets:
 
-`unregister_app_bundle` explicitly drops uninstalled applications from LaunchServices via `lsregister -u`. `refresh_launch_services_after_uninstall` triggers asynchronous database compacting and rebuilds to ensure complete removal of stale app references without blocking workflows.
+- recently modified project artifacts are treated as recent for 7 days
+- protected vendor and build-output heuristics prevent broad accidental deletions
+- nested artifacts are filtered to avoid duplicate or parent-child over-deletion
 
-See `lib/core/app_protection.sh:find_app_files()`.
+Developer-cache cleanup preserves toolchains and other high-value state. Examples intentionally left alone include:
+
+- `~/.cargo/bin`
+- `~/.rustup`
+- `~/.mix/archives`
+- `~/.stack/programs`
 
 ## Protected Categories
 
-System stuff stays untouched: Control Center, System Settings, TCC, Spotlight, `/Library/Updates`.
+Protected or conservatively handled categories include:
 
-VPN and proxy tools are skipped: Shadowsocks, V2Ray, Tailscale, Clash.
-
-AI tools are protected: Cursor, Claude, ChatGPT, Ollama, LM Studio.
-
-`~/Library/Messages/Attachments` and `~/Library/Metadata/CoreSpotlight` are kept out of automatic cleanup to avoid user-data or indexing risk.
-
-Time Machine backups running? Won't clean. Status unclear? Also won't clean.
-
-`com.apple.*` LaunchAgents/Daemons are never touched.
-
-See `lib/core/app_protection.sh:is_critical_system_component()`.
+- system components such as Control Center, System Settings, TCC, Spotlight, and `/Library/Updates`
+- password managers and keychain-related data
+- VPN / proxy tools such as Shadowsocks, V2Ray, Clash, and Tailscale
+- AI tools in generic protected-data logic, including Cursor, Claude, ChatGPT, and Ollama
+- `~/Library/Messages/Attachments`
+- browser history and cookies
+- Time Machine data while backup state is active or ambiguous
+- `com.apple.*` LaunchAgents and LaunchDaemons
 
 ## Analyzer
 
-`mo analyze` runs differently:
+`mo analyze` is intentionally lower-risk than cleanup flows:
 
-- Standard user permissions, no sudo
-- Respects SIP
-- Two keys to delete: press ⌫ first, then Enter. Hard to delete by accident.
-- Files go to Trash via Finder API, not rm
+- it does not require sudo
+- it respects normal user permissions and SIP
+- interactive deletion requires an extra confirmation sequence
+- deletions route through Trash/Finder behavior rather than direct permanent removal
 
-Code at `cmd/analyze/*.go`.
+Code lives under `cmd/analyze/*.go`.
 
-## Timeouts
+## Timeouts and Hang Resistance
 
-Network volume checks timeout after 5s (NFS/SMB/AFP can hang forever). mdfind searches get 10s. SQLite vacuum gets 20s, skipped if Mail/Safari/Messages is open. dyld cache rebuild gets 180s, skipped if done in the last 24h.
+`lib/core/timeout.sh` uses this fallback order:
 
-`brew_uninstall_cask()` treats exit code 124 as timeout failure, returns immediately.
+1. `gtimeout` / `timeout`
+2. a Perl helper with process-group cleanup
+3. a shell fallback
 
-`app_support_item_size_bytes` calculation leverages direct `stat -f%z` checks and uses `du` only for directories, combined with strict timeout protections to avoid process hangs.
+Current notable timeouts in security-relevant paths:
 
-Font cache rebuilding (`opt_font_cache_rebuild`) safely aborts if explicit browser processes (Safari, Chrome, Firefox, Arc, etc.) are detected, preventing GPU cache corruption and rendering bugs.
+- orphan/Spotlight `mdfind` checks: 2s
+- LaunchServices rebuild during uninstall: 10s / 15s bounded steps
+- Homebrew uninstall cask flow: 300s default, extended to 600s or 900s for large apps
+- Application Support sizing: direct file `stat`, bounded `du` for directories
 
-See `lib/core/timeout.sh:run_with_timeout()`.
+Additional safety behavior:
 
-## User Config
+- `brew_uninstall_cask()` treats exit code `124` as timeout failure and returns failure immediately
+- font cache rebuild is skipped while browsers are running
+- project-cache discovery and scans use strict timeouts to avoid whole-home stalls
 
-Put paths in `~/.config/mole/whitelist`, one per line:
+## User Configuration
+
+Protected paths can be added to `~/.config/mole/whitelist`, one path per line.
+
+Example:
 
 ```bash
-# exact matches only
 /Users/me/important-cache
 ~/Library/Application Support/MyApp
 ```
 
-These paths are protected from all operations.
+Exact path protection is preferred over pattern-style broad deletion rules.
 
-Run `mo clean --dry-run` or `mo optimize --dry-run` to preview what would happen without actually doing it.
+Use `--dry-run` before destructive operations when validating new cleanup behavior.
 
 ## Testing
 
-Security-sensitive cleanup paths are covered by BATS regression tests, including:
+There is no dedicated `tests/security.bats`. Security-relevant behavior is covered by targeted BATS suites, including:
 
 - `tests/clean_core.bats`
 - `tests/clean_user_core.bats`
 - `tests/clean_dev_caches.bats`
 - `tests/clean_system_maintenance.bats`
+- `tests/clean_apps.bats`
 - `tests/purge.bats`
 - `tests/core_safe_functions.bats`
+- `tests/optimize.bats`
 
-**System Memory Reports** computation uses bulk `find -exec stat` to avoid bash loop child-process limits on corrupted systems.
-`bin/clean.sh` dry-run export temp files rely on tracked temp lifecycle (`create_temp_file()` + trap cleanup) to avoid orphan temp artifacts.
-Background spinner logic interacts directly with `/dev/tty` and guarantees robust termination signals handling via trap mechanisms.
-
-Latest local verification for this release branch:
-
-- `bats tests/clean_core.bats` passed (12/12)
-- `bats tests/clean_user_core.bats` passed (13/13)
-- `bats tests/clean_dev_caches.bats` passed (8/8)
-- `bats tests/clean_system_maintenance.bats` passed (40/40)
-- `bats tests/purge.bats tests/core_safe_functions.bats` passed (67/67)
-
-Run tests:
+Local verification used for the current branch includes:
 
 ```bash
-bats tests/              # all
-bats tests/security.bats # security only
+bats tests/clean_core.bats tests/clean_user_core.bats tests/clean_dev_caches.bats tests/clean_system_maintenance.bats tests/purge.bats tests/core_safe_functions.bats tests/clean_apps.bats tests/optimize.bats
+bash -n lib/core/base.sh lib/clean/apps.sh tests/clean_apps.bats tests/optimize.bats
 ```
 
-CI runs shellcheck and go vet on every push.
+CI additionally runs shell and Go validation on push.
 
 ## Dependencies
 
-System binaries we use are all SIP protected: `plutil` (plist validation), `tmutil` (Time Machine), `dscacheutil` (cache rebuild), `diskutil` (volume info).
+Primary Go dependencies are pinned in `go.mod`, including:
 
-Go deps: bubbletea v0.23+, lipgloss v0.6+, gopsutil v3.22+, xxhash v2.2+. All MIT/BSD licensed. Versions are pinned, no CVEs. Binaries built via GitHub Actions.
+- `github.com/charmbracelet/bubbletea v1.3.10`
+- `github.com/charmbracelet/lipgloss v1.1.0`
+- `github.com/shirou/gopsutil/v4 v4.26.2`
+- `github.com/cespare/xxhash/v2 v2.3.0`
+
+System tooling relies mainly on Apple-provided binaries and standard macOS utilities such as:
+
+- `tmutil`
+- `diskutil`
+- `plutil`
+- `launchctl`
+- `osascript`
+- `find`
+- `stat`
+
+Dependency vulnerability status should be checked separately from this document.
 
 ## Limitations
 
-System cache cleanup needs sudo, first time you'll get a password prompt. Orphan files wait 60 days before cleanup, use `mo uninstall` to delete manually if you're in a hurry. No undo, gone is gone, use dry-run first. Only recognizes English names, localized app names might be missed, but falls back to bundle ID.
-
-Won't touch: documents, media files, password managers, keychains, configs under `/etc`, browser history/cookies, git repos.
+- Cleanup is destructive. There is no undo.
+- Generic orphan data waits 30 days before automatic cleanup.
+- Claude VM orphan cleanup waits 7 days before automatic cleanup.
+- Time Machine safety windows are hour-based, not day-based, and remain more conservative.
+- Localized app names may still be missed in some heuristic paths, though bundle IDs are preferred where available.
+- Users who want immediate removal of app data should use explicit uninstall flows rather than waiting for orphan cleanup.

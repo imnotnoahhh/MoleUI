@@ -98,6 +98,37 @@ setup() {
     [[ "$result" == "timeout_works" ]]
 }
 
+@test "run_with_timeout perl fallback stops TERM-ignoring commands" {
+    local fake_dir="$BATS_TEST_TMPDIR/timeout-bin"
+    mkdir -p "$fake_dir"
+    local fake_cmd="$fake_dir/hang.sh"
+
+    cat > "$fake_cmd" <<'EOF'
+#!/bin/bash
+trap "" TERM
+sleep 30
+EOF
+    chmod +x "$fake_cmd"
+
+    run /usr/bin/perl -e 'alarm 8; exec @ARGV' env FAKE_CMD="$fake_cmd" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/timeout.sh"
+MO_TIMEOUT_BIN=""
+MO_TIMEOUT_PERL_BIN="${MO_TIMEOUT_PERL_BIN:-$(command -v perl)}"
+SECONDS=0
+set +e
+run_with_timeout 1 "$FAKE_CMD"
+status=$?
+set -e
+echo "STATUS=$status ELAPSED=$SECONDS"
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"STATUS=124"* ]]
+    elapsed=$(printf '%s\n' "$output" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^ELAPSED=/) {split($i, kv, "="); print kv[2]}}' | tail -1)
+    [[ "$elapsed" =~ ^[0-9]+$ ]]
+    (( elapsed < 6 ))
+}
+
 @test "empty version string is handled gracefully" {
     result=$(bash -c '
         latest=""

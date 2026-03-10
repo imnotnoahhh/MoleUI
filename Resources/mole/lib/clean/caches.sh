@@ -1,6 +1,9 @@
 #!/bin/bash
 # Cache Cleanup Module
 set -euo pipefail
+
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/purge_shared.sh"
 # Preflight TCC prompts once to avoid mid-run interruptions.
 check_tcc_permissions() {
     [[ -t 1 ]] || return 0
@@ -88,154 +91,138 @@ clean_service_worker_cache() {
         fi
     fi
 }
-# Next.js/Python project caches with tight scan bounds and timeouts.
-clean_project_caches() {
-    stop_inline_spinner 2> /dev/null || true
-    # Fast pre-check before scanning the whole home dir.
-    local has_dev_projects=false
-    local -a common_dev_dirs=(
-        "$HOME/Code"
-        "$HOME/Projects"
-        "$HOME/workspace"
-        "$HOME/github"
-        "$HOME/dev"
-        "$HOME/work"
-        "$HOME/src"
-        "$HOME/repos"
-        "$HOME/Developer"
-        "$HOME/Development"
-        "$HOME/www"
-        "$HOME/golang"
-        "$HOME/go"
-        "$HOME/rust"
-        "$HOME/python"
-        "$HOME/ruby"
-        "$HOME/java"
-        "$HOME/dotnet"
-        "$HOME/node"
-    )
-    for dir in "${common_dev_dirs[@]}"; do
-        if [[ -d "$dir" ]]; then
-            has_dev_projects=true
-            break
+# Check whether a directory looks like a project container.
+project_cache_has_indicators() {
+    local dir="$1"
+    local max_depth="${2:-5}"
+    local indicator_timeout="${MOLE_PROJECT_CACHE_DISCOVERY_TIMEOUT:-2}"
+    [[ -d "$dir" ]] || return 1
+
+    local -a find_args=("$dir" "-maxdepth" "$max_depth" "(")
+    local first=true
+    local indicator
+    for indicator in "${MOLE_PURGE_PROJECT_INDICATORS[@]}"; do
+        if [[ "$first" == "true" ]]; then
+            first=false
+        else
+            find_args+=("-o")
+        fi
+        find_args+=("-name" "$indicator")
+    done
+    find_args+=(")" "-print" "-quit")
+
+    run_with_timeout "$indicator_timeout" find "${find_args[@]}" 2> /dev/null | grep -q .
+}
+
+# Discover candidate project roots without scanning the whole home directory.
+discover_project_cache_roots() {
+    local -a roots=()
+    local root
+
+    for root in "${MOLE_PURGE_DEFAULT_SEARCH_PATHS[@]}"; do
+        [[ -d "$root" ]] && roots+=("$root")
+    done
+
+    while IFS= read -r root; do
+        [[ -d "$root" ]] && roots+=("$root")
+    done < <(mole_purge_read_paths_config "$HOME/.config/mole/purge_paths")
+
+    local dir
+    local base
+    for dir in "$HOME"/*/; do
+        [[ -d "$dir" ]] || continue
+        dir="${dir%/}"
+        base=$(basename "$dir")
+
+        case "$base" in
+            .* | Library | Applications | Movies | Music | Pictures | Public)
+                continue
+                ;;
+        esac
+
+        if project_cache_has_indicators "$dir" 5; then
+            roots+=("$dir")
         fi
     done
-    # Fallback: look for project markers near $HOME.
-    if [[ "$has_dev_projects" == "false" ]]; then
-        local -a project_markers=(
-            "node_modules"
-            ".git"
-            "target"
-            "go.mod"
-            "Cargo.toml"
-            "package.json"
-            "pom.xml"
-            "build.gradle"
-        )
-        local spinner_active=false
-        if [[ -t 1 ]]; then
-            MOLE_SPINNER_PREFIX="  "
-            start_inline_spinner "Detecting dev projects..."
-            spinner_active=true
-        fi
-        for marker in "${project_markers[@]}"; do
-            if run_with_timeout 3 sh -c "find '$HOME' -maxdepth 2 -name '$marker' -not -path '*/Library/*' -not -path '*/.Trash/*' 2>/dev/null | head -1" | grep -q .; then
-                has_dev_projects=true
-                break
-            fi
-        done
-        if [[ "$spinner_active" == "true" ]]; then
-            stop_inline_spinner 2> /dev/null || true
-            # Extra clear to prevent spinner character remnants in terminal
-            [[ -t 1 ]] && printf "\r\033[2K" >&2 || true
-        fi
-        [[ "$has_dev_projects" == "false" ]] && return 0
+
+    [[ ${#roots[@]} -eq 0 ]] && return 0
+
+    printf '%s\n' "${roots[@]}" | LC_ALL=C sort -u
+}
+
+# Scan a project root for supported build caches while pruning heavy subtrees.
+scan_project_cache_root() {
+    local root="$1"
+    local output_file="$2"
+    local scan_timeout="${MOLE_PROJECT_CACHE_SCAN_TIMEOUT:-6}"
+    [[ -d "$root" ]] || return 0
+
+    local -a find_args=(
+        find -P "$root" -maxdepth 9 -mount
+        "(" -name "Library" -o -name ".Trash" -o -name "node_modules" -o -name ".git" -o -name ".svn" -o -name ".hg" -o -name ".venv" -o -name "venv" -o -name ".pnpm-store" -o -name ".fvm" -o -name "DerivedData" -o -name "Pods" ")"
+        -prune -o
+        -type d
+        "(" -name ".next" -o -name "__pycache__" -o -name ".dart_tool" ")"
+        -print
+    )
+
+    local status=0
+    run_with_timeout "$scan_timeout" "${find_args[@]}" >> "$output_file" 2> /dev/null || status=$?
+
+    if [[ $status -eq 124 ]]; then
+        debug_log "Project cache scan timed out: $root"
+    elif [[ $status -ne 0 ]]; then
+        debug_log "Project cache scan failed (${status}): $root"
     fi
+
+    return 0
+}
+
+# Next.js/Python/Flutter project caches scoped to discovered project roots.
+clean_project_caches() {
+    stop_inline_spinner 2> /dev/null || true
+
+    local matches_tmp_file
+    matches_tmp_file=$(create_temp_file)
+
+    local -a scan_roots=()
+    local root
+    while IFS= read -r root; do
+        [[ -n "$root" ]] && scan_roots+=("$root")
+    done < <(discover_project_cache_roots)
+
+    [[ ${#scan_roots[@]} -eq 0 ]] && return 0
+
     if [[ -t 1 ]]; then
         MOLE_SPINNER_PREFIX="  "
         start_inline_spinner "Searching project caches..."
     fi
-    local nextjs_tmp_file
-    nextjs_tmp_file=$(create_temp_file)
-    local pycache_tmp_file
-    pycache_tmp_file=$(create_temp_file)
-    local flutter_tmp_file
-    flutter_tmp_file=$(create_temp_file)
-    local find_timeout=30
-    # Parallel scans (Next.js and __pycache__).
-    # Note: -maxdepth must come before -name for BSD find compatibility
-    (
-        command find -P "$HOME" -maxdepth 3 -mount -type d -name ".next" \
-            -not -path "*/Library/*" \
-            -not -path "*/.Trash/*" \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.*" \
-            2> /dev/null || true
-    ) > "$nextjs_tmp_file" 2>&1 &
-    local next_pid=$!
-    (
-        command find -P "$HOME" -maxdepth 3 -mount -type d -name "__pycache__" \
-            -not -path "*/Library/*" \
-            -not -path "*/.Trash/*" \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.*" \
-            2> /dev/null || true
-    ) > "$pycache_tmp_file" 2>&1 &
-    local py_pid=$!
-    (
-        command find -P "$HOME" -maxdepth 5 -mount -type d -name ".dart_tool" \
-            -not -path "*/Library/*" \
-            -not -path "*/.Trash/*" \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.fvm/*" \
-            2> /dev/null || true
-    ) > "$flutter_tmp_file" 2>&1 &
-    local flutter_pid=$!
-    local elapsed=0
-    local check_interval=0.2 # Check every 200ms instead of 1s for smoother experience
-    while [[ $(echo "$elapsed < $find_timeout" | awk '{print ($1 < $2)}') -eq 1 ]]; do
-        if ! kill -0 $next_pid 2> /dev/null && ! kill -0 $py_pid 2> /dev/null && ! kill -0 $flutter_pid 2> /dev/null; then
-            break
-        fi
-        sleep $check_interval
-        elapsed=$(echo "$elapsed + $check_interval" | awk '{print $1 + $2}')
+
+    for root in "${scan_roots[@]}"; do
+        scan_project_cache_root "$root" "$matches_tmp_file"
     done
-    # Kill stuck scans after timeout.
-    for pid in $next_pid $py_pid $flutter_pid; do
-        if kill -0 "$pid" 2> /dev/null; then
-            kill -TERM "$pid" 2> /dev/null || true
-            local grace_period=0
-            while [[ $grace_period -lt 20 ]]; do
-                if ! kill -0 "$pid" 2> /dev/null; then
-                    break
-                fi
-                sleep 0.1
-                grace_period=$((grace_period + 1))
-            done
-            if kill -0 "$pid" 2> /dev/null; then
-                kill -KILL "$pid" 2> /dev/null || true
-            fi
-            wait "$pid" 2> /dev/null || true
-        else
-            wait "$pid" 2> /dev/null || true
-        fi
-    done
+
     if [[ -t 1 ]]; then
         stop_inline_spinner
     fi
-    while IFS= read -r next_dir; do
-        [[ -d "$next_dir/cache" ]] && safe_clean "$next_dir/cache"/* "Next.js build cache" || true
-    done < "$nextjs_tmp_file"
-    while IFS= read -r pycache; do
-        [[ -d "$pycache" ]] && safe_clean "$pycache"/* "Python bytecode cache" || true
-    done < "$pycache_tmp_file"
-    while IFS= read -r flutter_tool; do
-        if [[ -d "$flutter_tool" ]]; then
-            safe_clean "$flutter_tool" "Flutter build cache (.dart_tool)" || true
-            local build_dir="$(dirname "$flutter_tool")/build"
-            if [[ -d "$build_dir" ]]; then
-                safe_clean "$build_dir" "Flutter build cache (build/)" || true
-            fi
-        fi
-    done < "$flutter_tmp_file"
+
+    while IFS= read -r cache_dir; do
+        case "$(basename "$cache_dir")" in
+            ".next")
+                [[ -d "$cache_dir/cache" ]] && safe_clean "$cache_dir/cache"/* "Next.js build cache" || true
+                ;;
+            "__pycache__")
+                [[ -d "$cache_dir" ]] && safe_clean "$cache_dir"/* "Python bytecode cache" || true
+                ;;
+            ".dart_tool")
+                if [[ -d "$cache_dir" ]]; then
+                    safe_clean "$cache_dir" "Flutter build cache (.dart_tool)" || true
+                    local build_dir="$(dirname "$cache_dir")/build"
+                    if [[ -d "$build_dir" ]]; then
+                        safe_clean "$build_dir" "Flutter build cache (build/)" || true
+                    fi
+                fi
+                ;;
+        esac
+    done < <(LC_ALL=C sort -u "$matches_tmp_file" 2> /dev/null)
 }

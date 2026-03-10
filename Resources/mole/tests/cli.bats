@@ -89,6 +89,74 @@ EOF
 	[[ "$output" == *"Unknown uninstall option: --whitelist"* ]]
 }
 
+@test "show_main_menu hides update shortcut when no update notice is available" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+HOME="$(mktemp -d)"
+export HOME MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1
+source "$PROJECT_ROOT/mole"
+show_brand_banner() { printf 'banner\n'; }
+show_menu_option() { printf '%s' "$2"; }
+MAIN_MENU_BANNER=""
+MAIN_MENU_UPDATE_MESSAGE=""
+MAIN_MENU_SHOW_UPDATE=false
+show_main_menu 1 true
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"U Update"* ]]
+}
+
+@test "interactive_main_menu ignores U shortcut when update notice is hidden" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+HOME="$(mktemp -d)"
+export HOME MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1
+source "$PROJECT_ROOT/mole"
+show_brand_banner() { :; }
+show_main_menu() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+clear() { :; }
+update_mole() { echo "UPDATE_CALLED"; }
+state_file="$HOME/read_key_state"
+read_key() {
+    if [[ ! -f "$state_file" ]]; then
+        : > "$state_file"
+        echo "UPDATE"
+    else
+        echo "QUIT"
+    fi
+}
+interactive_main_menu
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"UPDATE_CALLED"* ]]
+}
+
+@test "interactive_main_menu accepts U shortcut when update notice is visible" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+HOME="$(mktemp -d)"
+export HOME MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1
+mkdir -p "$HOME/.cache/mole"
+printf 'update available\n' > "$HOME/.cache/mole/update_message"
+source "$PROJECT_ROOT/mole"
+show_brand_banner() { :; }
+show_main_menu() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+clear() { :; }
+update_mole() { echo "UPDATE_CALLED"; }
+read_key() { echo "UPDATE"; }
+interactive_main_menu
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"UPDATE_CALLED"* ]]
+}
+
 @test "touchid status reports current configuration" {
 	run env HOME="$HOME" "$PROJECT_ROOT/mole" touchid status
 	[ "$status" -eq 0 ]

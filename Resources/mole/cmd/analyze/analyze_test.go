@@ -91,6 +91,31 @@ func TestScanPathConcurrentBasic(t *testing.T) {
 	}
 }
 
+func TestPerformScanForJSONCountsTopLevelFiles(t *testing.T) {
+	root := t.TempDir()
+
+	rootFile := filepath.Join(root, "root.txt")
+	if err := os.WriteFile(rootFile, []byte("root-data"), 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested dir: %v", err)
+	}
+
+	nestedFile := filepath.Join(nested, "nested.txt")
+	if err := os.WriteFile(nestedFile, []byte("nested-data"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	result := performScanForJSON(root)
+
+	if result.TotalFiles != 2 {
+		t.Fatalf("expected 2 files in JSON output, got %d", result.TotalFiles)
+	}
+}
+
 func TestDeletePathWithProgress(t *testing.T) {
 	skipIfFinderUnavailable(t)
 
@@ -644,7 +669,7 @@ func TestCalculateDirSizeFastHighFanoutCompletes(t *testing.T) {
 
 	// Reproduce high fan-out nested directory pattern that previously risked semaphore deadlock.
 	const fanout = 256
-	for i := 0; i < fanout; i++ {
+	for i := range fanout {
 		nested := filepath.Join(root, fmt.Sprintf("dir-%03d", i), "nested")
 		if err := os.MkdirAll(nested, 0o755); err != nil {
 			t.Fatalf("create nested dir: %v", err)
