@@ -119,11 +119,13 @@ setup() {
 }
 
 @test "clean_project_caches completes without errors" {
-    mkdir -p "$HOME/projects/test-app/.next/cache"
-    mkdir -p "$HOME/projects/python-app/__pycache__"
+    mkdir -p "$HOME/Projects/test-app/.next/cache"
+    mkdir -p "$HOME/Projects/python-app/__pycache__"
 
-    touch "$HOME/projects/test-app/.next/cache/test.cache"
-    touch "$HOME/projects/python-app/__pycache__/module.pyc"
+    touch "$HOME/Projects/test-app/package.json"
+    touch "$HOME/Projects/python-app/pyproject.toml"
+    touch "$HOME/Projects/test-app/.next/cache/test.cache"
+    touch "$HOME/Projects/python-app/__pycache__/module.pyc"
 
     run bash -c "
         export DRY_RUN=true
@@ -133,39 +135,144 @@ setup() {
     "
     [ "$status" -eq 0 ]
 
-    rm -rf "$HOME/projects"
+    rm -rf "$HOME/Projects"
 }
 
-@test "clean_project_caches handles timeout gracefully" {
-    if ! command -v gtimeout >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
-        skip "gtimeout/timeout not available"
+@test "clean_project_caches scans configured roots instead of HOME" {
+    mkdir -p "$HOME/.config/mole"
+    mkdir -p "$HOME/CustomProjects/app/.next/cache"
+    touch "$HOME/CustomProjects/app/package.json"
+
+    local fake_bin
+    fake_bin="$(mktemp -d "$HOME/find-bin.XXXXXX")"
+    local find_log="$HOME/find.log"
+
+    cat > "$fake_bin/find" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$find_log"
+root=""
+prev=""
+for arg in "\$@"; do
+    if [[ "\$prev" == "-P" ]]; then
+        root="\$arg"
+        break
     fi
+    prev="\$arg"
+done
+if [[ "\$root" == "$HOME/CustomProjects" ]]; then
+    printf '%s\n' "$HOME/CustomProjects/app/.next"
+fi
+EOF
+    chmod +x "$fake_bin/find"
 
-    mkdir -p "$HOME/test-project/.next"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_bin:$PATH" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+printf '%s\n' "$HOME/CustomProjects" > "$HOME/.config/mole/purge_paths"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+run_with_timeout() { shift; "$@"; }
+safe_clean() { echo "$2|$1"; }
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Next.js build cache"* ]]
+    grep -q -- "-P $HOME/CustomProjects " "$find_log"
+    run grep -q -- "-P $HOME " "$find_log"
+    [ "$status" -eq 1 ]
 
-    function find() {
-        sleep 2  # Simulate slow find
-        echo "$HOME/test-project/.next"
-    }
-    export -f find
+    rm -rf "$HOME/CustomProjects" "$HOME/.config/mole" "$fake_bin" "$find_log"
+}
 
-    timeout_cmd="timeout"
-    command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
+@test "clean_project_caches auto-detects top-level project containers" {
+    mkdir -p "$HOME/go/src/demo/.next/cache"
+    touch "$HOME/go/src/demo/go.mod"
+    touch "$HOME/go/src/demo/.next/cache/test.cache"
 
-    run $timeout_cmd 15 bash -c "
-        source '$PROJECT_ROOT/lib/core/common.sh'
-        source '$PROJECT_ROOT/lib/clean/caches.sh'
-        clean_project_caches
-    "
-    [ "$status" -eq 0 ] || [ "$status" -eq 124 ]
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+safe_clean() { echo "$2|$1"; }
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Next.js build cache|$HOME/go/src/demo/.next/cache/test.cache"* ]]
 
-    rm -rf "$HOME/test-project"
+    rm -rf "$HOME/go"
+}
+
+@test "clean_project_caches auto-detects nested GOPATH-style project containers" {
+    mkdir -p "$HOME/go/src/github.com/example/demo/.next/cache"
+    touch "$HOME/go/src/github.com/example/demo/go.mod"
+    touch "$HOME/go/src/github.com/example/demo/.next/cache/test.cache"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+safe_clean() { echo "$2|$1"; }
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Next.js build cache|$HOME/go/src/github.com/example/demo/.next/cache/test.cache"* ]]
+
+    rm -rf "$HOME/go"
+}
+
+@test "clean_project_caches skips stalled root scans" {
+    mkdir -p "$HOME/.config/mole"
+    mkdir -p "$HOME/SlowProjects/app"
+    printf '%s\n' "$HOME/SlowProjects" > "$HOME/.config/mole/purge_paths"
+
+    local fake_bin
+    fake_bin="$(mktemp -d "$HOME/find-timeout.XXXXXX")"
+
+    cat > "$fake_bin/find" <<EOF
+#!/bin/bash
+root=""
+prev=""
+for arg in "\$@"; do
+    if [[ "\$prev" == "-P" ]]; then
+        root="\$arg"
+        break
+    fi
+    prev="\$arg"
+done
+if [[ "\$root" == "$HOME/SlowProjects" ]]; then
+    trap "" TERM
+    sleep 30
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$fake_bin/find"
+
+    run /usr/bin/perl -e 'alarm 8; exec @ARGV' env -i HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_bin:$PATH:/usr/bin:/bin:/usr/sbin:/sbin" TERM="${TERM:-xterm-256color}" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+MO_TIMEOUT_BIN=""
+MO_TIMEOUT_PERL_BIN="${MO_TIMEOUT_PERL_BIN:-$(command -v perl)}"
+export MOLE_PROJECT_CACHE_DISCOVERY_TIMEOUT=0.5
+export MOLE_PROJECT_CACHE_SCAN_TIMEOUT=0.5
+SECONDS=0
+clean_project_caches
+echo "ELAPSED=$SECONDS"
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ELAPSED="* ]]
+    elapsed=$(printf '%s\n' "$output" | awk -F= '/ELAPSED=/{print $2}' | tail -1)
+    [[ "$elapsed" =~ ^[0-9]+$ ]]
+    (( elapsed < 5 ))
+
+    rm -rf "$HOME/.config/mole" "$HOME/SlowProjects" "$fake_bin"
 }
 
 @test "clean_project_caches excludes Library and Trash directories" {
     mkdir -p "$HOME/Library/.next/cache"
     mkdir -p "$HOME/.Trash/.next/cache"
-    mkdir -p "$HOME/projects/.next/cache"
+    mkdir -p "$HOME/Projects/app/.next/cache"
+    touch "$HOME/Projects/app/package.json"
 
     run bash -c "
         export DRY_RUN=true
@@ -175,5 +282,5 @@ setup() {
     "
     [ "$status" -eq 0 ]
 
-    rm -rf "$HOME/projects"
+    rm -rf "$HOME/Projects"
 }

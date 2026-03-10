@@ -68,7 +68,7 @@ get_lsregister_path() {
 # Global Configuration Constants
 # ============================================================================
 readonly MOLE_TEMP_FILE_AGE_DAYS=7       # Temp file retention (days)
-readonly MOLE_ORPHAN_AGE_DAYS=60         # Orphaned data retention (days)
+readonly MOLE_ORPHAN_AGE_DAYS=30         # Orphaned data retention (days)
 readonly MOLE_MAX_PARALLEL_JOBS=15       # Parallel job limit
 readonly MOLE_MAIL_DOWNLOADS_MIN_KB=5120 # Mail attachment size threshold
 readonly MOLE_MAIL_AGE_DAYS=30           # Mail attachment retention (days)
@@ -191,11 +191,17 @@ is_sip_enabled() {
 # Detect CPU architecture
 # Returns: "Apple Silicon" or "Intel"
 detect_architecture() {
-    if [[ "$(uname -m)" == "arm64" ]]; then
-        echo "Apple Silicon"
-    else
-        echo "Intel"
+    if [[ -n "${MOLE_ARCH_CACHE:-}" ]]; then
+        echo "$MOLE_ARCH_CACHE"
+        return 0
     fi
+
+    if [[ "$(uname -m)" == "arm64" ]]; then
+        export MOLE_ARCH_CACHE="Apple Silicon"
+    else
+        export MOLE_ARCH_CACHE="Intel"
+    fi
+    echo "$MOLE_ARCH_CACHE"
 }
 
 # Get free disk space on root volume
@@ -212,6 +218,11 @@ get_free_space() {
 # Get Darwin kernel major version (e.g., 24 for 24.2.0)
 # Returns 999 on failure to adopt conservative behavior (assume modern system)
 get_darwin_major() {
+    if [[ -n "${MOLE_DARWIN_MAJOR_CACHE:-}" ]]; then
+        echo "$MOLE_DARWIN_MAJOR_CACHE"
+        return 0
+    fi
+
     local kernel
     kernel=$(uname -r 2> /dev/null || true)
     local major="${kernel%%.*}"
@@ -219,6 +230,7 @@ get_darwin_major() {
         # Return high number to skip potentially dangerous operations on unknown systems
         major=999
     fi
+    export MOLE_DARWIN_MAJOR_CACHE="$major"
     echo "$major"
 }
 
@@ -233,8 +245,10 @@ is_darwin_ge() {
 # Get optimal parallel jobs for operation type (scan|io|compute|default)
 get_optimal_parallel_jobs() {
     local operation_type="${1:-default}"
-    local cpu_cores
-    cpu_cores=$(sysctl -n hw.ncpu 2> /dev/null || echo 4)
+    if [[ -z "${MOLE_CPU_CORES_CACHE:-}" ]]; then
+        export MOLE_CPU_CORES_CACHE=$(sysctl -n hw.ncpu 2> /dev/null || echo 4)
+    fi
+    local cpu_cores="$MOLE_CPU_CORES_CACHE"
     case "$operation_type" in
         scan | io)
             echo $((cpu_cores * 2))
@@ -318,7 +332,7 @@ get_user_home() {
     fi
 
     if [[ -z "$home" ]]; then
-        home=$(eval echo "~$user" 2> /dev/null || true)
+        home=$(id -P "$user" 2> /dev/null | cut -d: -f9 || true)
     fi
 
     if [[ "$home" == "~"* ]]; then
@@ -586,7 +600,7 @@ mktemp_file() {
 
 # Cleanup all tracked temp files and directories
 cleanup_temp_files() {
-    stop_inline_spinner 2> /dev/null || true
+    stop_inline_spinner || true
     local file
     if [[ ${#MOLE_TEMP_FILES[@]} -gt 0 ]]; then
         for file in "${MOLE_TEMP_FILES[@]}"; do
@@ -641,7 +655,7 @@ note_activity() {
 # Usage: start_section_spinner "message"
 start_section_spinner() {
     local message="${1:-Scanning...}"
-    stop_inline_spinner 2> /dev/null || true
+    stop_inline_spinner || true
     if [[ -t 1 ]]; then
         MOLE_SPINNER_PREFIX="  " start_inline_spinner "$message"
     fi
@@ -651,7 +665,7 @@ start_section_spinner() {
 # Usage: stop_section_spinner
 stop_section_spinner() {
     # Always try to stop spinner (function handles empty PID gracefully)
-    stop_inline_spinner 2> /dev/null || true
+    stop_inline_spinner || true
     # Always clear line to handle edge cases where spinner output remains
     # (e.g., spinner was stopped elsewhere but line not cleared)
     if [[ -t 1 ]]; then
@@ -732,18 +746,30 @@ update_progress_if_needed() {
 # Usage: is_ansi_supported
 # Returns: 0 if supported, 1 if not
 is_ansi_supported() {
+    if [[ -n "${MOLE_ANSI_SUPPORTED_CACHE:-}" ]]; then
+        return "$MOLE_ANSI_SUPPORTED_CACHE"
+    fi
+
     # Check if running in interactive terminal
-    [[ -t 1 ]] || return 1
+    if ! [[ -t 1 ]]; then
+        export MOLE_ANSI_SUPPORTED_CACHE=1
+        return 1
+    fi
 
     # Check TERM variable
-    [[ -n "${TERM:-}" ]] || return 1
+    if [[ -z "${TERM:-}" ]]; then
+        export MOLE_ANSI_SUPPORTED_CACHE=1
+        return 1
+    fi
 
     # Check for known ANSI-compatible terminals
     case "$TERM" in
         xterm* | vt100 | vt220 | screen* | tmux* | ansi | linux | rxvt* | konsole*)
+            export MOLE_ANSI_SUPPORTED_CACHE=0
             return 0
             ;;
         dumb | unknown)
+            export MOLE_ANSI_SUPPORTED_CACHE=1
             return 1
             ;;
         *)
@@ -751,8 +777,12 @@ is_ansi_supported() {
             if command -v tput > /dev/null 2>&1; then
                 # Test if terminal supports colors (good proxy for ANSI support)
                 local colors=$(tput colors 2> /dev/null || echo "0")
-                [[ "$colors" -ge 8 ]] && return 0
+                if [[ "$colors" -ge 8 ]]; then
+                    export MOLE_ANSI_SUPPORTED_CACHE=0
+                    return 0
+                fi
             fi
+            export MOLE_ANSI_SUPPORTED_CACHE=1
             return 1
             ;;
     esac
