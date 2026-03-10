@@ -29,9 +29,14 @@ jobs:
 
       - name: Get latest Mole release
         id: latest_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=$(curl -s https://api.github.com/repos/tw93/Mole/releases/latest | jq -r '.tag_name')
-          # Store raw tag for download URL
+          TAG=$(gh api repos/tw93/Mole/releases/latest --jq '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Failed to fetch latest release tag"
+            exit 1
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           # Strip v/V prefix for version comparison
           VERSION="${TAG#v}"
@@ -54,12 +59,9 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true'
         run: |
           TAG="${{ steps.latest_release.outputs.tag }}"
-          # Download source tarball from GitHub release tag
           curl -fsSL "https://github.com/tw93/Mole/archive/refs/tags/${TAG}.tar.gz" -o /tmp/mole-source.tar.gz
-          # Extract to temp directory
           mkdir -p /tmp/mole-source
           tar -xzf /tmp/mole-source.tar.gz -C /tmp/mole-source --strip-components=1
-          # Replace Resources/mole with new source (preserve .git-ignored items)
           rm -rf Resources/mole
           cp -R /tmp/mole-source Resources/mole
 
@@ -73,14 +75,11 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true'
         working-directory: Resources/mole
         run: |
-          # Build universal (fat) binaries for both Intel and Apple Silicon
           make release-amd64
           make release-arm64
           lipo -create -output bin/status-go bin/status-darwin-amd64 bin/status-darwin-arm64
           lipo -create -output bin/analyze-go bin/analyze-darwin-amd64 bin/analyze-darwin-arm64
-          # Clean up arch-specific binaries
           rm -f bin/*-darwin-amd64 bin/*-darwin-arm64
-          # Verify universal binaries
           file bin/status-go bin/analyze-go
 
       - name: Compatibility check
@@ -89,7 +88,6 @@ jobs:
         run: |
           ERRORS=""
 
-          # 1. Required files exist
           for f in \
             Resources/mole/mole \
             Resources/mole/bin/status-go \
@@ -104,7 +102,6 @@ jobs:
             fi
           done
 
-          # 2. Required lib directories exist
           for d in \
             Resources/mole/lib/core \
             Resources/mole/lib/clean \
@@ -115,14 +112,15 @@ jobs:
             fi
           done
 
-          # 3. Go binaries are executable
           for bin in Resources/mole/bin/status-go Resources/mole/bin/analyze-go; do
             if [ ! -x "$bin" ]; then
               ERRORS="$ERRORS\n- Binary not executable: $bin"
             fi
+            if ! file "$bin" | grep -q "Mach-O"; then
+              ERRORS="$ERRORS\n- Invalid binary (not Mach-O): $bin"
+            fi
           done
 
-          # 4. Shell scripts are executable
           for script in \
             Resources/mole/bin/clean.sh \
             Resources/mole/bin/optimize.sh \
@@ -131,13 +129,6 @@ jobs:
             Resources/mole/bin/uninstall.sh; do
             if [ -f "$script" ] && [ ! -x "$script" ]; then
               ERRORS="$ERRORS\n- Script not executable: $script"
-            fi
-          done
-
-          # 5. Verify Go binaries are valid Mach-O (not corrupted)
-          for bin in Resources/mole/bin/status-go Resources/mole/bin/analyze-go; do
-            if ! file "$bin" | grep -q "Mach-O"; then
-              ERRORS="$ERRORS\n- Invalid binary (not Mach-O): $bin"
             fi
           done
 
@@ -154,31 +145,19 @@ jobs:
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
         id: version_update
         run: |
-          # Update Mole CLI version files
           VERSION="${{ steps.latest_release.outputs.version }}"
           echo "$VERSION" > .mole-cli-version
           echo "$VERSION" > MoleUI/.mole-cli-version
 
-          # Read current MoleUI version from project.pbxproj
           CURRENT_VERSION=$(grep "MARKETING_VERSION = " MoleUI.xcodeproj/project.pbxproj | head -1 | sed 's/.*MARKETING_VERSION = \(.*\);/\1/')
-          echo "Current MoleUI version: $CURRENT_VERSION"
-
-          # Parse version components
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-
-          # Increment patch version
-          NEW_PATCH=$((PATCH + 1))
-          NEW_MOLEUI_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-
-          # Update MARKETING_VERSION in project.pbxproj
+          NEW_MOLEUI_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $NEW_MOLEUI_VERSION/" MoleUI.xcodeproj/project.pbxproj
-
           echo "Updated MoleUI version: $CURRENT_VERSION → $NEW_MOLEUI_VERSION"
           echo "moleui_version=$NEW_MOLEUI_VERSION" >> $GITHUB_OUTPUT
 
       - name: Create PR (compatible)
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
-        id: create_pr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -198,50 +177,9 @@ jobs:
             - ✅ Go binaries are valid universal Mach-O executables
             - ✅ Shell scripts are executable
 
-            **Note:** MoleUI uses a native Swift implementation for system monitoring instead of calling `status-go` due to TTY dependency issues. See [NATIVE_IMPLEMENTATION.md](https://github.com/imnotnoahhh/MoleUI/blob/main/NATIVE_IMPLEMENTATION.md) for details.
-
             **Upstream Release Notes:**
             https://github.com/tw93/Mole/releases/tag/${{ steps.latest_release.outputs.tag }}
           labels: dependencies,automated
-
-      - name: Auto-merge PR
-        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true' && steps.create_pr.outputs.pull-request-number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUMBER="${{ steps.create_pr.outputs.pull-request-number }}"
-
-          # Wait for CI checks to complete
-          echo "Waiting for CI checks on PR #$PR_NUMBER..."
-          gh pr checks "$PR_NUMBER" --watch --interval 30
-
-          # Merge PR
-          gh pr merge "$PR_NUMBER" --squash --auto --delete-branch
-          echo "PR #$PR_NUMBER merged successfully"
-
-      - name: Create release tag
-        if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Wait a moment for merge to complete
-          sleep 10
-
-          # Pull latest changes
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull origin main
-
-          # Create and push tag with MoleUI version
-          TAG_VERSION="v${{ steps.version_update.outputs.moleui_version }}"
-          git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION
-
-          MoleUI version: ${{ steps.version_update.outputs.moleui_version }}
-          Bundled Mole CLI: ${{ steps.latest_release.outputs.version }}
-          Auto-updated from upstream Mole CLI release"
-          git push origin "$TAG_VERSION"
-
-          echo "Created and pushed tag $TAG_VERSION"
 
       - name: Create Issue (breaking)
         if: steps.check_update.outputs.update_needed == 'true' && steps.compat.outputs.compatible == 'false'
