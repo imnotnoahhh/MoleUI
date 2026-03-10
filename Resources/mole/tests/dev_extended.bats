@@ -136,6 +136,24 @@ EOF
     [[ "$output" != *"NDK versions"* ]]
 }
 
+@test "clean_xcode_device_support handles empty directories under nounset" {
+    local ds_dir="$HOME/EmptyDeviceSupport"
+    mkdir -p "$ds_dir"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { :; }
+clean_xcode_device_support "$HOME/EmptyDeviceSupport" "iOS DeviceSupport"
+echo "survived"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"survived"* ]]
+}
+
 @test "clean_xcode_documentation_cache keeps newest DeveloperDocumentation index" {
     local doc_root="$HOME/DocumentationCache"
     mkdir -p "$doc_root"

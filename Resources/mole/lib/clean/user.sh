@@ -752,6 +752,23 @@ clean_virtualization_tools() {
 
 # Estimate item size for Application Support cleanup.
 # Files use stat; directories use du with timeout to avoid long blocking scans.
+app_support_entry_count_capped() {
+    local dir="$1"
+    local maxdepth="${2:-1}"
+    local cap="${3:-101}"
+    local count=0
+
+    while IFS= read -r -d '' _entry; do
+        count=$((count + 1))
+        if ((count >= cap)); then
+            break
+        fi
+    done < <(command find "$dir" -mindepth 1 -maxdepth "$maxdepth" -print0 2> /dev/null)
+
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    printf '%s\n' "$count"
+}
+
 app_support_item_size_bytes() {
     local item="$1"
     local timeout_seconds="${2:-0.4}"
@@ -768,7 +785,7 @@ app_support_item_size_bytes() {
         # Fast path: if directory has too many items, skip detailed size calculation
         # to avoid hanging on deep directories (e.g., node_modules, .git)
         local item_count
-        item_count=$(command find "$item" -maxdepth 2 -print0 2> /dev/null | tr -d '\0' | wc -c)
+        item_count=$(app_support_entry_count_capped "$item" 2 10001)
         if [[ "$item_count" -gt 10000 ]]; then
             # Return 1 to signal "too many items, size unknown"
             return 1
@@ -859,7 +876,7 @@ clean_application_support_logs() {
             if [[ -d "$candidate" ]]; then
                 # Quick count check - skip if too many items to avoid hanging
                 local quick_count
-                quick_count=$(command find "$candidate" -mindepth 1 -maxdepth 1 -printf '1\n' 2> /dev/null | wc -l | tr -d ' ')
+                quick_count=$(app_support_entry_count_capped "$candidate" 1 101)
                 if [[ "$quick_count" -gt 100 ]]; then
                     # Too many items - use bulk removal instead of item-by-item
                     local app_label="$app_name"
@@ -935,7 +952,7 @@ clean_application_support_logs() {
             if [[ -d "$candidate" ]]; then
                 # Quick count check - skip if too many items
                 local quick_count
-                quick_count=$(command find "$candidate" -mindepth 1 -maxdepth 1 -printf '1\n' 2> /dev/null | wc -l | tr -d ' ')
+                quick_count=$(app_support_entry_count_capped "$candidate" 1 101)
                 if [[ "$quick_count" -gt 100 ]]; then
                     local container_label="$container"
                     if [[ ${#container_label} -gt 24 ]]; then

@@ -181,3 +181,21 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *"Unknown action"* ]]
 }
+
+@test "opt_launch_services_rebuild handles missing lsregister without exiting" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+get_lsregister_path() {
+    echo ""
+    return 0
+}
+opt_launch_services_rebuild
+echo "survived"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"lsregister not found"* ]]
+    [[ "$output" == *"survived"* ]]
+}
