@@ -165,7 +165,7 @@ struct UninstallView: View {
                 .toggleStyle(.checkbox)
                 .disabled(wasUninstalled)
 
-                Image(nsImage: app.icon)
+                Image(nsImage: scanService.icon(for: app))
                     .resizable()
                     .frame(width: 32, height: 32)
 
