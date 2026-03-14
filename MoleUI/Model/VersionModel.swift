@@ -10,7 +10,11 @@ enum MoleVersion {
 @Observable @MainActor
 final class VersionModel {
     private struct ReleaseResponse: Decodable {
-        let tag_name: String
+        let tagName: String
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+        }
     }
 
     var currentVersion: String?
@@ -49,7 +53,7 @@ final class VersionModel {
             }
 
             let release = try JSONDecoder().decode(ReleaseResponse.self, from: data)
-            latestVersion = normalizeVersion(release.tag_name)
+            latestVersion = normalizeVersion(release.tagName)
         } catch {
             latestVersion = nil
             updateError = error.localizedDescription
