@@ -165,7 +165,7 @@ struct DashboardView: View {
         Group {
             if let snap = service.snapshot {
                 ScrollView {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 16) {
                         headerBar(snap)
                         MoleAnimationView()
                         equalHeightRow {
@@ -194,8 +194,7 @@ struct DashboardView: View {
                     description: Text(error)
                 )
             } else {
-                ProgressView("Loading system metrics...")
-                    .controlSize(.regular)
+                MoleLoadingState(title: "Loading system metrics...")
             }
         }
         .task {
@@ -222,25 +221,28 @@ struct DashboardView: View {
     }
 
     private func headerBar(_ snap: MetricsSnapshot) -> some View {
-        GroupBox {
-            HStack(spacing: 8) {
-                Text("Status")
-                    .fontWeight(.bold)
-                Text("Health")
-                    .foregroundStyle(.secondary)
-                Text("\(snap.healthScore)")
-                    .fontWeight(.bold)
-                    .foregroundStyle(snap.healthScore >= 75 ? .green : snap.healthScore >= 60 ? .yellow : .red)
+        let hw = snap.hardware
 
-                Spacer()
-
-                let hw = snap.hardware
-                Text("\(hw.model) · \(hw.cpuModel) · \(hw.totalRAM)/\(hw.diskSize) · \(hw.osVersion) · up \(snap.uptime)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        return MoleHeroPanel(
+            eyebrow: "Monitor",
+            title: "Status",
+            subtitle: "\(hw.model) · \(hw.cpuModel) · \(hw.totalRAM)/\(hw.diskSize) · \(hw.osVersion)",
+            symbol: "waveform.path.ecg"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
+                MoleMetricBadge(
+                    title: "Health",
+                    value: "\(snap.healthScore)",
+                    systemImage: "heart.circle.fill",
+                    tint: snap.healthScore >= 75 ? .green : snap.healthScore >= 60 ? .orange : .red
+                )
+                MoleMetricBadge(
+                    title: "Uptime",
+                    value: snap.uptime,
+                    systemImage: "clock.arrow.circlepath",
+                    tint: MoleTheme.sky
+                )
             }
-            .padding(.vertical, 2)
         }
     }
 

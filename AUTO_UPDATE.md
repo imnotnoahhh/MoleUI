@@ -1,16 +1,25 @@
 # Auto-Update System
 
-MoleUI implements a complete auto-update workflow that automatically detects, validates compatibility, merges updates, and releases new versions when upstream Mole CLI releases updates.
+MoleUI vendors upstream Mole CLI into `Resources/mole` and uses GitHub Actions to detect new upstream releases, rebuild the bundled Go binaries, run compatibility checks, and then either open a PR or raise a breaking-change issue.
+
+This workflow **does not auto-merge PRs or create release tags anymore**. Release packaging stays in the separate [`.github/workflows/release.yml`](.github/workflows/release.yml) workflow and still requires a tag push or manual trigger.
 
 ## Workflow
 
 ```
-Mole CLI Update
+Upstream Mole CLI Release
     ↓
-Compatibility Check (Strict)
+Vendor Fresh Resources/mole
     ↓
-    ├─ Compatible → Create PR → CI Checks → Auto-merge → Create Tag → Build DMG
-    └─ Incompatible → Create Issue (Manual intervention required)
+Rebuild status-go / analyze-go
+    ↓
+Compatibility Check
+    ↓
+    ├─ Compatible → Update versions → Create PR → Normal repo CI → Maintainer merge
+    └─ Incompatible → Create Issue for manual adaptation
+
+After merge:
+    Manual tag or workflow_dispatch → release.yml → signed/notarized DMG
 ```
 
 ## 1. Automatic Update Detection
@@ -24,9 +33,9 @@ Compatibility Check (Strict)
 2. Fetch latest version from `https://api.github.com/repos/tw93/Mole/releases/latest`
 3. Compare versions to determine if update is needed
 
-## 2. Compatibility Checks (Strict)
+## 2. Compatibility Checks
 
-When a new version is detected, the system performs strict compatibility validation:
+When a new version is detected, the workflow validates both the bundled files and the GUI-relevant entry points that MoleUI currently depends on.
 
 ### 2.1 File Existence Check
 
@@ -42,20 +51,7 @@ Resources/mole/bin/installer.sh        # Installer script
 Resources/mole/bin/uninstall.sh        # Uninstall script
 ```
 
-### 2.2 Command Execution Check
-
-Verifies all subcommands work correctly:
-```bash
-mole version        # Version info
-mole status --help  # System monitoring help
-mole clean --help   # Cleanup help
-mole optimize --help
-mole purge --help
-mole installer --help
-mole uninstall --help
-```
-
-### 2.3 Script Executable Check
+### 2.2 Script Executable Check
 
 Verifies all shell scripts have executable permissions:
 ```bash
@@ -66,15 +62,36 @@ Resources/mole/bin/installer.sh
 Resources/mole/bin/uninstall.sh
 ```
 
-### 2.4 JSON Smoke Validation
+### 2.3 JSON Smoke Validation
 
-Validates that Mole JSON commands execute successfully in GUI-relevant paths:
+Validates the structured outputs that MoleUI currently decodes directly:
 ```bash
 mole status --json
-mole analyze --json "$HOME"
+mole analyze --json "$SMOKE_HOME"
+bash Resources/mole/lib/check/health_json.sh
 ```
 
-## 3. Auto-merge and Release
+### 2.4 Dry-Run Smoke Validation
+
+Validates the higher-risk CLI flows that the GUI still delegates to upstream Mole:
+
+```bash
+mole clean --dry-run
+mole optimize --dry-run
+mole purge --dry-run
+mole installer --dry-run
+mole uninstall --dry-run
+```
+
+These dry-run checks run against an isolated temporary home directory with:
+- standard folders like `Desktop`, `Documents`, and `Downloads`
+- a sample installer file in `Downloads`
+- a minimal `Projects/demo/node_modules` tree
+- a generated `~/.config/mole/purge_paths`
+
+That keeps the checks deterministic and avoids relying on whatever happens to be in the GitHub runner's real home directory.
+
+## 3. PR and Release Flow
 
 ### 3.1 Compatible Update Flow
 
@@ -99,37 +116,29 @@ If compatibility checks pass:
      - Compatibility check results
      - Upstream release notes link
 
-3. **Wait for CI Checks**
-   ```bash
-   gh pr checks {PR_NUMBER} --watch --interval 30
-   ```
-
-   CI checks include:
-   - Code Quality (SwiftFormat + SwiftLint)
-   - Build & Test (compilation + unit tests)
+3. **Wait for Normal Repository CI**
+   The PR then goes through the standard [`.github/workflows/ci.yml`](.github/workflows/ci.yml) checks:
+   - Code Quality
+   - Build & Test
    - Security Scan
 
-4. **Auto-merge**
-   ```bash
-   gh pr merge {PR_NUMBER} --squash --auto --delete-branch
-   ```
+4. **Maintainer Review and Merge**
+   The current workflow stops at PR creation. A maintainer still decides whether to merge.
 
-5. **Create Release Tag** *(only if auto-merge succeeds)*
+5. **Optional Release Tag**
+   After merge, create a tag manually if you want to ship a DMG immediately:
    ```bash
-   # Tag creation is gated on steps.auto_merge.outputs.merged == 'true'
-   # ensuring no tag is pushed if CI checks fail or branch protection blocks the merge
-   git tag -a "v{moleui_version}" -m "Release v{moleui_version}
-
-   MoleUI version: {moleui_version}
-   Bundled Mole CLI: {cli_version}
-   Auto-updated from upstream Mole CLI release"
+   git tag -a "v{moleui_version}" -m "Release v{moleui_version}"
    git push origin "v{moleui_version}"
    ```
 
-6. **Trigger Release Workflow**
-   - Tag push automatically triggers `.github/workflows/release.yml`
-   - Build, sign, notarize, create DMG
-   - Upload to GitHub Releases
+6. **Release Workflow**
+   Tag push triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+   - archives the app
+   - bundles `Resources/mole`
+   - signs nested binaries and the app
+   - notarizes and staples the app
+   - creates and uploads the DMG
 
 ### 3.2 Incompatible Update Flow
 
@@ -268,9 +277,26 @@ sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $NEW_MOLEUI_VERSION/"
   MoleUI.xcodeproj/project.pbxproj
 
 # 6. Run compatibility checks
+SMOKE_HOME="$(mktemp -d /tmp/mole-smoke-home.XXXXXX)"
+mkdir -p \
+  "$SMOKE_HOME/Desktop" \
+  "$SMOKE_HOME/Documents" \
+  "$SMOKE_HOME/Downloads" \
+  "$SMOKE_HOME/Projects/demo/node_modules" \
+  "$SMOKE_HOME/.config/mole"
+printf '{}' > "$SMOKE_HOME/Projects/demo/package.json"
+: > "$SMOKE_HOME/Downloads/sample-installer.dmg"
+printf '%s\n' "$SMOKE_HOME/Projects" > "$SMOKE_HOME/.config/mole/purge_paths"
+
 bash Resources/mole/mole version
-bash Resources/mole/mole clean --help
-# ... other commands
+bash Resources/mole/mole status --json | python3 -m json.tool > /dev/null
+bash Resources/mole/mole analyze --json "$SMOKE_HOME" | python3 -m json.tool > /dev/null
+bash Resources/mole/lib/check/health_json.sh | python3 -m json.tool > /dev/null
+env HOME="$SMOKE_HOME" TERM=dumb MOLE_TEST_MODE=1 MOLE_DRY_RUN=1 DRY_RUN=true bash Resources/mole/mole clean --dry-run > /dev/null
+env HOME="$SMOKE_HOME" TERM=dumb MOLE_TEST_MODE=1 bash Resources/mole/mole optimize --dry-run > /dev/null
+env HOME="$SMOKE_HOME" TERM=dumb MOLE_TEST_MODE=1 bash Resources/mole/mole purge --dry-run > /dev/null
+env HOME="$SMOKE_HOME" TERM=dumb MOLE_TEST_MODE=1 bash Resources/mole/mole installer --dry-run > /dev/null
+env HOME="$SMOKE_HOME" TERM=dumb MOLE_TEST_MODE=1 bash Resources/mole/mole uninstall --dry-run > /dev/null
 
 # 7. Commit and create PR
 git checkout -b manual-update-mole-$NEW_CLI_VERSION
@@ -312,28 +338,28 @@ gh pr create --title "Update Mole CLI to $NEW_CLI_VERSION (MoleUI $NEW_MOLEUI_VE
 - Compilation errors: Check if new version introduces API changes
 - Test failures: Check if unit tests need updates
 
-### 7.4 Auto-merge Failure
+### 7.4 PR Is Open But Not Released Yet
 
-**Symptom:** PR created successfully but not auto-merged
+**Symptom:** PR exists and CI is green, but no DMG release was created
 
-**Possible Causes:**
-- CI checks not passing
-- Branch protection rules blocking auto-merge
-- GitHub Token insufficient permissions
+**Expected Behavior:**
+- The auto-update workflow stops after opening the PR
+- A maintainer still needs to merge it
+- A release still needs a tag push or a manual `release.yml` trigger
 
 **Solution:**
-1. Check CI status
-2. Check branch protection rule settings
-3. Manually merge PR
+1. Merge the PR after review
+2. Push a `v...` tag if you want a release build
+3. Or trigger [`.github/workflows/release.yml`](.github/workflows/release.yml) manually
 
 ## 8. Security Considerations
 
-### 8.1 Auto-merge Security
+### 8.1 PR-Based Update Safety
 
-- ✅ PR only created if compatibility checks pass
-- ✅ Must wait for all CI checks to pass before merging
-- ✅ Use squash merge to keep commit history clean
-- ✅ Auto-delete branch to avoid branch accumulation
+- ✅ PR is only created if compatibility checks pass
+- ✅ Normal repository CI still runs before merge
+- ✅ Manual review remains in the loop for upstream integration changes
+- ✅ Breaking upstream changes create an issue instead of silently updating the bundle
 
 ### 8.2 Version Validation
 

@@ -9,8 +9,17 @@ enum MoleVersion {
 
 @Observable @MainActor
 final class VersionModel {
+    private struct ReleaseResponse: Decodable {
+        let tagName: String
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+        }
+    }
+
     var currentVersion: String?
     var latestVersion: String?
+    var updateError: String?
     var isChecking = false
 
     var hasUpdate: Bool {
@@ -26,55 +35,58 @@ final class VersionModel {
 
     func checkForUpdates() async {
         isChecking = true
+        updateError = nil
         defer { isChecking = false }
 
         // Check MoleUI releases instead of Mole CLI
         guard let url = URL(string: "https://api.github.com/repos/imnotnoahhh/MoleUI/releases/latest") else { return }
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if let tagName = json?["tag_name"] as? String {
-                let cleaned = tagName.hasPrefix("v") || tagName.hasPrefix("V")
-                    ? String(tagName.dropFirst()) : tagName
-                latestVersion = cleaned
+            let (data, response) = try await URLSession.shared.data(from: url)
+
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200 ... 299).contains(httpResponse.statusCode)
+            {
+                latestVersion = nil
+                updateError = "GitHub returned HTTP \(httpResponse.statusCode)."
+                return
             }
+
+            let release = try JSONDecoder().decode(ReleaseResponse.self, from: data)
+            latestVersion = normalizeVersion(release.tagName)
         } catch {
-            print("Failed to check for updates: \(error)")
+            latestVersion = nil
+            updateError = error.localizedDescription
         }
     }
 
-    private func findMoleBinary() -> String? {
-        let fm = FileManager.default
-        if let bundled = Bundle.main.resourceURL?
-            .appendingPathComponent("mole/mole").path,
-            fm.isExecutableFile(atPath: bundled)
-        {
-            return bundled
-        }
-        for path in [
-            "/usr/local/bin/mole",
-            "/opt/homebrew/bin/mole",
-            NSHomeDirectory() + "/.config/mole/mole",
-        ]
-            where fm.isExecutableFile(atPath: path)
-        {
-            return path
-        }
-        return nil
+    private func normalizeVersion(_ version: String) -> String {
+        version.hasPrefix("v") || version.hasPrefix("V") ? String(version.dropFirst()) : version
+    }
+
+    private func versionParts(for version: String) -> [Int]? {
+        let cleaned = normalizeVersion(version)
+        let components = cleaned.split(separator: ".")
+        guard !components.isEmpty else { return nil }
+
+        let values = components.compactMap { Int($0) }
+        return values.count == components.count ? values : nil
     }
 
     private func compareVersions(_ v1: String, _ v2: String) -> ComparisonResult {
-        let clean1 = v1.hasPrefix("v") || v1.hasPrefix("V") ? String(v1.dropFirst()) : v1
-        let clean2 = v2.hasPrefix("v") || v2.hasPrefix("V") ? String(v2.dropFirst()) : v2
-        let parts1 = clean1.split(separator: ".").compactMap { Int($0) }
-        let parts2 = clean2.split(separator: ".").compactMap { Int($0) }
-        for (p1, p2) in zip(parts1, parts2) {
+        guard let parts1 = versionParts(for: v1),
+              let parts2 = versionParts(for: v2)
+        else {
+            return .orderedSame
+        }
+
+        let maxCount = max(parts1.count, parts2.count)
+        for index in 0 ..< maxCount {
+            let p1 = index < parts1.count ? parts1[index] : 0
+            let p2 = index < parts2.count ? parts2[index] : 0
             if p1 < p2 { return .orderedAscending }
             if p1 > p2 { return .orderedDescending }
         }
-        if parts1.count < parts2.count { return .orderedAscending }
-        if parts1.count > parts2.count { return .orderedDescending }
         return .orderedSame
     }
 }

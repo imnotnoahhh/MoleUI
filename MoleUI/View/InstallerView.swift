@@ -30,30 +30,32 @@ struct InstallerView: View {
     // MARK: - Header
 
     private var headerCard: some View {
-        GroupBox {
-            HStack(spacing: 8) {
-                Text("Installers")
-                    .fontWeight(.bold)
-                Text("Reclaimable")
-                    .foregroundStyle(.secondary)
-                Text(MetricsFormatter.humanBytes(totalReclaimable))
-                    .fontWeight(.bold)
-                    .foregroundStyle(.orange)
+        MoleHeroPanel(
+            eyebrow: "Files",
+            title: "Installers",
+            subtitle: "Find forgotten `.dmg`, `.pkg`, `.xip`, and archive downloads before they quietly eat your SSD.",
+            symbol: "shippingbox.fill"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
+                MoleMetricBadge(
+                    title: "Reclaimable",
+                    value: MetricsFormatter.humanBytes(totalReclaimable),
+                    systemImage: "tray.full.fill",
+                    tint: .orange
+                )
 
-                Spacer()
+                HStack(spacing: 10) {
+                    MoleSearchField(prompt: "Search installers", text: $searchText)
+                        .frame(width: 190)
 
-                TextField("Search", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 140)
-
-                Button {
-                    Task { await service.scan() }
-                } label: {
-                    Label("Scan", systemImage: "arrow.clockwise")
+                    Button {
+                        Task { await service.scan() }
+                    } label: {
+                        Label("Scan", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(service.isScanning)
                 }
-                .disabled(service.isScanning)
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -126,8 +128,7 @@ struct InstallerView: View {
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.secondary.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .background(MoleTheme.sky.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 Text(MetricsFormatter.humanBytes(file.sizeBytes))
                     .font(.system(.caption, design: .monospaced))

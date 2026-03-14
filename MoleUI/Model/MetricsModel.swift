@@ -4,7 +4,7 @@ import os.log
 
 // MARK: - Data Models (matching Mole JSON output)
 
-struct MetricsSnapshot: Codable, Sendable {
+struct MetricsSnapshot: Codable {
     let collectedAt: Date
     let host: String
     let platform: String
@@ -70,7 +70,7 @@ struct MetricsSnapshot: Codable, Sendable {
     }
 }
 
-struct HardwareInfo: Codable, Sendable {
+struct HardwareInfo: Codable {
     let model: String
     let cpuModel: String
     let totalRAM: String
@@ -88,7 +88,7 @@ struct HardwareInfo: Codable, Sendable {
     }
 }
 
-struct CPUStatus: Codable, Sendable {
+struct CPUStatus: Codable {
     let usage: Double
     let perCore: [Double]
     let perCoreEstimated: Bool
@@ -112,7 +112,7 @@ struct CPUStatus: Codable, Sendable {
     }
 }
 
-struct GPUStatus: Codable, Sendable {
+struct GPUStatus: Codable {
     let name: String
     let usage: Double
     let memoryUsed: UInt64
@@ -129,7 +129,7 @@ struct GPUStatus: Codable, Sendable {
     }
 }
 
-struct MemoryStatus: Codable, Sendable {
+struct MemoryStatus: Codable {
     let used: UInt64
     let total: UInt64
     let usedPercent: Double
@@ -147,7 +147,7 @@ struct MemoryStatus: Codable, Sendable {
     }
 }
 
-struct DiskStatus: Codable, Sendable {
+struct DiskStatus: Codable {
     let mount: String
     let device: String
     let used: UInt64
@@ -163,7 +163,7 @@ struct DiskStatus: Codable, Sendable {
     }
 }
 
-struct DiskIOStatus: Codable, Sendable {
+struct DiskIOStatus: Codable {
     let readRate: Double
     let writeRate: Double
 
@@ -173,7 +173,7 @@ struct DiskIOStatus: Codable, Sendable {
     }
 }
 
-struct NetworkStatus: Codable, Sendable {
+struct NetworkStatus: Codable {
     let name: String
     let rxRateMBs: Double
     let txRateMBs: Double
@@ -187,7 +187,7 @@ struct NetworkStatus: Codable, Sendable {
     }
 }
 
-struct NetworkHistory: Codable, Sendable {
+struct NetworkHistory: Codable {
     let rxHistory: [Double]
     let txHistory: [Double]
 
@@ -210,13 +210,13 @@ struct NetworkHistory: Codable, Sendable {
     }
 }
 
-struct ProxyStatus: Codable, Sendable {
+struct ProxyStatus: Codable {
     let enabled: Bool
     let type: String
     let host: String
 }
 
-struct BatteryStatus: Codable, Sendable {
+struct BatteryStatus: Codable {
     let percent: Double
     let status: String
     let timeLeft: String
@@ -233,7 +233,7 @@ struct BatteryStatus: Codable, Sendable {
     }
 }
 
-struct ThermalStatus: Codable, Sendable {
+struct ThermalStatus: Codable {
     let cpuTemp: Double
     let gpuTemp: Double
     let fanSpeed: Int
@@ -253,18 +253,18 @@ struct ThermalStatus: Codable, Sendable {
     }
 }
 
-struct SensorReading: Codable, Sendable {
+struct SensorReading: Codable {
     let name: String
     let value: Double
     let unit: String
 }
 
-struct BluetoothDevice: Codable, Sendable {
+struct BluetoothDevice: Codable {
     let name: String
     let connected: Bool
 }
 
-struct MoleProcessInfo: Codable, Sendable {
+struct MoleProcessInfo: Codable {
     let name: String
     let cpu: Double
     let memory: Double
@@ -434,7 +434,7 @@ final class MetricsModel {
         let executor = CLIExecutor()
 
         // Use quotes to handle paths with spaces
-        let command = "\"\(binary.path)\" status --json"
+        let command = shellEscape(binary.path) + " status --json"
 
         let newSnapshot: MetricsSnapshot = try await executor.executeAndParseJSON(
             command: command,
@@ -455,6 +455,10 @@ final class MetricsModel {
         updateHistory(newSnapshot)
         let duration = Date().timeIntervalSince(startTime)
         logger.debug("Metrics updated in \(String(format: "%.3f", duration))s")
+    }
+
+    private func shellEscape(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func updateHistory(_ snap: MetricsSnapshot) {

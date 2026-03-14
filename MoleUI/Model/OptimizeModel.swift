@@ -3,7 +3,7 @@ import Observation
 
 // MARK: - Data
 
-struct HealthReport: Codable, Sendable, Equatable {
+struct HealthReport: Codable, Equatable {
     let memoryUsedGb: Double
     let memoryTotalGb: Double
     let diskUsedGb: Double
@@ -23,7 +23,7 @@ struct HealthReport: Codable, Sendable, Equatable {
     }
 }
 
-struct OptimizationTask: Codable, Sendable, Identifiable, Equatable {
+struct OptimizationTask: Codable, Identifiable, Equatable {
     var id: String {
         action
     }
@@ -93,41 +93,40 @@ final class OptimizeModel {
         }
 
         do {
-            // Find mole binary
-            guard let moleBinary = CLIExecutor.findMoleBinary() else {
-                throw NSError(
-                    domain: "OptimizeModel",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
-                )
-            }
+            let executor = CLIExecutor()
 
-            if dryRun {
-                // Dry run doesn't need sudo, can show real-time output
-                let executor = CLIExecutor()
-
-                // Set up real-time output callback to parse current task
-                executor.onStdout = { [weak self] line in
-                    Task { @MainActor in
-                        self?.parseOutputLine(line)
-                    }
+            executor.onStdout = { [weak self] line in
+                Task { @MainActor in
+                    self?.parseOutputLine(line)
                 }
-
-                let result = try await executor.executeMole(
-                    "optimize --dry-run",
-                    options: .init(timeout: 300, captureStderr: true, parseProgress: false, dryRun: true)
-                )
-                lastOutput = result.stdout
-            } else {
-                // Normal mode: use osascript (no real-time output, but only asks password once)
-                currentTask = "Requesting administrator privileges..."
-                let command = "\(moleBinary.path) optimize"
-                let output = try await SudoHelper.runWithAdmin(command)
-
-                // Parse the complete output to show the last task
-                parseCompleteOutput(output)
-                lastOutput = output
             }
+
+            if !dryRun {
+                currentTask = "Requesting administrator privileges..."
+                guard await SudoHelper.requestSudoAccess(
+                    reason: "System optimization requires administrator access."
+                ) else {
+                    throw NSError(
+                        domain: "OptimizeModel",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+                    )
+                }
+            }
+
+            currentTask = dryRun ? "Previewing optimization plan..." : "Starting optimization tasks..."
+
+            let result = try await executor.executeMole(
+                dryRun ? "optimize --dry-run" : "optimize",
+                options: .init(
+                    timeout: 300,
+                    captureStderr: true,
+                    parseProgress: false,
+                    dryRun: dryRun
+                )
+            )
+            lastOutput = result.stdout
+            currentTask = dryRun ? "Preview completed" : "Optimization completed"
         } catch {
             errorMessage = error.localizedDescription
             currentTask = nil // Clear on error
@@ -161,35 +160,6 @@ final class OptimizeModel {
             lastOutput = line + "\n"
         } else {
             lastOutput? += line + "\n"
-        }
-    }
-
-    /// Parse complete output (for sudo execution which returns all at once)
-    private func parseCompleteOutput(_ output: String) {
-        let lines = output.components(separatedBy: .newlines)
-
-        // Find all task names and show progress through them
-        for line in lines {
-            if line.contains("➤") || line.contains("→") {
-                let cleaned = line.replacingOccurrences(
-                    of: "\u{001B}\\[[0-9;]*m",
-                    with: "",
-                    options: .regularExpression
-                )
-
-                if let arrowRange = cleaned.range(of: "[➤→]", options: .regularExpression) {
-                    let taskName = cleaned[arrowRange.upperBound...].trimmingCharacters(in: .whitespaces)
-                    if !taskName.isEmpty {
-                        // Update to show the last task (will show "Completed" feeling)
-                        currentTask = taskName
-                    }
-                }
-            }
-        }
-
-        // If we found tasks, show completion message
-        if currentTask != nil {
-            currentTask = "Optimization completed"
         }
     }
 }

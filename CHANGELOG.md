@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-15
+
+### Added
+- **Full Disk Access detection and guidance system**
+  - Automatic detection of Full Disk Access status in Settings
+  - One-click navigation to System Settings Privacy panel
+  - Probes multiple protected directories (TCC.db, Mail, Safari, Messages)
+  - Clear status indicators (granted/not granted/unknown)
+  - Detailed explanations for each status state
+- **New unified theme system (MoleTheme)**
+  - Consistent color palette across all views
+  - Pine, moss, meadow, ember, sky color scheme
+  - Adaptive colors for light/dark mode
+  - Improved visual hierarchy and readability
+- **Enhanced UI components**
+  - MolePanelGroupBoxStyle for consistent panel styling
+  - MoleSectionHeader with icon and subtitle support
+  - MoleMetricBadge for displaying metrics with icons
+  - Improved shadows and material effects
+  - Rounded corner refinements (22px radius)
+
+### Changed
+- **Settings view completely redesigned**
+  - Full Disk Access status card with refresh button
+  - Improved layout with better spacing and grouping
+  - Enhanced About section with app icon and version info
+  - Better visual feedback for interactive elements
+- **All views updated with new theme system**
+  - Dashboard, Clean, Optimize, Disk Analyzer, Purge, Installer, Uninstall
+  - Consistent styling across the entire app
+  - Improved button styles and hover states
+  - Better contrast and accessibility
+- **Sidebar improvements**
+  - Enhanced navigation with better visual feedback
+  - Improved icon alignment and spacing
+  - Better selection indicators
+- **Info.plist permissions descriptions updated**
+  - More detailed usage descriptions for folder access
+  - Clearer explanations for Desktop, Documents, Downloads access
+
+### Fixed
+- UI consistency issues across different views
+- Color scheme adaptation in dark mode
+- Button styling inconsistencies
+- Layout spacing and alignment issues
+
+### Technical
+- Added AppKit imports for system integration
+- Improved Full Disk Access detection logic
+- Better error handling in permission checks
+- Enhanced AppleScript integration for System Settings navigation
+- Cleaner code organization with reusable UI components
+
 ## [0.1.3] - 2026-03-10
 
 ### Changed
@@ -201,7 +254,8 @@ Official release with Mole CLI v1.29.0.
 - NavigationSplitView for native macOS experience
 - Requires macOS 14.0 (Sonoma) or later
 
-[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/imnotnoahhh/MoleUI/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.4
 [0.1.3]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.3
 [0.1.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2
 [0.1.2-beta.2]: https://github.com/imnotnoahhh/MoleUI/releases/tag/v0.1.2-beta.2

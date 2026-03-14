@@ -28,32 +28,35 @@ struct PurgeView: View {
     // MARK: - Header
 
     private var headerCard: some View {
-        GroupBox {
-            HStack(spacing: 8) {
-                Text("Purge")
-                    .fontWeight(.bold)
-                Text("Reclaimable")
-                    .foregroundStyle(.secondary)
-                Text(MetricsFormatter.humanBytes(totalReclaimable))
-                    .fontWeight(.bold)
-                    .foregroundStyle(.orange)
+        MoleHeroPanel(
+            eyebrow: "Projects",
+            title: "Purge",
+            subtitle: "Clear build artifacts and dependency caches from project directories without turning every repo into a guessing game.",
+            symbol: "folder.badge.minus"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
+                MoleMetricBadge(
+                    title: "Reclaimable",
+                    value: MetricsFormatter.humanBytes(totalReclaimable),
+                    systemImage: "shippingbox.circle.fill",
+                    tint: .orange
+                )
 
-                Spacer()
+                HStack(spacing: 10) {
+                    Button {
+                        showPathsEditor = true
+                    } label: {
+                        Label("Edit Paths", systemImage: "slider.horizontal.3")
+                    }
 
-                Button {
-                    showPathsEditor = true
-                } label: {
-                    Label("Edit Paths", systemImage: "slider.horizontal.3")
+                    Button {
+                        Task { await service.scan() }
+                    } label: {
+                        Label("Scan", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(service.isScanning)
                 }
-
-                Button {
-                    Task { await service.scan() }
-                } label: {
-                    Label("Scan", systemImage: "arrow.clockwise")
-                }
-                .disabled(service.isScanning)
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -184,12 +187,8 @@ struct PurgeView: View {
     // MARK: - Paths
 
     private var scanPathsCard: some View {
-        GroupBox {
+        GroupBox("Scan Paths") {
             VStack(alignment: .leading, spacing: 6) {
-                Label("Scan Paths", systemImage: "folder.badge.gearshape")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 Text("Default paths plus ~/Library/Application Support/MoleUI/purge_paths are used.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -208,24 +207,21 @@ struct PurgePathsEditorView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Edit Scan Paths")
-                    .font(.headline)
-                Spacer()
+        VStack(spacing: 18) {
+            MoleHeroPanel(
+                eyebrow: "Projects",
+                title: "Edit Scan Paths",
+                subtitle: "One path per line. Mole UI merges these with the built-in defaults before each purge scan.",
+                symbol: "slider.horizontal.3"
+            ) {
                 Button("Done") {
                     savePaths()
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
             }
-            .padding()
-            .background(Color(nsColor: .controlBackgroundColor))
 
-            Divider()
-
-            // Editor
             VStack(alignment: .leading, spacing: 8) {
                 Text("Add one path per line. Use ~ for home directory.")
                     .font(.caption)
@@ -234,7 +230,12 @@ struct PurgePathsEditorView: View {
                 TextEditor(text: $pathsText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 300)
-                    .border(Color.secondary.opacity(0.2))
+                    .padding(10)
+                    .background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.white.opacity(0.72), lineWidth: 1)
+                    )
 
                 if let error = errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -246,9 +247,22 @@ struct PurgePathsEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-            .padding()
+            .padding(20)
+            .background(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.78), MoleTheme.parchment.opacity(0.94)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white.opacity(0.6), lineWidth: 1)
+            )
         }
-        .frame(width: 600, height: 500)
+        .padding(18)
+        .frame(width: 680, height: 560)
         .onAppear {
             loadPaths()
         }
