@@ -1,107 +1,127 @@
+import AppKit
 import Foundation
-import Security
 
-/// Executes commands with administrator privileges via macOS Authorization Services.
+/// Coordinates a single sudo flow for the GUI using cached sudo access
+/// when available and a native password prompt otherwise.
 enum SudoHelper {
-    /// Request sudo access using native macOS authorization dialog.
-    /// This will show a system password dialog and cache sudo credentials.
     @MainActor
-    static func requestSudoAccess() async -> Bool {
-        print("🔐 SudoHelper.requestSudoAccess() called")
-
-        // Check if we already have sudo access
-        let checkTask = Process()
-        checkTask.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        checkTask.arguments = ["-n", "true"]
-        checkTask.standardOutput = Pipe()
-        checkTask.standardError = Pipe()
-
-        do {
-            try checkTask.run()
-            checkTask.waitUntilExit()
-            if checkTask.terminationStatus == 0 {
-                print("✅ Already have sudo access")
-                return true
-            }
-            print("⚠️ No existing sudo access, need to request")
-        } catch {
-            print("⚠️ Failed to check sudo access: \(error)")
+    static func requestSudoAccess(
+        reason: String = "Mole UI needs administrator access to continue."
+    ) async -> Bool {
+        if hasCachedSudoAccess() {
+            return true
         }
 
-        // Use osascript to prompt for password with GUI dialog
-        // This will cache sudo credentials for 5 minutes
+        return await requestPasswordValidation(reason: reason)
+    }
+
+    @MainActor
+    static func runWithAdmin(
+        _ command: String,
+        reason: String = "Mole UI needs administrator access to continue."
+    ) async throws -> String {
+        guard await requestSudoAccess(reason: reason) else {
+            throw NSError(
+                domain: "SudoHelper",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+            )
+        }
+
+        return try await CLIExecutor.run(command)
+    }
+
+    nonisolated static func hasCachedSudoAccess() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["-n", "true"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
         do {
-            let script = """
-            do shell script "sudo -v" with administrator privileges
-            """
-            let osascriptTask = Process()
-            osascriptTask.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            osascriptTask.arguments = ["-e", script]
-            osascriptTask.standardOutput = Pipe()
-            osascriptTask.standardError = Pipe()
-
-            try osascriptTask.run()
-            osascriptTask.waitUntilExit()
-
-            let success = osascriptTask.terminationStatus == 0
-            print("🔐 osascript sudo -v exit code: \(osascriptTask.terminationStatus), success: \(success)")
-
-            if !success {
-                let stderrData = (osascriptTask.standardError as? Pipe)?.fileHandleForReading.readDataToEndOfFile()
-                if let stderrData, let stderr = String(data: stderrData, encoding: .utf8) {
-                    print("❌ osascript stderr: \(stderr)")
-                }
-            }
-
-            return success
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
         } catch {
-            print("❌ Failed to run osascript: \(error)")
             return false
         }
     }
 
-    /// Run a command with admin privileges using osascript "do shell script ... with administrator privileges".
-    static func runWithAdmin(_ command: String) async throws -> String {
-        print("🔐 runWithAdmin called with command: \(command)")
+    @MainActor
+    private static func requestPasswordValidation(reason: String) async -> Bool {
+        for attempt in 0 ..< 2 {
+            let promptReason = attempt == 0
+                ? reason
+                : "The password was not accepted. Please try again."
 
-        // Find where the mole executable ends (look for "/mole ")
-        // The command format is: /path/to/mole subcommand args
-        guard let moleRange = command.range(of: "/mole ") else {
-            throw NSError(
-                domain: "SudoHelper",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid command format: expected '/mole ' in command"]
-            )
+            guard let password = promptForPassword(reason: promptReason) else {
+                return false
+            }
+
+            let validated = await validatePassword(password)
+            if validated {
+                return true
+            }
         }
 
-        // Split at the space after "mole"
-        let executableEnd = moleRange.upperBound
-        let executable = String(command[..<executableEnd].dropLast()) // Remove trailing space
-        let arguments = String(command[executableEnd...])
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Administrator access not granted"
+        alert.informativeText = "The current action needs a valid administrator password."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        return false
+    }
 
-        print("📝 Executable: \(executable)")
-        print("📝 Arguments: \(arguments)")
+    @MainActor
+    private static func promptForPassword(reason: String) -> String? {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Administrator Password"
+        alert.informativeText = reason
 
-        // Create a temporary script file with properly quoted executable
-        let tempScript = NSTemporaryDirectory() + "mole_admin_\(UUID().uuidString).sh"
-        print("📝 Creating temp script at: \(tempScript)")
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "Password"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
 
-        // Write command to temp file with shebang and quoted executable
-        let scriptContent = "#!/bin/bash\n\"\(executable)\" \(arguments)"
-        try scriptContent.write(toFile: tempScript, atomically: true, encoding: .utf8)
-        defer {
-            try? FileManager.default.removeItem(atPath: tempScript)
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else {
+            return nil
         }
 
-        // Make it executable
-        print("🔧 Making script executable")
-        _ = try await CLIExecutor.run("chmod +x '\(tempScript)'")
+        let password = field.stringValue
+        return password.isEmpty ? nil : password
+    }
 
-        // Run via osascript
-        let script = "do shell script \"'\(tempScript)'\" with administrator privileges"
-        print("🚀 Running osascript: \(script)")
-        let result = try await CLIExecutor.run("osascript -e '\(script)'")
-        print("✅ Command completed successfully")
-        return result
+    private nonisolated static func validatePassword(_ password: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+                process.arguments = ["-S", "-p", "", "-v"]
+
+                let stdinPipe = Pipe()
+                process.standardInput = stdinPipe
+                process.standardOutput = Pipe()
+                process.standardError = Pipe()
+
+                do {
+                    try process.run()
+
+                    if let data = (password + "\n").data(using: .utf8) {
+                        stdinPipe.fileHandleForWriting.write(data)
+                    }
+                    stdinPipe.fileHandleForWriting.closeFile()
+
+                    process.waitUntilExit()
+                    continuation.resume(returning: process.terminationStatus == 0 && hasCachedSudoAccess())
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
     }
 }

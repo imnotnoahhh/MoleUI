@@ -14,15 +14,16 @@ struct UninstallView: View {
     @State private var sortOrder: AppSortOrder = .size
     @State private var selectedApps: Set<String> = []
     @State private var appToUninstall: AppInfo?
+    @State private var pendingRelatedFileCount: Int?
     @State private var showConfirmation = false
     @State private var showBatchConfirmation = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
+        VStack(spacing: 16) {
+            headerCard
             content
         }
+        .padding(16)
         .onAppear {
             scanService.scan()
         }
@@ -32,7 +33,7 @@ struct UninstallView: View {
                 performUninstall(app)
             }
         } message: { app in
-            let count = uninstallService.findRelatedFiles(for: app).count
+            let count = pendingRelatedFileCount ?? 0
             Text("Move \"\(app.name)\" and \(count) related file\(count == 1 ? "" : "s") to Trash?")
         }
         .alert("Uninstall Selected Apps", isPresented: $showBatchConfirmation) {
@@ -47,54 +48,56 @@ struct UninstallView: View {
 
     // MARK: - Toolbar
 
-    private var toolbar: some View {
-        HStack(spacing: 10) {
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search apps...", text: $searchText)
-                    .textFieldStyle(.plain)
-            }
-            .padding(6)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-            .frame(maxWidth: 240)
+    private var headerCard: some View {
+        MoleHeroPanel(
+            eyebrow: "Applications",
+            title: "Uninstall",
+            subtitle: "Review installed apps with their size and last-use signal before you move anything to Trash.",
+            symbol: "xmark.app.fill"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
+                HStack(spacing: 10) {
+                    MoleSearchField(prompt: "Search apps", text: $searchText)
+                        .frame(width: 200)
 
-            Picker("Sort", selection: $sortOrder) {
-                ForEach(AppSortOrder.allCases, id: \.self) { order in
-                    Text(order.rawValue).tag(order)
+                    Picker("Sort", selection: $sortOrder) {
+                        ForEach(AppSortOrder.allCases, id: \.self) { order in
+                            Text(order.rawValue).tag(order)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
+                }
+
+                HStack(spacing: 10) {
+                    if let lastScan = scanService.lastScanTime {
+                        MoleMetricBadge(
+                            title: "Scanned",
+                            value: relativeTime(from: lastScan),
+                            systemImage: "clock.badge.checkmark",
+                            tint: MoleTheme.sky
+                        )
+                    }
+
+                    if !selectedApps.isEmpty {
+                        Button(role: .destructive) {
+                            showBatchConfirmation = true
+                        } label: {
+                            Label("Uninstall Selected (\(selectedApps.count))", systemImage: "trash")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                    }
+
+                    Button {
+                        scanService.refresh()
+                    } label: {
+                        Label("Scan", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(scanService.isScanning)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 220)
-
-            Spacer()
-
-            // Cache status
-            if let lastScan = scanService.lastScanTime {
-                Text("Scanned \(relativeTime(from: lastScan))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-            if !selectedApps.isEmpty {
-                Button(role: .destructive) {
-                    showBatchConfirmation = true
-                } label: {
-                    Label("Uninstall Selected (\(selectedApps.count))", systemImage: "trash")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-            }
-
-            Button {
-                scanService.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .disabled(scanService.isScanning)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
     }
 
     // MARK: - Content
@@ -203,8 +206,7 @@ struct UninstallView: View {
                         .frame(width: 80)
                 } else {
                     Button("Uninstall") {
-                        appToUninstall = app
-                        showConfirmation = true
+                        prepareUninstall(app)
                     }
                     .buttonStyle(.bordered)
                     .frame(width: 80)
@@ -265,8 +267,21 @@ struct UninstallView: View {
 
     // MARK: - Actions
 
+    private func prepareUninstall(_ app: AppInfo) {
+        appToUninstall = app
+        pendingRelatedFileCount = nil
+
+        Task.detached {
+            let count = UninstallModel.findRelatedFiles(for: app).count
+            await MainActor.run {
+                pendingRelatedFileCount = count
+                showConfirmation = true
+            }
+        }
+    }
+
     private func performUninstall(_ app: AppInfo) {
-        let related = uninstallService.findRelatedFiles(for: app)
+        let related = UninstallModel.findRelatedFiles(for: app)
         Task {
             do {
                 try await uninstallService.uninstall(app: app, relatedFiles: related)
@@ -281,7 +296,7 @@ struct UninstallView: View {
         let appsToRemove = scanService.apps.filter { selectedApps.contains($0.id) }
         Task {
             for app in appsToRemove {
-                let related = uninstallService.findRelatedFiles(for: app)
+                let related = UninstallModel.findRelatedFiles(for: app)
                 do {
                     try await uninstallService.uninstall(app: app, relatedFiles: related)
                 } catch {

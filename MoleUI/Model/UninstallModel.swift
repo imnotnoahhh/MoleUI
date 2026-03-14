@@ -196,7 +196,11 @@ final class UninstallModel {
 
     init() {}
 
-    func findRelatedFiles(for app: AppInfo) -> [URL] {
+    nonisolated func findRelatedFiles(for app: AppInfo) -> [URL] {
+        Self.findRelatedFiles(for: app)
+    }
+
+    nonisolated static func findRelatedFiles(for app: AppInfo) -> [URL] {
         guard let root = CLIExecutor.findMoleRoot() else { return [] }
         let bundleID = app.bundleIdentifier ?? "unknown"
         let script = """
@@ -225,14 +229,17 @@ final class UninstallModel {
         errorMessage = nil
         defer { isUninstalling = false }
 
-        // Request sudo access once upfront
-        let hasAccess = await SudoHelper.requestSudoAccess()
-        guard hasAccess else {
-            throw NSError(
-                domain: "UninstallError",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+        if likelyNeedsAdministrator(app: app, relatedFiles: relatedFiles) {
+            let hasAccess = await SudoHelper.requestSudoAccess(
+                reason: "Removing this app may need administrator access."
             )
+            guard hasAccess else {
+                throw NSError(
+                    domain: "UninstallError",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+                )
+            }
         }
 
         _ = relatedFiles // related files are resolved by Mole core during batch uninstall.
@@ -244,8 +251,8 @@ final class UninstallModel {
         let script = """
         set -euo pipefail
         export MOLE_TEST_MODE=1
-        ROOT=\(shellEscape(root.path))
-        APP_ENTRY=\(shellEscape(selected))
+        ROOT=\(Self.shellEscape(root.path))
+        APP_ENTRY=\(Self.shellEscape(selected))
         tmp_script=$(mktemp "${TMPDIR:-/tmp}/mole-uninstall-nomain.XXXXXX")
         awk '$0 != "main \\"$@\\"" {print}' "$ROOT/bin/uninstall.sh" | sed "s|^SCRIPT_DIR=.*|SCRIPT_DIR=\\"$ROOT/bin\\"|" > "$tmp_script"
         source "$tmp_script"
@@ -253,12 +260,21 @@ final class UninstallModel {
         printf '\\n' | batch_uninstall_applications
         rm -f "$tmp_script"
         """
-        _ = try await CLIExecutor.run("bash -lc \(shellEscape(script))")
+        _ = try await CLIExecutor.run("bash -lc \(Self.shellEscape(script))")
 
         uninstalledApps.insert(app.id)
     }
 
-    private nonisolated func runSync(_ command: String) throws -> String {
+    private func likelyNeedsAdministrator(app: AppInfo, relatedFiles: [URL]) -> Bool {
+        let home = NSHomeDirectory()
+        if !app.path.path.hasPrefix(home) {
+            return true
+        }
+
+        return relatedFiles.contains { !$0.path.hasPrefix(home) }
+    }
+
+    private nonisolated static func runSync(_ command: String) throws -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = ["-lc", command]
@@ -279,7 +295,7 @@ final class UninstallModel {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private nonisolated func shellEscape(_ s: String) -> String {
+    private nonisolated static func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

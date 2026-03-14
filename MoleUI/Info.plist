@@ -22,6 +22,14 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Mole UI uses Finder and System Events to move files to the Trash and inspect cleanup state safely.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Mole UI needs access to your Desktop when you choose it for disk analysis or installer cleanup.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Mole UI needs access to Documents when you choose it for disk analysis, purge scanning, or cleanup.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Mole UI needs access to Downloads so you can review large files and old installers in one place.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 qinfuyao. All rights reserved.</string>
 </dict>

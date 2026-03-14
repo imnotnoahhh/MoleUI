@@ -83,66 +83,45 @@ struct CleanView: View {
     // MARK: - Header
 
     private var headerCard: some View {
-        GroupBox {
-            HStack(spacing: 8) {
-                Text("Clean")
-                    .fontWeight(.bold)
-                Text("System cleanup will free up disk space")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-
-                Spacer()
-
-                // Show cleaned size after cleaning
+        MoleHeroPanel(
+            eyebrow: "Maintenance",
+            title: "Clean",
+            subtitle: "Sweep caches, logs, browser leftovers, and temporary files without making the screen feel clinical.",
+            symbol: "sparkles"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
                 if let cleanedBytes = service.lastCleanedBytes {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(cleanedBytes == 0 ? Color.secondary : Color.green)
-                            .font(.caption)
-                        if cleanedBytes == 0 {
-                            Text("Already clean")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        } else {
-                            Text("Cleaned:")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            Text(MetricsFormatter.humanBytes(cleanedBytes))
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.green)
-                                .font(.caption)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        cleanedBytes == 0 ? Color.secondary.opacity(0.1) : Color.green.opacity(0.1),
-                        in: RoundedRectangle(cornerRadius: 6)
+                    MoleMetricBadge(
+                        title: cleanedBytes == 0 ? "Status" : "Freed",
+                        value: cleanedBytes == 0 ? "Already clean" : MetricsFormatter.humanBytes(cleanedBytes),
+                        systemImage: cleanedBytes == 0 ? "checkmark.circle" : "leaf.fill",
+                        tint: cleanedBytes == 0 ? .secondary : .green
                     )
                 }
 
-                Button {
-                    Task { await service.scan() }
-                } label: {
-                    Label("Scan", systemImage: "arrow.clockwise")
-                }
-                .disabled(service.isScanning)
-
-                Button {
-                    if confirmBeforeClean {
-                        showConfirmation = true
-                    } else {
-                        Task { await runCleanAll() }
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await service.scan() }
+                    } label: {
+                        Label("Scan", systemImage: "arrow.clockwise")
                     }
-                } label: {
-                    let text = dryRunMode ? "Preview" : "Clean All"
-                    let icon = dryRunMode ? "eye" : "trash"
-                    Label(text, systemImage: icon)
+                    .disabled(service.isScanning)
+
+                    Button {
+                        if confirmBeforeClean {
+                            showConfirmation = true
+                        } else {
+                            Task { await runCleanAll() }
+                        }
+                    } label: {
+                        let text = dryRunMode ? "Preview" : "Clean All"
+                        let icon = dryRunMode ? "eye" : "trash"
+                        Label(text, systemImage: icon)
+                    }
+                    .disabled(service.isScanning || service.cleaningCategory != nil)
+                    .buttonStyle(.borderedProminent)
                 }
-                .disabled(service.isScanning || service.cleaningCategory != nil)
-                .buttonStyle(.borderedProminent)
             }
-            .padding(.vertical, 2)
         }
     }
 
@@ -160,11 +139,8 @@ struct CleanView: View {
         }
 
         // Show what will be cleaned
-        GroupBox {
+        GroupBox("Ready to Clean") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Ready to Clean:")
-                    .font(.headline)
-
                 VStack(alignment: .leading, spacing: 6) {
                     cleanItemRow(icon: "folder.badge.gearshape", text: "System caches and logs")
                     cleanItemRow(icon: "safari", text: "Browser caches")

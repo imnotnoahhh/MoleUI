@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct DirEntry: Identifiable, Sendable {
+struct DirEntry: Identifiable {
     let id: String // full path
     let name: String
     let path: URL
@@ -19,13 +19,11 @@ struct DirEntry: Identifiable, Sendable {
     }
 }
 
-struct ScanProgress: Sendable {
+struct ScanProgress {
     let currentPath: String
     let itemsScanned: Int
     let bytesScanned: UInt64
 }
-
-// MARK: - Model
 
 import AppKit
 
@@ -41,8 +39,6 @@ final class DiskModel {
 
     private var scanTask: Task<Void, Never>?
 
-    // MARK: - Cache
-
     private struct CachedScan {
         let entries: [DirEntry]
         let totalSize: UInt64
@@ -52,15 +48,13 @@ final class DiskModel {
     }
 
     private var cache: [String: CachedScan] = [:]
-    private let cacheValidityDuration: TimeInterval = 300 // 5 minutes
+    private let cacheValidityDuration: TimeInterval = 300
 
     var lastScanTime: Date?
 
     init() {
         self.currentPath = FileManager.default.homeDirectoryForCurrentUser
     }
-
-    // MARK: - Navigation
 
     func scan(directory: URL) {
         scanTask?.cancel()
@@ -78,10 +72,8 @@ final class DiskModel {
                 self.isScanning = false
                 self.progress = nil
 
-                // Get directory modification date
                 let modDate = try? FileManager.default.attributesOfItem(atPath: directory.path)[.modificationDate] as? Date
 
-                // Write to cache with timestamp
                 cache[directory.path] = CachedScan(
                     entries: result.entries,
                     totalSize: result.totalSize,
@@ -90,7 +82,7 @@ final class DiskModel {
                 )
                 lastScanTime = Date()
             } catch is CancellationError {
-                // scan was cancelled
+                // Scan was cancelled.
             } catch {
                 guard !Task.isCancelled else { return }
                 self.errorMessage = error.localizedDescription
@@ -100,14 +92,11 @@ final class DiskModel {
         }
     }
 
-    /// Restore from cache if available and valid; otherwise scan.
     private func loadOrScan(directory: URL) {
         if let cached = cache[directory.path], !cached.dirty {
-            // Check if cache is still valid
             let cacheAge = Date().timeIntervalSince(cached.timestamp)
             let isCacheValid = cacheAge < cacheValidityDuration
 
-            // Check if directory has been modified
             var isDirectoryUnmodified = true
             if let cachedModDate = cached.modificationDate,
                let currentModDate = try? FileManager.default.attributesOfItem(atPath: directory.path)[.modificationDate] as? Date
@@ -116,7 +105,6 @@ final class DiskModel {
             }
 
             if isCacheValid, isDirectoryUnmodified {
-                // Use cached data
                 scanTask?.cancel()
                 entries = cached.entries
                 totalSize = cached.totalSize
@@ -127,7 +115,6 @@ final class DiskModel {
             }
         }
 
-        // Cache miss or invalid - perform scan
         scan(directory: directory)
     }
 
@@ -153,18 +140,14 @@ final class DiskModel {
         loadOrScan(directory: target)
     }
 
-    /// Manually refresh current directory (clear cache and rescan)
     func refresh() {
         cache.removeValue(forKey: currentPath.path)
         scan(directory: currentPath)
     }
 
-    /// Clear all cache
     func clearCache() {
         cache.removeAll()
     }
-
-    // MARK: - Actions
 
     func deleteEntry(_ entry: DirEntry) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -176,7 +159,6 @@ final class DiskModel {
                 }
             }
         }
-        // Mark current path and all ancestors dirty
         invalidateCache(for: currentPath)
         scan(directory: currentPath)
     }
@@ -197,14 +179,11 @@ final class DiskModel {
         NSWorkspace.shared.activateFileViewerSelecting([entry.path])
     }
 
-    // MARK: - Private Scan Implementation
-
     private struct ScanResult {
         let entries: [DirEntry]
         let totalSize: UInt64
     }
 
-    /// JSON response from mole analyze --json
     private struct AnalyzeJSONResponse: Codable {
         let path: String
         let entries: [AnalyzeEntry]
@@ -231,27 +210,15 @@ final class DiskModel {
     }
 
     private func performScan(directory: URL) async throws -> ScanResult {
-        guard let binary = findMoleBinary() else {
+        guard let binary = findAnalyzeBinary() else {
             throw NSError(
                 domain: "DiskModel",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "找不到 mole 可执行文件"]
+                userInfo: [NSLocalizedDescriptionKey: "找不到 analyze-go 可执行文件"]
             )
         }
 
-        let executor = CLIExecutor()
-        let command = "\"\(binary.path)\" analyze --json \"\(directory.path)\""
-
-        let response: AnalyzeJSONResponse = try await executor.executeAndParseJSON(
-            command: command,
-            options: CLIExecutor.ExecutionOptions(
-                timeout: 120,
-                captureStderr: true,
-                parseProgress: false,
-                dryRun: false
-            ),
-            decoder: JSONDecoder()
-        )
+        let response = try await runAnalyzeJSON(binary: binary, directory: directory)
 
         let entries = response.entries
             .map { entry in
@@ -271,24 +238,22 @@ final class DiskModel {
         )
     }
 
-    private func findMoleBinary() -> URL? {
+    private func findAnalyzeBinary() -> URL? {
         let fm = FileManager.default
 
         #if DEBUG
-            // Development: prefer project Resources first
             let projectPath = URL(fileURLWithPath: #file)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent("Resources/mole/mole")
+                .appendingPathComponent("Resources/mole/bin/analyze-go")
 
             if fm.isExecutableFile(atPath: projectPath.path) {
                 return projectPath
             }
         #endif
 
-        // Production: check bundle resources
-        if let bundlePath = Bundle.main.path(forResource: "mole", ofType: nil, inDirectory: "mole") {
+        if let bundlePath = Bundle.main.path(forResource: "analyze-go", ofType: nil, inDirectory: "mole/bin") {
             let url = URL(fileURLWithPath: bundlePath)
             if fm.isExecutableFile(atPath: url.path) {
                 return url
@@ -296,5 +261,51 @@ final class DiskModel {
         }
 
         return nil
+    }
+
+    private func runAnalyzeJSON(binary: URL, directory: URL) async throws -> AnalyzeJSONResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = ["-json", directory.path]
+            process.environment = ProcessInfo.processInfo.environment
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            process.terminationHandler = { process in
+                let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+                if process.terminationStatus != 0 {
+                    let message = String(data: stderrData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let error = NSError(
+                        domain: "DiskModel",
+                        code: Int(process.terminationStatus),
+                        userInfo: [
+                            NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "磁盘扫描失败",
+                        ]
+                    )
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                do {
+                    let response = try JSONDecoder().decode(AnalyzeJSONResponse.self, from: stdoutData)
+                    continuation.resume(returning: response)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 }

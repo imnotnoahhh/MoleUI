@@ -26,7 +26,9 @@ struct MoleApp: App {
                 .environment(uninstallModel)
                 .environment(safetyController)
                 .environment(versionModel)
-                .frame(width: 904, height: 580)
+                .groupBoxStyle(MolePanelGroupBoxStyle())
+                .tint(Color(red: 0.16, green: 0.48, blue: 0.36))
+                .frame(minWidth: 980, minHeight: 700)
                 .onAppear {
                     // Wire up model references for metrics pause coordination
                     // This must be done after models are initialized
@@ -34,7 +36,7 @@ struct MoleApp: App {
                     metricsModel.optimizeModel = optimizeModel
                 }
         }
-        .defaultSize(width: 904, height: 580)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 1120, height: 760)
+        .windowResizability(.contentMinSize)
     }
 }
