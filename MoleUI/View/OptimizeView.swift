@@ -6,34 +6,41 @@ struct OptimizeView: View {
     @State private var showAdvancedTasks = false
     @State private var showRawOutput = false
 
+    private var computedHealthScore: Int? {
+        guard let report = service.report else { return nil }
+        return Self.healthScore(for: report)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if dryRunMode {
                 dryRunBanner
             }
-            Group {
-                if service.isScanning, service.report == nil {
-                    ProgressView("Scanning system health...")
-                } else if let error = service.errorMessage, service.report == nil {
-                    ContentUnavailableView(
-                        "Health Check Failed",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(error)
-                    )
-                } else if let report = service.report {
-                    reportContent(report)
-                } else {
-                    ContentUnavailableView(
-                        "No Report",
-                        systemImage: "heart.text.square",
-                        description: Text("Click Refresh to scan system health.")
-                    )
+            ScrollView {
+                VStack(spacing: 16) {
+                    headerCard
+
+                    Group {
+                        if service.isScanning, service.report == nil {
+                            ProgressView("Scanning system health...")
+                        } else if let error = service.errorMessage, service.report == nil {
+                            ContentUnavailableView(
+                                "Health Check Failed",
+                                systemImage: "exclamationmark.triangle",
+                                description: Text(error)
+                            )
+                        } else if let report = service.report {
+                            reportContent(report)
+                        } else {
+                            ContentUnavailableView(
+                                "No Report",
+                                systemImage: "heart.text.square",
+                                description: Text("Click Refresh to scan system health.")
+                            )
+                        }
+                    }
                 }
-            }
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                toolbarButtons
+                .padding(16)
             }
         }
         .task {
@@ -61,47 +68,61 @@ struct OptimizeView: View {
 
     // MARK: - Toolbar
 
-    @ViewBuilder
-    private var toolbarButtons: some View {
-        Button {
-            Task { await service.loadReport() }
-        } label: {
-            Label("Scan", systemImage: "arrow.clockwise")
-        }
-        .disabled(service.isScanning)
+    private var headerCard: some View {
+        MoleHeroPanel(
+            eyebrow: "Health",
+            title: "Optimize",
+            subtitle: "Run health checks first, then apply the fixes you actually want to keep around. The page should feel more like a cockpit than a debug pane.",
+            symbol: "bolt.circle.fill"
+        ) {
+            VStack(alignment: .trailing, spacing: 10) {
+                if let score = computedHealthScore {
+                    MoleMetricBadge(
+                        title: "Score",
+                        value: "\(score)",
+                        systemImage: "heart.circle.fill",
+                        tint: score >= 75 ? .green : score >= 60 ? .orange : .red
+                    )
+                }
 
-        Button {
-            Task {
-                await service.runOptimize(dryRun: dryRunMode)
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await service.loadReport() }
+                    } label: {
+                        Label("Scan", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(service.isScanning)
+
+                    Button {
+                        Task {
+                            await service.runOptimize(dryRun: dryRunMode)
+                        }
+                    } label: {
+                        let prefix = dryRunMode ? "Preview" : "Optimize"
+                        Label("\(prefix) All", systemImage: dryRunMode ? "eye" : "bolt.fill")
+                    }
+                    .disabled(service.isOptimizing || service.report == nil)
+                    .buttonStyle(.borderedProminent)
+                }
             }
-        } label: {
-            let prefix = dryRunMode ? "Preview" : "Optimize"
-            Label("\(prefix) All", systemImage: dryRunMode ? "eye" : "bolt.fill")
         }
-        .disabled(service.isOptimizing || service.report == nil)
-        .buttonStyle(.borderedProminent)
     }
 
     // MARK: - Report Content
 
     private func reportContent(_ report: HealthReport) -> some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                systemInfoHeader(report)
+        VStack(spacing: 12) {
+            systemInfoHeader(report)
 
-                taskList(report.optimizations)
+            taskList(report.optimizations)
 
-                // Show optimizing status
-                if service.isOptimizing {
-                    optimizingStatusCard
-                }
-
-                // Show result summary after completion
-                if let output = service.lastOutput, !service.isOptimizing {
-                    resultSummaryCard(output)
-                }
+            if service.isOptimizing {
+                optimizingStatusCard
             }
-            .padding()
+
+            if let output = service.lastOutput, !service.isOptimizing {
+                resultSummaryCard(output)
+            }
         }
     }
 
@@ -306,6 +327,19 @@ struct OptimizeView: View {
             with: "",
             options: .regularExpression
         )
+    }
+
+    private static func healthScore(for report: HealthReport) -> Int {
+        let memoryPercent = report.memoryTotalGb > 0
+            ? (report.memoryUsedGb / report.memoryTotalGb) * 100
+            : 0
+        let memoryPenalty = max(0, memoryPercent - 65) * 0.45
+        let diskPenalty = max(0, report.diskUsedPercent - 70) * 0.55
+        let taskPenalty = min(Double(report.optimizations.count) * 3.5, 22)
+        let advancedPenalty = Double(report.optimizations.filter { !$0.safe }.count) * 2.5
+
+        let rawScore = 100 - memoryPenalty - diskPenalty - taskPenalty - advancedPenalty
+        return max(35, min(Int(rawScore.rounded()), 100))
     }
 
     // MARK: - Output Parsing

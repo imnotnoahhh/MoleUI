@@ -2,11 +2,14 @@ import AppKit
 import SwiftUI
 
 struct DiskAnalyzerView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(DiskModel.self) var scanner
     @State private var hasInitialScan = false
     @AppStorage("showHiddenFiles") private var showHiddenFiles = false
     @State private var entryToDelete: DirEntry?
-    @State private var hoveredEntry: String?
+    @State private var pendingPermissionDirectory: URL?
+    @State private var needsFullDiskAccessPrompt = false
+    @State private var fullDiskAccessStatus = FullDiskAccessHelper.status()
 
     private var filteredEntries: [DirEntry] {
         let entries = showHiddenFiles
@@ -18,20 +21,48 @@ struct DiskAnalyzerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            breadcrumbBar
-            contentArea
+        VStack(spacing: 16) {
+            MoleHeroPanel(
+                eyebrow: "Storage",
+                title: "Disk Analyzer",
+                subtitle: "Inspect the current folder visually, then drill in only where the size story looks suspicious.",
+                symbol: "internaldrive"
+            ) {
+                VStack(alignment: .trailing, spacing: 10) {
+                    MoleMetricBadge(
+                        title: "Current Path",
+                        value: scanner.currentPath.lastPathComponent,
+                        systemImage: "folder.fill",
+                        tint: MoleTheme.sky
+                    )
+                    MoleMetricBadge(
+                        title: "Visible Size",
+                        value: MetricsFormatter.humanBytes(scanner.totalSize),
+                        systemImage: "externaldrive.fill.badge.timemachine",
+                        tint: .orange
+                    )
+                }
+            }
+
+            VStack(spacing: 0) {
+                breadcrumbBar
+                contentArea
+            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(MoleTheme.line, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.05), radius: 18, y: 8)
         }
+        .padding(16)
         .onAppear {
-            // Only scan on first appear
+            refreshFullDiskAccessStatus()
             if !hasInitialScan {
-                scanner.scan(directory: scanner.currentPath)
-                hasInitialScan = true
+                requestScan(directory: scanner.currentPath)
             }
         }
     }
-
-    // MARK: - Breadcrumb Bar
 
     private var breadcrumbBar: some View {
         HStack(spacing: 8) {
@@ -62,14 +93,12 @@ struct DiskAnalyzerView: View {
 
             Spacer()
 
-            // Cache status
             if let lastScan = scanner.lastScanTime {
                 Text(relativeTime(from: lastScan))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
-            // Refresh button
             Button {
                 scanner.refresh()
             } label: {
@@ -88,7 +117,7 @@ struct DiskAnalyzerView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .background(.thinMaterial)
     }
 
     private var breadcrumbPath: some View {
@@ -115,11 +144,11 @@ struct DiskAnalyzerView: View {
         }
     }
 
-    // MARK: - Content Area
-
     @ViewBuilder
     private var contentArea: some View {
-        if scanner.isScanning {
+        if needsFullDiskAccessPrompt {
+            fullDiskAccessPrompt
+        } else if scanner.isScanning {
             scanningView
         } else if let error = scanner.errorMessage {
             ContentUnavailableView(
@@ -138,25 +167,49 @@ struct DiskAnalyzerView: View {
         }
     }
 
-    private var scanningView: some View {
+    private var fullDiskAccessPrompt: some View {
         VStack(spacing: 16) {
-            ProgressView()
-                .scaleEffect(1.2)
-            if let prog = scanner.progress {
-                Text("Scanning: \(prog.itemsScanned) items")
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text(prog.currentPath)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Image(systemName: "lock.shield")
+                .font(.system(size: 34))
+                .foregroundStyle(.orange)
+
+            Text("Full Disk Access Recommended")
+                .font(.system(size: 20, weight: .semibold))
+
+            Text(fullDiskAccessPromptDetail)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            HStack(spacing: 10) {
+                Button {
+                    FullDiskAccessHelper.openSystemSettings()
+                } label: {
+                    Label("Open Full Disk Access", systemImage: "lock.open.display")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Check Again") {
+                    retryPendingScan()
+                }
+
+                Button("Scan Anyway") {
+                    continuePendingScan()
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 
-    // MARK: - Entry List
+    private var scanningView: some View {
+        let title = scanner.progress.map { "Scanning: \($0.itemsScanned) items" } ?? "Scanning..."
+        let subtitle = scanner.progress?.currentPath
+
+        return MoleLoadingState(title: title, subtitle: subtitle)
+            .padding(24)
+    }
 
     private var entryList: some View {
         ScrollView {
@@ -174,11 +227,19 @@ struct DiskAnalyzerView: View {
                 set: { if !$0 { entryToDelete = nil } }
             )
         ) {
-            Button("Cancel", role: .cancel) { entryToDelete = nil }
+            Button("Cancel", role: .cancel) {
+                entryToDelete = nil
+            }
             Button("Move to Trash", role: .destructive) {
                 guard let entry = entryToDelete else { return }
                 entryToDelete = nil
-                Task { try? await scanner.deleteEntry(entry) }
+                Task {
+                    do {
+                        try await scanner.deleteEntry(entry)
+                    } catch {
+                        scanner.errorMessage = error.localizedDescription
+                    }
+                }
             }
         } message: {
             if let entry = entryToDelete {
@@ -186,8 +247,6 @@ struct DiskAnalyzerView: View {
             }
         }
     }
-
-    // MARK: - Entry Row
 
     private func entryRow(_ entry: DirEntry, rank _: Int) -> some View {
         let percent = scanner.totalSize > 0
@@ -201,13 +260,11 @@ struct DiskAnalyzerView: View {
             }
         } label: {
             HStack(spacing: 12) {
-                // Icon
                 Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
                     .font(.system(size: 20))
                     .foregroundStyle(entry.isDirectory ? barColor : .gray)
                     .frame(width: 28)
 
-                // Name
                 Text(entry.name)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
@@ -216,18 +273,15 @@ struct DiskAnalyzerView: View {
 
                 Spacer()
 
-                // Percentage
                 Text(String(format: "%.1f%%", percent * 100))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(width: 50, alignment: .trailing)
 
-                // Size
                 Text(MetricsFormatter.humanBytes(entry.sizeBytes))
                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .frame(width: 80, alignment: .trailing)
 
-                // Actions
                 HStack(spacing: 4) {
                     Button {
                         scanner.revealInFinder(entry)
@@ -250,83 +304,15 @@ struct DiskAnalyzerView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
-            .background(Color.primary.opacity(0.03))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(.thinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(barColor.opacity(colorScheme == .dark ? 0.18 : 0.12), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
-
-    private func entryRowContent(_ entry: DirEntry, percent: Double, barColor: Color) -> some View {
-        HStack(spacing: 12) {
-            // Icon
-            Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
-                .font(.system(size: 20))
-                .foregroundStyle(entry.isDirectory ? barColor : .gray)
-                .frame(width: 28)
-
-            // Name + subtitle
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.name)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if entry.isDirectory, entry.children > 0 {
-                    Text("\(entry.children) items")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .frame(minWidth: 100, alignment: .leading)
-
-            Spacer()
-
-            // Percentage
-            Text(String(format: "%.1f%%", percent * 100))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 50, alignment: .trailing)
-
-            // Size
-            Text(MetricsFormatter.humanBytes(entry.sizeBytes))
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .frame(width: 80, alignment: .trailing)
-
-            // Actions
-            actionButtons(for: entry)
-        }
-        .padding(.horizontal, 14)
-    }
-
-    private func actionButtons(for entry: DirEntry) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                scanner.revealInFinder(entry)
-            } label: {
-                Image(systemName: "folder")
-                    .font(.system(size: 12))
-                    .frame(width: 26, height: 26)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.borderless)
-            .help("Reveal in Finder")
-
-            Button {
-                entryToDelete = entry
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red.opacity(0.8))
-                    .frame(width: 26, height: 26)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.borderless)
-            .help("Move to Trash")
-        }
-    }
-
-    // MARK: - Color Helper
 
     private static func barColor(for percent: Double) -> Color {
         switch percent {
@@ -337,8 +323,6 @@ struct DiskAnalyzerView: View {
         default: .teal
         }
     }
-
-    // MARK: - Time Helper
 
     private func relativeTime(from date: Date) -> String {
         let interval = Date().timeIntervalSince(date)
@@ -354,5 +338,54 @@ struct DiskAnalyzerView: View {
             let days = Int(interval / 86400)
             return "\(days)d ago"
         }
+    }
+
+    private func requestScan(directory: URL, bypassPermissionGate: Bool = false) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let isHomeRoot = directory.standardizedFileURL == home
+        let accessStatus = refreshFullDiskAccessStatus()
+
+        if isHomeRoot, !bypassPermissionGate, accessStatus != .granted {
+            pendingPermissionDirectory = directory
+            needsFullDiskAccessPrompt = true
+            return
+        }
+
+        pendingPermissionDirectory = nil
+        needsFullDiskAccessPrompt = false
+        scanner.scan(directory: directory)
+        hasInitialScan = true
+    }
+
+    private func retryPendingScan() {
+        guard let directory = pendingPermissionDirectory else { return }
+        if refreshFullDiskAccessStatus() == .granted {
+            continuePendingScan()
+        } else {
+            requestScan(directory: directory)
+        }
+    }
+
+    private func continuePendingScan() {
+        guard let directory = pendingPermissionDirectory else { return }
+        requestScan(directory: directory, bypassPermissionGate: true)
+    }
+
+    private var fullDiskAccessPromptDetail: String {
+        switch fullDiskAccessStatus {
+        case .granted:
+            return "Mole UI now appears to have Full Disk Access. You can continue the Home-folder scan."
+        case .notGranted:
+            return "Scanning your Home folder without Full Disk Access causes macOS to interrupt the scan with separate folder prompts. Enable it first for a cleaner disk scan."
+        case .unknown:
+            return "Mole UI could not positively verify Full Disk Access yet. If you just enabled it, click Check Again once before continuing."
+        }
+    }
+
+    @discardableResult
+    private func refreshFullDiskAccessStatus() -> FullDiskAccessStatus {
+        let status = FullDiskAccessHelper.status()
+        fullDiskAccessStatus = status
+        return status
     }
 }

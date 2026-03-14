@@ -24,10 +24,18 @@ Native macOS GUI for [Mole](https://github.com/tw93/Mole). Built with SwiftUI, w
 | Large File Purge | `mo purge` | ✅ |
 | Installer Management | `mo installer` | ✅ |
 | App Uninstaller | `mo uninstall` | ✅ |
+| Full Disk Access Detection | - | ✅ GUI only |
 | Touch ID sudo | `mo touchid` | CLI only |
 | Shell Completion | `mo completion` | CLI only |
 | Self Update | `mo update` | CLI only |
 | Uninstall Mole | `mo remove` | CLI only |
+
+### UI/UX Highlights
+
+- **Unified Theme System**: Consistent color palette with pine, moss, and meadow tones
+- **Full Disk Access Helper**: Automatic detection and one-click navigation to System Settings
+- **Modern Design**: Rounded panels with material effects and adaptive dark mode
+- **Improved Accessibility**: Better contrast, clear visual hierarchy, and readable typography
 
 ## Installation
 
@@ -164,6 +172,8 @@ MoleUI/
 **Dashboard not loading:** Restart the app. If issue persists, check Console.app for errors.
 
 **Slow disk scanning:** Large directories take time. Scan smaller folders first.
+
+**Full Disk Access needed:** For comprehensive disk analysis without repeated permission prompts, enable Full Disk Access in System Settings → Privacy & Security → Full Disk Access. Mole UI can guide you there from the Settings tab.
 
 For more issues, check [GitHub Issues](https://github.com/imnotnoahhh/MoleUI/issues).
 

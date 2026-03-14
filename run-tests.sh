@@ -74,12 +74,6 @@ if [ "$RUN_UNIT" = true ]; then
             -configuration Debug \
             -destination 'platform=macOS' \
             -only-testing:MoleUITests/MoleCoreTests \
-            -only-testing:MoleUITests/AsyncConcurrencyTests \
-            -only-testing:MoleUITests/ErrorRecoveryTests \
-            -only-testing:MoleUITests/DataValidationTests \
-            -only-testing:MoleUITests/EdgeCasesTests \
-            -only-testing:MoleUITests/CLIIntegrationTests \
-            -only-testing:MoleUITests/CIAssumptionTests \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -90,12 +84,6 @@ if [ "$RUN_UNIT" = true ]; then
             -configuration Debug \
             -destination 'platform=macOS' \
             -only-testing:MoleUITests/MoleCoreTests \
-            -only-testing:MoleUITests/AsyncConcurrencyTests \
-            -only-testing:MoleUITests/ErrorRecoveryTests \
-            -only-testing:MoleUITests/DataValidationTests \
-            -only-testing:MoleUITests/EdgeCasesTests \
-            -only-testing:MoleUITests/CLIIntegrationTests \
-            -only-testing:MoleUITests/CIAssumptionTests \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \

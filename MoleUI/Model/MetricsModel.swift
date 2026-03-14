@@ -434,7 +434,7 @@ final class MetricsModel {
         let executor = CLIExecutor()
 
         // Use quotes to handle paths with spaces
-        let command = "\"\(binary.path)\" status --json"
+        let command = shellEscape(binary.path) + " status --json"
 
         let newSnapshot: MetricsSnapshot = try await executor.executeAndParseJSON(
             command: command,
@@ -455,6 +455,10 @@ final class MetricsModel {
         updateHistory(newSnapshot)
         let duration = Date().timeIntervalSince(startTime)
         logger.debug("Metrics updated in \(String(format: "%.3f", duration))s")
+    }
+
+    private func shellEscape(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func updateHistory(_ snap: MetricsSnapshot) {
