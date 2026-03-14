@@ -3,7 +3,7 @@ import Observation
 
 // MARK: - Clean Category
 
-struct CleanCategory: Identifiable, Sendable, Equatable {
+struct CleanCategory: Identifiable, Equatable {
     let id: String
     let name: String
     let icon: String
@@ -300,7 +300,7 @@ struct CleanCategory: Identifiable, Sendable, Equatable {
 
 // MARK: - Scan Result
 
-struct CleanScanResult: Identifiable, Sendable, Equatable {
+struct CleanScanResult: Identifiable, Equatable {
     let id: String
     let category: CleanCategory
     let totalBytes: UInt64

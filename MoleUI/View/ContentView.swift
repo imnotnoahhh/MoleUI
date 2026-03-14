@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case status = "Status"
@@ -164,7 +164,7 @@ struct MoleSearchField: View {
 
 struct MoleLoadingState: View {
     let title: String
-    var subtitle: String? = nil
+    var subtitle: String?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -219,7 +219,7 @@ struct MoleHeroPanel<Accessory: View>: View {
         self.title = title
         self.subtitle = subtitle
         self.symbol = symbol
-        accessory = EmptyView()
+        self.accessory = EmptyView()
     }
 
     var body: some View {

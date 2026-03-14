@@ -41,7 +41,7 @@ final class VersionModel {
             let (data, response) = try await URLSession.shared.data(from: url)
 
             if let httpResponse = response as? HTTPURLResponse,
-               !(200...299).contains(httpResponse.statusCode)
+               !(200 ... 299).contains(httpResponse.statusCode)
             {
                 latestVersion = nil
                 updateError = "GitHub returned HTTP \(httpResponse.statusCode)."
@@ -77,7 +77,7 @@ final class VersionModel {
         }
 
         let maxCount = max(parts1.count, parts2.count)
-        for index in 0..<maxCount {
+        for index in 0 ..< maxCount {
             let p1 = index < parts1.count ? parts1[index] : 0
             let p2 = index < parts2.count ? parts2[index] : 0
             if p1 < p2 { return .orderedAscending }

@@ -41,7 +41,6 @@ struct SidebarView: View {
         .padding(.horizontal, 4)
     }
 
-    @ViewBuilder
     private func sidebarSection(_ title: String, items: [SidebarItem]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())

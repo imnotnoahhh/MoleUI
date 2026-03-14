@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-struct DirEntry: Identifiable, Sendable {
+struct DirEntry: Identifiable {
     let id: String // full path
     let name: String
     let path: URL
@@ -19,7 +19,7 @@ struct DirEntry: Identifiable, Sendable {
     }
 }
 
-struct ScanProgress: Sendable {
+struct ScanProgress {
     let currentPath: String
     let itemsScanned: Int
     let bytesScanned: UInt64
@@ -286,7 +286,7 @@ final class DiskModel {
                         domain: "DiskModel",
                         code: Int(process.terminationStatus),
                         userInfo: [
-                            NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "磁盘扫描失败"
+                            NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "磁盘扫描失败",
                         ]
                     )
                     continuation.resume(throwing: error)

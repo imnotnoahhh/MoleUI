@@ -9,22 +9,22 @@ enum FullDiskAccessStatus: Equatable {
     var title: String {
         switch self {
         case .granted:
-            return "Full Disk Access appears enabled"
+            "Full Disk Access appears enabled"
         case .notGranted:
-            return "Full Disk Access is not enabled"
+            "Full Disk Access is not enabled"
         case .unknown:
-            return "Full Disk Access could not be confirmed"
+            "Full Disk Access could not be confirmed"
         }
     }
 
     var detail: String {
         switch self {
         case .granted:
-            return "Broad disk scans should be able to inspect protected Library content without repeated folder-by-folder interruptions."
+            "Broad disk scans should be able to inspect protected Library content without repeated folder-by-folder interruptions."
         case .notGranted:
-            return "macOS does not provide a one-shot prompt for Full Disk Access. Mole UI can guide you to the correct System Settings page so you can enable it yourself."
+            "macOS does not provide a one-shot prompt for Full Disk Access. Mole UI can guide you to the correct System Settings page so you can enable it yourself."
         case .unknown:
-            return "Mole UI could not positively verify Full Disk Access yet. Refresh after changing System Settings, or try Disk Analyzer again."
+            "Mole UI could not positively verify Full Disk Access yet. Refresh after changing System Settings, or try Disk Analyzer again."
         }
     }
 }
@@ -239,10 +239,10 @@ struct SettingsView: View {
         }
     }
 
-    private func settingsCard<Content: View>(
+    private func settingsCard(
         title: String,
         symbol: String,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: () -> some View
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             MoleSectionHeader(title: title, subtitle: nil, symbol: symbol)
@@ -343,11 +343,11 @@ struct SettingsView: View {
     private var fullDiskAccessTint: Color {
         switch fullDiskAccessStatus {
         case .granted:
-            return .green
+            .green
         case .notGranted:
-            return .blue
+            .blue
         case .unknown:
-            return .orange
+            .orange
         }
     }
 

@@ -374,11 +374,11 @@ struct DiskAnalyzerView: View {
     private var fullDiskAccessPromptDetail: String {
         switch fullDiskAccessStatus {
         case .granted:
-            return "Mole UI now appears to have Full Disk Access. You can continue the Home-folder scan."
+            "Mole UI now appears to have Full Disk Access. You can continue the Home-folder scan."
         case .notGranted:
-            return "Scanning your Home folder without Full Disk Access causes macOS to interrupt the scan with separate folder prompts. Enable it first for a cleaner disk scan."
+            "Scanning your Home folder without Full Disk Access causes macOS to interrupt the scan with separate folder prompts. Enable it first for a cleaner disk scan."
         case .unknown:
-            return "Mole UI could not positively verify Full Disk Access yet. If you just enabled it, click Check Again once before continuing."
+            "Mole UI could not positively verify Full Disk Access yet. If you just enabled it, click Check Again once before continuing."
         }
     }
 

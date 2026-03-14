@@ -49,7 +49,7 @@ enum SudoHelper {
 
     @MainActor
     private static func requestPasswordValidation(reason: String) async -> Bool {
-        for attempt in 0..<2 {
+        for attempt in 0 ..< 2 {
             let promptReason = attempt == 0
                 ? reason
                 : "The password was not accepted. Please try again."

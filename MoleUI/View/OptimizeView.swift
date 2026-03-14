@@ -336,7 +336,7 @@ struct OptimizeView: View {
         let memoryPenalty = max(0, memoryPercent - 65) * 0.45
         let diskPenalty = max(0, report.diskUsedPercent - 70) * 0.55
         let taskPenalty = min(Double(report.optimizations.count) * 3.5, 22)
-        let advancedPenalty = Double(report.optimizations.filter { !$0.safe }.count) * 2.5
+        let advancedPenalty = Double(report.optimizations.count(where: { !$0.safe })) * 2.5
 
         let rawScore = 100 - memoryPenalty - diskPenalty - taskPenalty - advancedPenalty
         return max(35, min(Int(rawScore.rounded()), 100))
