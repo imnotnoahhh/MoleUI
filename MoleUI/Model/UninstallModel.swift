@@ -2,26 +2,24 @@ import AppKit
 import Foundation
 import Observation
 
-struct AppInfo: Identifiable, @unchecked Sendable {
+struct AppInfo: Identifiable, Sendable {
     let id: String // bundle path
     let name: String
     let bundleIdentifier: String?
     let version: String?
     let sizeBytes: UInt64
-    let icon: NSImage
     let path: URL
     let lastUsed: Date?
 
     init(
         name: String, bundleIdentifier: String?, version: String?,
-        sizeBytes: UInt64, icon: NSImage, path: URL, lastUsed: Date?
+        sizeBytes: UInt64, path: URL, lastUsed: Date?
     ) {
         self.id = path.path
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.version = version
         self.sizeBytes = sizeBytes
-        self.icon = icon
         self.path = path
         self.lastUsed = lastUsed
     }
@@ -41,11 +39,24 @@ final class AppScanModel {
     private var cachedModificationDate: Date?
     private let cacheValidityDuration: TimeInterval = 300 // 5 minutes
 
+    /// Icon cache (main-actor isolated)
+    private var iconCache: [String: NSImage] = [:]
+
     var lastScanTime: Date? {
         cacheTimestamp
     }
 
     init() {}
+
+    /// Get icon for app (cached, main-actor only)
+    func icon(for app: AppInfo) -> NSImage {
+        if let cached = iconCache[app.id] {
+            return cached
+        }
+        let icon = NSWorkspace.shared.icon(forFile: app.path.path)
+        iconCache[app.id] = icon
+        return icon
+    }
 
     func scan() {
         // Check if cache is valid
@@ -107,6 +118,7 @@ final class AppScanModel {
         cachedApps = []
         cacheTimestamp = nil
         cachedModificationDate = nil
+        iconCache.removeAll()
         performScan()
     }
 
@@ -142,7 +154,6 @@ final class AppScanModel {
             guard FileManager.default.fileExists(atPath: path) else { continue }
             let bundle = Bundle(url: appURL)
             let version = bundle?.infoDictionary?["CFBundleShortVersionString"] as? String
-            let icon = NSWorkspace.shared.icon(forFile: path)
             let bundleId = (bundleIdRaw.isEmpty || bundleIdRaw == "unknown") ? bundle?.bundleIdentifier : bundleIdRaw
             let lastUsed = epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
 
@@ -151,7 +162,6 @@ final class AppScanModel {
                 bundleIdentifier: bundleId,
                 version: version,
                 sizeBytes: sizeKB * 1024,
-                icon: icon,
                 path: appURL,
                 lastUsed: lastUsed
             ))
