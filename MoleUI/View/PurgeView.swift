@@ -3,7 +3,6 @@ import SwiftUI
 
 struct PurgeView: View {
     @Environment(PurgeModel.self) var service
-    @State private var showPathsEditor = false
 
     private var totalReclaimable: UInt64 {
         service.targets.reduce(0) { $0 + $1.sizeBytes }
@@ -19,9 +18,6 @@ struct PurgeView: View {
         }
         .task {
             await service.scan()
-        }
-        .sheet(isPresented: $showPathsEditor) {
-            PurgePathsEditorView()
         }
     }
 
@@ -44,7 +40,7 @@ struct PurgeView: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        showPathsEditor = true
+                        openPathsEditorWindow()
                     } label: {
                         Label("Edit Paths", systemImage: "slider.horizontal.3")
                     }
@@ -197,33 +193,86 @@ struct PurgeView: View {
             .padding(.vertical, 2)
         }
     }
+
+    private func openPathsEditorWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Edit Scan Paths"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isOpaque = true
+        window.backgroundColor = NSColor.windowBackgroundColor
+        window.center()
+        window.contentView = NSHostingView(
+            rootView: PurgePathsEditorView(window: window, service: service)
+        )
+        window.makeKeyAndOrderFront(nil)
+    }
 }
 
 // MARK: - Purge Paths Editor
 
 struct PurgePathsEditorView: View {
-    @Environment(\.dismiss) private var dismiss
+    let window: NSWindow?
+    let service: PurgeModel
     @State private var pathsText: String = ""
     @State private var errorMessage: String?
 
+    init(window: NSWindow? = nil, service: PurgeModel) {
+        self.window = window
+        self.service = service
+    }
+
     var body: some View {
-        VStack(spacing: 18) {
-            MoleHeroPanel(
-                eyebrow: "Projects",
-                title: "Edit Scan Paths",
-                subtitle: "One path per line. Mole UI merges these with the built-in defaults before each purge scan.",
-                symbol: "slider.horizontal.3"
-            ) {
+        VStack(spacing: 0) {
+            // Top spacer for window controls (macOS titlebar height is ~52px)
+            Color.clear
+                .frame(height: 52)
+
+            // Header
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 48, height: 48)
+                    .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PROJECTS")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .tracking(0.8)
+
+                    Text("Edit Scan Paths")
+                        .font(.system(size: 24, weight: .bold))
+
+                    Text("One path per line. Mole UI merges these with the built-in defaults before each purge scan.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
                 Button("Done") {
                     savePaths()
-                    dismiss()
+                    window?.close()
+                    Task { await service.scan() }
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
             }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Add one path per line. Use ~ for home directory.")
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Add one path per line. Use ~ for home directory (half-width tilde, not ～).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -231,11 +280,12 @@ struct PurgePathsEditorView: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 300)
                     .padding(10)
-                    .background(Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.white.opacity(0.72), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
                     )
+                    .scrollContentBackground(.hidden)
 
                 if let error = errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -246,23 +296,12 @@ struct PurgePathsEditorView: View {
                 Text("Default paths: ~/www, ~/dev, ~/Projects, ~/GitHub, ~/Code, ~/Workspace, ~/Repos, ~/Development")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(20)
-            .background(
-                LinearGradient(
-                    colors: [Color.white.opacity(0.78), MoleTheme.parchment.opacity(0.94)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.white.opacity(0.6), lineWidth: 1)
-            )
         }
-        .padding(18)
-        .frame(width: 680, height: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             loadPaths()
         }
@@ -290,9 +329,14 @@ struct PurgePathsEditorView: View {
         let moleUIDir = appSupport.appendingPathComponent("MoleUI")
         let configPath = moleUIDir.appendingPathComponent("purge_paths")
 
+        // Normalize paths: replace full-width tilde with half-width
+        let normalizedText = pathsText
+            .replacingOccurrences(of: "～", with: "~")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         do {
             try FileManager.default.createDirectory(at: moleUIDir, withIntermediateDirectories: true)
-            try pathsText.write(to: configPath, atomically: true, encoding: .utf8)
+            try normalizedText.write(to: configPath, atomically: true, encoding: .utf8)
             errorMessage = nil
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"

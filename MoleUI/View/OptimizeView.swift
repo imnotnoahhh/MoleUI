@@ -16,36 +16,78 @@ struct OptimizeView: View {
             if dryRunMode {
                 dryRunBanner
             }
-            ScrollView {
-                VStack(spacing: 16) {
-                    headerCard
 
-                    Group {
-                        if service.isScanning, service.report == nil {
-                            ProgressView("Scanning system health...")
-                        } else if let error = service.errorMessage, service.report == nil {
-                            ContentUnavailableView(
-                                "Health Check Failed",
-                                systemImage: "exclamationmark.triangle",
-                                description: Text(error)
-                            )
-                        } else if let report = service.report {
-                            reportContent(report)
-                        } else {
-                            ContentUnavailableView(
-                                "No Report",
-                                systemImage: "heart.text.square",
-                                description: Text("Click Refresh to scan system health.")
-                            )
+            // Optimizing progress banner (like Clean)
+            if service.isOptimizing {
+                optimizingBanner
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 16) {
+                        headerCard
+
+                        Group {
+                            if service.isScanning, service.report == nil {
+                                ProgressView("Scanning system health...")
+                            } else if let error = service.errorMessage, service.report == nil {
+                                ContentUnavailableView(
+                                    "Health Check Failed",
+                                    systemImage: "exclamationmark.triangle",
+                                    description: Text(error)
+                                )
+                            } else if let report = service.report {
+                                reportContent(report)
+                            } else {
+                                ContentUnavailableView(
+                                    "No Report",
+                                    systemImage: "heart.text.square",
+                                    description: Text("Click Refresh to scan system health.")
+                                )
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+                .onChange(of: service.isOptimizing) { _, isOptimizing in
+                    if !isOptimizing, service.lastOutput != nil {
+                        // Scroll to result when optimization completes
+                        withAnimation {
+                            proxy.scrollTo("optimizationResult", anchor: .top)
                         }
                     }
                 }
-                .padding(16)
             }
         }
         .task {
             await service.loadReport()
         }
+    }
+
+    private var optimizingBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(dryRunMode ? "Previewing..." : "Optimizing...")
+                .font(.system(size: 12, weight: .medium))
+            if let currentTask = service.currentTask {
+                Text(currentTask)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("Please wait, this may take a while")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
     private var dryRunBanner: some View {
@@ -116,43 +158,10 @@ struct OptimizeView: View {
 
             taskList(report.optimizations)
 
-            if service.isOptimizing {
-                optimizingStatusCard
-            }
-
             if let output = service.lastOutput, !service.isOptimizing {
                 resultSummaryCard(output)
+                    .id("optimizationResult")
             }
-        }
-    }
-
-    // MARK: - Optimizing Status Card
-
-    private var optimizingStatusCard: some View {
-        GroupBox {
-            HStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.regular)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(dryRunMode ? "Previewing..." : "Optimizing...")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-
-                    if let currentTask = service.currentTask {
-                        Text(currentTask)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Starting optimization tasks...")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-            }
-            .padding(.vertical, 8)
         }
     }
 

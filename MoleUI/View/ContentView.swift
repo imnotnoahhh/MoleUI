@@ -286,7 +286,7 @@ struct MoleHeroPanel<Accessory: View>: View {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .stroke(MoleTheme.line, lineWidth: 1)
             }
-            .allowsHitTesting(false)  // Allow clicks to pass through
+            .allowsHitTesting(false) // Allow clicks to pass through
         }
         .shadow(color: MoleTheme.pine.opacity(0.08), radius: 22, y: 10)
     }
