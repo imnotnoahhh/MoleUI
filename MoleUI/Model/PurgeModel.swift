@@ -123,12 +123,20 @@ final class PurgeModel {
             throw CLIExecutor.ExecutionError.commandNotFound("mole")
         }
 
+        // Sync MoleUI's custom paths to Mole Core's config location
+        do {
+            try syncCustomPathsToMoleConfig()
+        } catch {
+            // Silently fail - will fall back to default paths
+        }
+
         let script = """
         set -euo pipefail
         ROOT=\(shellEscape(root.path))
         export XDG_CACHE_HOME="${TMPDIR:-/tmp}/moleui-cache"
         mkdir -p "$XDG_CACHE_HOME/mole"
         source "$ROOT/lib/core/common.sh"
+        source "$ROOT/lib/clean/purge_shared.sh"
         source "$ROOT/lib/clean/project.sh"
         tmp=$(mktemp)
         for search in "${PURGE_SEARCH_PATHS[@]}"; do
@@ -191,5 +199,23 @@ final class PurgeModel {
 
     private func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func syncCustomPathsToMoleConfig() throws {
+        // Read from MoleUI's config
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return }
+
+        let moleUIConfig = appSupport.appendingPathComponent("MoleUI/purge_paths")
+        let moleUIContent = (try? String(contentsOf: moleUIConfig, encoding: .utf8)) ?? ""
+
+        // Write to Mole Core's config location
+        let moleConfigDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config/mole")
+        let moleConfig = moleConfigDir.appendingPathComponent("purge_paths")
+
+        try FileManager.default.createDirectory(at: moleConfigDir, withIntermediateDirectories: true)
+        try moleUIContent.write(to: moleConfig, atomically: true, encoding: .utf8)
     }
 }

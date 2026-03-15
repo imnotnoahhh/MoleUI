@@ -396,23 +396,21 @@ final class CleanModel {
                 // Dry run doesn't need sudo
                 output = try await CLIExecutor.runMole("clean --dry-run", dryRun: true)
             } else {
-                guard await SudoHelper.requestSudoAccess(
-                    reason: "System cleanup requires administrator access."
-                ) else {
+                // Normal mode: use sudo
+                guard let moleBinary = CLIExecutor.findMoleBinary() else {
                     throw NSError(
                         domain: "CleanModel",
-                        code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
                     )
                 }
-
-                output = try await CLIExecutor.runMole("clean")
+                let command = "'\(moleBinary.path)' clean"
+                output = try await SudoHelper.runWithAdmin(command)
             }
 
             lastOutput = output
 
             // Parse output to extract cleaned size
-            // mole clean output format: "Space freed: 147KB" at the end
             if let cleanedBytes = parseCleanedSize(from: output) {
                 lastCleanedBytes = cleanedBytes
             }
@@ -452,7 +450,7 @@ final class CleanModel {
             {
                 let unit = String(line[unitRange]).uppercased()
 
-                let bytes = switch unit {
+                return switch unit {
                 case "KB":
                     UInt64(size * 1024)
                 case "MB":
@@ -462,13 +460,6 @@ final class CleanModel {
                 default:
                     UInt64(0)
                 }
-
-                // If size is 0, check if trash was emptied
-                if bytes == 0, output.contains("Trash · emptied") {
-                    // Return 0 but we know trash was cleaned
-                }
-
-                return bytes
             }
         }
 
