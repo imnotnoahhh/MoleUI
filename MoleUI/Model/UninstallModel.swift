@@ -258,9 +258,12 @@ final class UninstallModel {
         }
         let bundleID = app.bundleIdentifier ?? "unknown"
         let selected = "0|\(app.path.path)|\(app.name)|\(bundleID)|0|Unknown|0"
+
+        // Mark sudo as already established to prevent duplicate password prompts
         let script = """
         set -euo pipefail
         export MOLE_TEST_MODE=1
+        export MOLE_SUDO_ESTABLISHED=true
         ROOT=\(Self.shellEscape(root.path))
         APP_ENTRY=\(Self.shellEscape(selected))
         tmp_script=$(mktemp "${TMPDIR:-/tmp}/mole-uninstall-nomain.XXXXXX")

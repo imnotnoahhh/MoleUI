@@ -3,7 +3,7 @@ import Observation
 
 // MARK: - Clean Category
 
-struct CleanCategory: Identifiable, Equatable {
+struct CleanCategory: Identifiable, Sendable, Equatable {
     let id: String
     let name: String
     let icon: String
@@ -300,7 +300,7 @@ struct CleanCategory: Identifiable, Equatable {
 
 // MARK: - Scan Result
 
-struct CleanScanResult: Identifiable, Equatable {
+struct CleanScanResult: Identifiable, Sendable, Equatable {
     let id: String
     let category: CleanCategory
     let totalBytes: UInt64
@@ -396,25 +396,36 @@ final class CleanModel {
                 // Dry run doesn't need sudo
                 output = try await CLIExecutor.runMole("clean --dry-run", dryRun: true)
             } else {
-                guard await SudoHelper.requestSudoAccess(
-                    reason: "System cleanup requires administrator access."
-                ) else {
+                // Normal mode: use sudo
+                guard let moleBinary = CLIExecutor.findMoleBinary() else {
                     throw NSError(
                         domain: "CleanModel",
-                        code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Administrator privileges required"]
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Cannot find mole executable"]
                     )
                 }
-
-                output = try await CLIExecutor.runMole("clean")
+                let command = "'\(moleBinary.path)' clean"
+                output = try await SudoHelper.runWithAdmin(command)
             }
 
             lastOutput = output
 
             // Parse output to extract cleaned size
             // mole clean output format: "Space freed: 147KB" at the end
+            print("📊 Output length: \(output.count) characters")
+            print("📊 Output contains 'Space freed': \(output.contains("Space freed"))")
+
+            // Print the last 1000 characters to see the complete summary
+            let lastChars = String(output.suffix(1000))
+            print("📊 Last 1000 chars of output:")
+            print(lastChars)
+            print("📊 End of output")
+
             if let cleanedBytes = parseCleanedSize(from: output) {
                 lastCleanedBytes = cleanedBytes
+                print("✅ Parsed cleaned size: \(cleanedBytes) bytes (\(MetricsFormatter.humanBytes(cleanedBytes)))")
+            } else {
+                print("⚠️ Failed to parse cleaned size from output")
             }
 
             // Mark all categories as completed
@@ -436,13 +447,17 @@ final class CleanModel {
         let lines = output.components(separatedBy: .newlines)
 
         for line in lines where line.contains("Space freed") {
+            print("🔍 Found 'Space freed' line: '\(line)'")
+
             // Find all number+unit combinations in this line
             let pattern = #"([\d.]+)(KB|MB|GB)"#
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                print("🔍 Failed to create regex")
                 continue
             }
 
             let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            print("🔍 Found \(matches.count) number+unit matches")
 
             // Take the last match (the actual freed size, not ANSI code numbers)
             if let lastMatch = matches.last,
@@ -451,6 +466,7 @@ final class CleanModel {
                let size = Double(line[sizeRange])
             {
                 let unit = String(line[unitRange]).uppercased()
+                print("🔍 Extracted last match: size=\(size), unit=\(unit)")
 
                 let bytes = switch unit {
                 case "KB":
@@ -465,6 +481,7 @@ final class CleanModel {
 
                 // If size is 0, check if trash was emptied
                 if bytes == 0, output.contains("Trash · emptied") {
+                    print("🔍 Trash was emptied but size is 0 (mole bug)")
                     // Return 0 but we know trash was cleaned
                 }
 
@@ -474,9 +491,11 @@ final class CleanModel {
 
         // Check if system was already clean
         if output.contains("already clean") || output.contains("no additional space freed") {
+            print("🔍 System was already clean")
             return 0
         }
 
+        print("🔍 No valid 'Space freed' line found")
         return nil
     }
 
