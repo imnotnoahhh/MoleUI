@@ -117,6 +117,8 @@ project_cache_has_indicators() {
 # Discover candidate project roots without scanning the whole home directory.
 discover_project_cache_roots() {
     local -a roots=()
+    local -a unique_roots=()
+    local -a seen_identities=()
     local root
 
     for root in "${MOLE_PURGE_DEFAULT_SEARCH_PATHS[@]}"; do
@@ -127,12 +129,18 @@ discover_project_cache_roots() {
         [[ -d "$root" ]] && roots+=("$root")
     done < <(mole_purge_read_paths_config "$HOME/.config/mole/purge_paths")
 
+    local _indicator_tmp
+    _indicator_tmp=$(create_temp_file)
+    local -a _indicator_pids=()
+    local _max_jobs
+    _max_jobs=$(get_optimal_parallel_jobs scan)
+
     local dir
     local base
     for dir in "$HOME"/*/; do
         [[ -d "$dir" ]] || continue
         dir="${dir%/}"
-        base=$(basename "$dir")
+        base="${dir##*/}"
 
         case "$base" in
             .* | Library | Applications | Movies | Music | Pictures | Public)
@@ -140,14 +148,38 @@ discover_project_cache_roots() {
                 ;;
         esac
 
-        if project_cache_has_indicators "$dir" 5; then
-            roots+=("$dir")
+        (project_cache_has_indicators "$dir" 5 && echo "$dir" >> "$_indicator_tmp") &
+        _indicator_pids+=($!)
+
+        if [[ ${#_indicator_pids[@]} -ge $_max_jobs ]]; then
+            wait "${_indicator_pids[0]}" 2> /dev/null || true
+            _indicator_pids=("${_indicator_pids[@]:1}")
         fi
     done
+    for _pid in "${_indicator_pids[@]}"; do
+        wait "$_pid" 2> /dev/null || true
+    done
+
+    local _found_dir
+    while IFS= read -r _found_dir; do
+        [[ -n "$_found_dir" ]] && roots+=("$_found_dir")
+    done < "$_indicator_tmp"
+    rm -f "$_indicator_tmp"
 
     [[ ${#roots[@]} -eq 0 ]] && return 0
 
-    printf '%s\n' "${roots[@]}" | LC_ALL=C sort -u
+    for root in "${roots[@]}"; do
+        local identity
+        identity=$(mole_path_identity "$root")
+        if [[ ${#seen_identities[@]} -gt 0 ]] && mole_identity_in_list "$identity" "${seen_identities[@]}"; then
+            continue
+        fi
+
+        seen_identities+=("$identity")
+        unique_roots+=("$root")
+    done
+
+    [[ ${#unique_roots[@]} -gt 0 ]] && printf '%s\n' "${unique_roots[@]}"
 }
 
 # Scan a project root for supported build caches while pruning heavy subtrees.
@@ -198,8 +230,13 @@ clean_project_caches() {
         start_inline_spinner "Searching project caches..."
     fi
 
+    local -a _scan_pids=()
     for root in "${scan_roots[@]}"; do
-        scan_project_cache_root "$root" "$matches_tmp_file"
+        scan_project_cache_root "$root" "$matches_tmp_file" &
+        _scan_pids+=($!)
+    done
+    for _pid in "${_scan_pids[@]}"; do
+        wait "$_pid" 2> /dev/null || true
     done
 
     if [[ -t 1 ]]; then
@@ -212,7 +249,9 @@ clean_project_caches() {
                 [[ -d "$cache_dir/cache" ]] && safe_clean "$cache_dir/cache"/* "Next.js build cache" || true
                 ;;
             "__pycache__")
-                [[ -d "$cache_dir" ]] && safe_clean "$cache_dir"/* "Python bytecode cache" || true
+                # Remove the cache directory itself so we avoid expanding every
+                # .pyc file into a separate safe_clean target.
+                [[ -d "$cache_dir" ]] && safe_clean "$cache_dir" "Python bytecode cache" || true
                 ;;
             ".dart_tool")
                 if [[ -d "$cache_dir" ]]; then

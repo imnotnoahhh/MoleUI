@@ -50,7 +50,7 @@ setup() {
     stdout_output="$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; log_info '$message'")"
     [[ "$stdout_output" == *"$message"* ]]
 
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     [[ -f "$log_file" ]]
     grep -q "INFO: $message" "$log_file"
 }
@@ -64,13 +64,35 @@ setup() {
     [[ -s "$stderr_file" ]]
     grep -q "$message" "$stderr_file"
 
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     [[ -f "$log_file" ]]
     grep -q "ERROR: $message" "$log_file"
 }
 
+@test "log_operation recreates operations log if the log directory disappears mid-session" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+rm -rf "$HOME/Library/Logs/mole"
+log_operation "clean" "REMOVED" "/tmp/example" "1KB"
+EOF
+    [ "$status" -eq 0 ]
+
+    local oplog="$HOME/Library/Logs/mole/operations.log"
+    [[ -f "$oplog" ]]
+    grep -Fq "[clean] REMOVED /tmp/example (1KB)" "$oplog"
+}
+
+@test "should_protect_path protects Mole runtime logs" {
+    result="$(
+        HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc -c \
+            'source "$PROJECT_ROOT/lib/core/common.sh"; should_protect_path "$HOME/Library/Logs/mole/operations.log" && echo protected || echo not-protected'
+    )"
+    [ "$result" = "protected" ]
+}
+
 @test "rotate_log_once only checks log size once per session" {
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     mkdir -p "$(dirname "$log_file")"
     dd if=/dev/zero of="$log_file" bs=1024 count=1100 2> /dev/null
 
@@ -142,6 +164,9 @@ EOF
     result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.clash.app' && echo 'protected' || echo 'not-protected'")
     [ "$result" = "protected" ]
 
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'io.github.clash-verge-rev.clash-verge-rev' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
     result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.example.RegularApp' && echo 'protected' || echo 'not-protected'")
     [ "$result" = "not-protected" ]
 }
@@ -201,8 +226,28 @@ sleep 0.1
 stop_inline_spinner
 echo "done"
 EOF
-)
+    )
     [[ "$result" == *"done"* ]]
+}
+
+@test "start_inline_spinner ignores PATH-provided sleep in TTY mode" {
+    local fake_bin="$HOME/fake-bin"
+    local marker="$HOME/fake-sleep.marker"
+
+    mkdir -p "$fake_bin"
+    cat > "$fake_bin/sleep" <<EOF
+#!/bin/bash
+echo "fake" >> "$marker"
+exec /bin/sleep "\$@"
+EOF
+    chmod +x "$fake_bin/sleep"
+
+    PATH="$fake_bin:$PATH" PROJECT_ROOT="$PROJECT_ROOT" HOME="$HOME" \
+        /usr/bin/script -q /dev/null /bin/bash --noprofile --norc -c \
+        "source \"\$PROJECT_ROOT/lib/core/common.sh\"; start_inline_spinner \"Testing...\"; /bin/sleep 0.15; stop_inline_spinner" \
+        > /dev/null 2>&1
+
+    [ ! -f "$marker" ]
 }
 
 @test "read_key maps j/k/h/l to navigation" {

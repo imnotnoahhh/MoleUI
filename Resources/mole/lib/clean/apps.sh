@@ -123,8 +123,11 @@ scan_installed_apps() {
     done
     # Collect running apps and LaunchAgents to avoid false orphan cleanup.
     (
-        local running_apps=$(run_with_timeout 5 osascript -e 'tell application "System Events" to get bundle identifier of every application process' 2> /dev/null || echo "")
-        echo "$running_apps" | tr ',' '\n' | sed -e 's/^ *//;s/ *$//' -e '/^$/d' > "$scan_tmp_dir/running.txt"
+        # Skip AppleScript during tests to avoid permission dialogs
+        if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+            local running_apps=$(run_with_timeout 5 osascript -e 'tell application "System Events" to get bundle identifier of every application process' 2> /dev/null || echo "")
+            echo "$running_apps" | tr ',' '\n' | sed -e 's/^ *//;s/ *$//' -e '/^$/d' > "$scan_tmp_dir/running.txt"
+        fi
         # Fallback: lsappinfo is more reliable than osascript
         if command -v lsappinfo > /dev/null 2>&1; then
             run_with_timeout 3 lsappinfo list 2> /dev/null | grep -o '"CFBundleIdentifier"="[^"]*"' | cut -d'"' -f4 >> "$scan_tmp_dir/running.txt" 2> /dev/null || true
@@ -597,195 +600,11 @@ clean_orphaned_system_services() {
 }
 
 # ============================================================================
-# Orphaned LaunchAgent/LaunchDaemon Cleanup (Generic Detection)
+# User LaunchAgents
 # ============================================================================
 
-# Extract program path from plist (supports both ProgramArguments and Program)
-_extract_program_path() {
-    local plist="$1"
-    local program=""
-
-    program=$(plutil -extract ProgramArguments.0 raw "$plist" 2> /dev/null)
-    if [[ -z "$program" ]]; then
-        program=$(plutil -extract Program raw "$plist" 2> /dev/null)
-    fi
-
-    echo "$program"
-}
-
-# Extract associated bundle identifier from plist
-_extract_associated_bundle() {
-    local plist="$1"
-    local associated=""
-
-    # Try array format first
-    associated=$(plutil -extract AssociatedBundleIdentifiers.0 raw "$plist" 2> /dev/null)
-    if [[ -z "$associated" ]] || [[ "$associated" == "1" ]]; then
-        # Try string format
-        associated=$(plutil -extract AssociatedBundleIdentifiers raw "$plist" 2> /dev/null)
-        # Filter out dict/array markers
-        if [[ "$associated" == "{"* ]] || [[ "$associated" == "["* ]]; then
-            associated=""
-        fi
-    fi
-
-    echo "$associated"
-}
-
-# Check if a LaunchAgent/LaunchDaemon is orphaned using multi-layer verification
-# Returns 0 if orphaned, 1 if not orphaned
-is_launch_item_orphaned() {
-    local plist="$1"
-
-    # Layer 1: Check if program path exists
-    local program=$(_extract_program_path "$plist")
-
-    # No program path - skip (not a standard launch item)
-    [[ -z "$program" ]] && return 1
-
-    # Program exists -> not orphaned
-    [[ -e "$program" ]] && return 1
-
-    # Layer 2: Check AssociatedBundleIdentifiers
-    local associated=$(_extract_associated_bundle "$plist")
-    if [[ -n "$associated" ]]; then
-        # Check if associated app exists via mdfind
-        if run_with_timeout 2 mdfind "kMDItemCFBundleIdentifier == '$associated'" 2> /dev/null | head -1 | grep -q .; then
-            return 1 # Associated app found -> not orphaned
-        fi
-
-        # Extract vendor name from bundle ID (com.vendor.app -> vendor)
-        local vendor=$(echo "$associated" | cut -d'.' -f2)
-        if [[ -n "$vendor" ]] && [[ ${#vendor} -ge 3 ]]; then
-            # Check if any app from this vendor exists
-            if find /Applications ~/Applications -maxdepth 2 -iname "*${vendor}*" -type d 2> /dev/null | grep -iq "\.app"; then
-                return 1 # Vendor app exists -> not orphaned
-            fi
-        fi
-    fi
-
-    # Layer 3: Check Application Support directory activity
-    if [[ "$program" =~ /Library/Application\ Support/([^/]+)/ ]]; then
-        local app_support_name="${BASH_REMATCH[1]}"
-
-        # Check both user and system Application Support
-        for base in "$HOME/Library/Application Support" "/Library/Application Support"; do
-            local support_path="$base/$app_support_name"
-            if [[ -d "$support_path" ]]; then
-                # Check if there are files modified in last 7 days (active usage)
-                local recent_file=$(find "$support_path" -type f -mtime -7 2> /dev/null | head -1)
-                if [[ -n "$recent_file" ]]; then
-                    return 1 # Active Application Support -> not orphaned
-                fi
-            fi
-        done
-    fi
-
-    # Layer 4: Check if app name from program path exists
-    if [[ "$program" =~ /Applications/([^/]+)\.app/ ]]; then
-        local app_name="${BASH_REMATCH[1]}"
-        # Look for apps with similar names (case-insensitive)
-        if find /Applications ~/Applications -maxdepth 2 -iname "*${app_name}*" -type d 2> /dev/null | grep -iq "\.app"; then
-            return 1 # Similar app exists -> not orphaned
-        fi
-    fi
-
-    # Layer 5: PrivilegedHelper special handling
-    if [[ "$program" =~ ^/Library/PrivilegedHelperTools/ ]]; then
-        local filename=$(basename "$plist")
-        local bundle_id="${filename%.plist}"
-
-        # Extract app hint from bundle ID (com.vendor.app.helper -> vendor)
-        local app_hint=$(echo "$bundle_id" | sed 's/com\.//; s/\..*helper.*//')
-
-        if [[ -n "$app_hint" ]] && [[ ${#app_hint} -ge 3 ]]; then
-            # Look for main app
-            if find /Applications ~/Applications -maxdepth 2 -iname "*${app_hint}*" -type d 2> /dev/null | grep -iq "\.app"; then
-                return 1 # Helper's main app exists -> not orphaned
-            fi
-        fi
-    fi
-
-    # All checks failed -> likely orphaned
-    return 0
-}
-
-# Clean orphaned user-level LaunchAgents
-# Only processes ~/Library/LaunchAgents (safer than system-level)
+# User-level LaunchAgents are user-owned automation/configuration, not generic
+# cleanup targets. `mo clean` must not delete them automatically.
 clean_orphaned_launch_agents() {
-    local launch_agents_dir="$HOME/Library/LaunchAgents"
-
-    [[ ! -d "$launch_agents_dir" ]] && return 0
-
-    start_section_spinner "Scanning orphaned launch agents..."
-
-    local -a orphaned_items=()
-    local total_orphaned_kb=0
-
-    # Scan user LaunchAgents
-    while IFS= read -r -d '' plist; do
-        local filename=$(basename "$plist")
-
-        # Skip Apple's LaunchAgents
-        [[ "$filename" == com.apple.* ]] && continue
-
-        local bundle_id="${filename%.plist}"
-
-        # Check if orphaned using multi-layer verification
-        if is_launch_item_orphaned "$plist"; then
-            local size_kb=$(get_path_size_kb "$plist")
-            orphaned_items+=("$bundle_id|$plist")
-            total_orphaned_kb=$((total_orphaned_kb + size_kb))
-        fi
-    done < <(find "$launch_agents_dir" -maxdepth 1 -name "*.plist" -print0 2> /dev/null)
-
-    stop_section_spinner
-
-    local orphaned_count=${#orphaned_items[@]}
-
-    if [[ $orphaned_count -eq 0 ]]; then
-        return 0
-    fi
-
-    # Clean the orphaned items automatically
-    local removed_count=0
-    local dry_run_count=0
-    local is_dry_run=false
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        is_dry_run=true
-    fi
-    for item in "${orphaned_items[@]}"; do
-        IFS='|' read -r bundle_id plist_path <<< "$item"
-
-        if [[ "$is_dry_run" == "true" ]]; then
-            dry_run_count=$((dry_run_count + 1))
-            log_operation "clean" "DRY_RUN" "$plist_path" "orphaned launch agent"
-            continue
-        fi
-
-        # Try to unload first (if currently loaded)
-        launchctl unload "$plist_path" 2> /dev/null || true
-
-        # Remove the plist file
-        if safe_remove "$plist_path" false; then
-            removed_count=$((removed_count + 1))
-            log_operation "clean" "REMOVED" "$plist_path" "orphaned launch agent"
-        else
-            log_operation "clean" "FAILED" "$plist_path" "permission denied"
-        fi
-    done
-
-    if [[ "$is_dry_run" == "true" ]]; then
-        if [[ $dry_run_count -gt 0 ]]; then
-            local cleaned_mb=$(echo "$total_orphaned_kb" | awk '{printf "%.1f", $1/1024}')
-            echo "  ${YELLOW}${ICON_DRY_RUN}${NC} Would remove $dry_run_count orphaned launch agent(s), ${cleaned_mb}MB"
-            note_activity
-        fi
-    else
-        if [[ $removed_count -gt 0 ]]; then
-            local cleaned_mb=$(echo "$total_orphaned_kb" | awk '{printf "%.1f", $1/1024}')
-            echo "  ${GREEN}${ICON_SUCCESS}${NC} Removed $removed_count orphaned launch agent(s), ${cleaned_mb}MB"
-            note_activity
-        fi
-    fi
+    return 0
 }

@@ -17,7 +17,12 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 	lineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#404040"))
 
-	primaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	primaryStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	alertBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2B1200")).
+			Background(lipgloss.Color("#FFD75F")).
+			Bold(true).
+			Padding(0, 1)
 )
 
 const (
@@ -234,6 +239,35 @@ func getScoreStyle(score int) lipgloss.Style {
 	}
 }
 
+func renderProcessAlertBar(alerts []ProcessAlert, width int) string {
+	active := activeAlerts(alerts)
+	if len(active) == 0 {
+		return ""
+	}
+
+	focus := active[0]
+
+	text := fmt.Sprintf(
+		"ALERT %s at %.1f%% for %s (threshold %.1f%%)",
+		formatProcessLabel(ProcessInfo{PID: focus.PID, Name: focus.Name}),
+		focus.CPU,
+		focus.Window,
+		focus.Threshold,
+	)
+	if len(active) > 1 {
+		text += fmt.Sprintf(" · +%d more", len(active)-1)
+	}
+
+	return renderBanner(alertBarStyle, text, width)
+}
+
+func renderBanner(style lipgloss.Style, text string, width int) string {
+	if width > 0 {
+		style = style.MaxWidth(width)
+	}
+	return style.Render(text)
+}
+
 func renderCPUCard(cpu CPUStatus, thermal ThermalStatus) cardData {
 	var lines []string
 
@@ -365,6 +399,8 @@ func renderDiskCard(disks []DiskStatus, io DiskIOStatus) cardData {
 		addGroup("EXTR", external)
 		if len(lines) == 0 {
 			lines = append(lines, subtleStyle.Render("No disks detected"))
+		} else if len(disks) == 1 {
+			lines = append(lines, formatDiskMetaLine(disks[0]))
 		}
 	}
 	readBar := ioBar(io.ReadRate)
@@ -398,8 +434,19 @@ func formatDiskLine(label string, d DiskStatus) string {
 	}
 	bar := progressBar(d.UsedPercent)
 	used := humanBytesShort(d.Used)
-	total := humanBytesShort(d.Total)
-	return fmt.Sprintf("%-6s %s  %5.1f%%, %s/%s", label, bar, d.UsedPercent, used, total)
+	free := uint64(0)
+	if d.Total > d.Used {
+		free = d.Total - d.Used
+	}
+	return fmt.Sprintf("%-6s %s  %s used, %s free", label, bar, used, humanBytesShort(free))
+}
+
+func formatDiskMetaLine(d DiskStatus) string {
+	parts := []string{humanBytesShort(d.Total)}
+	if d.Fstype != "" {
+		parts = append(parts, strings.ToUpper(d.Fstype))
+	}
+	return fmt.Sprintf("Total  %s", strings.Join(parts, " · "))
 }
 
 func ioBar(rate float64) string {

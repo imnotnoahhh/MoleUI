@@ -445,11 +445,27 @@ opt_launch_services_rebuild() {
 }
 
 # Font cache rebuild.
+browser_family_is_running() {
+    local browser_name="$1"
+
+    case "$browser_name" in
+        "Firefox")
+            pgrep -if "Firefox|org\\.mozilla\\.firefox|firefox .*contentproc|firefox .*plugin-container|firefox .*crashreporter" > /dev/null 2>&1
+            ;;
+        "Zen Browser")
+            pgrep -if "Zen Browser|org\\.mozilla\\.zen|Zen Browser Helper|zen .*contentproc" > /dev/null 2>&1
+            ;;
+        *)
+            pgrep -ix "$browser_name" > /dev/null 2>&1
+            ;;
+    esac
+}
+
 opt_font_cache_rebuild() {
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
         debug_operation_start "Font Cache Rebuild" "Clear and rebuild font cache"
         debug_operation_detail "Method" "Run atsutil databases -remove"
-        debug_operation_detail "Safety checks" "Skip when browsers are running to avoid cache rebuild conflicts"
+        debug_operation_detail "Safety checks" "Skip when browsers or browser helpers are running to avoid cache rebuild conflicts"
         debug_operation_detail "Expected outcome" "Fixed font display issues, removed corrupted font cache"
         debug_risk_level "LOW" "System automatically rebuilds font database"
     fi
@@ -457,15 +473,13 @@ opt_font_cache_rebuild() {
     local success=false
 
     if [[ "${MOLE_DRY_RUN:-0}" != "1" ]]; then
-        # Some browsers (notably Firefox) can keep stale GPU/text caches in /var/folders if
-        # system font databases are reset while browser/helper processes are still running.
+        # Some browsers can keep stale GPU/text caches in /var/folders if system font
+        # databases are reset while browser/helper processes are still running.
         local -a running_browsers=()
-        if pgrep -if "Firefox|org\\.mozilla\\.firefox|firefox-gpu-helper" > /dev/null 2>&1; then
-            running_browsers+=("Firefox")
-        fi
 
         local browser_name
         local -a browser_checks=(
+            "Firefox"
             "Safari"
             "Google Chrome"
             "Chromium"
@@ -478,7 +492,7 @@ opt_font_cache_rebuild() {
             "Helium"
         )
         for browser_name in "${browser_checks[@]}"; do
-            if pgrep -ix "$browser_name" > /dev/null 2>&1; then
+            if browser_family_is_running "$browser_name"; then
                 running_browsers+=("$browser_name")
             fi
         done
@@ -487,8 +501,8 @@ opt_font_cache_rebuild() {
             local running_list
             running_list=$(printf "%s, " "${running_browsers[@]}")
             running_list="${running_list%, }"
-            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Skipped font cache rebuild because browsers are running: ${running_list}"
-            echo -e "  ${GRAY}${ICON_REVIEW}${NC} ${GRAY}Quit browsers completely, then rerun optimize if font issues persist${NC}"
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Skipped font cache rebuild because browsers or helpers are still running: ${running_list}"
+            echo -e "  ${GRAY}${ICON_REVIEW}${NC} ${GRAY}Quit affected browsers completely, then rerun optimize if font issues persist${NC}"
             return 0
         fi
 
@@ -641,6 +655,7 @@ opt_bluetooth_reset() {
     fi
 
     local spinner_started="false"
+    local disconnect_notice="Bluetooth devices may disconnect briefly during refresh"
     if [[ -t 1 ]]; then
         MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking Bluetooth..."
         spinner_started="true"
@@ -688,6 +703,7 @@ opt_bluetooth_reset() {
         fi
 
         if sudo pkill -TERM bluetoothd > /dev/null 2>&1; then
+            echo -e "  ${GRAY}${ICON_WARNING}${NC} ${GRAY}${disconnect_notice}${NC}"
             sleep 1
             if pgrep -x bluetoothd > /dev/null 2>&1; then
                 sudo pkill -KILL bluetoothd > /dev/null 2>&1 || true
@@ -707,6 +723,7 @@ opt_bluetooth_reset() {
         if [[ "$spinner_started" == "true" ]]; then
             stop_inline_spinner
         fi
+        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} ${disconnect_notice}"
         opt_msg "Bluetooth module restarted"
         opt_msg "Connectivity issues resolved"
     fi

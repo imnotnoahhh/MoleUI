@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-apps-module.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -412,142 +416,31 @@ EOF
     [[ "$output" != *"launchctl-called"* ]]
 }
 
-@test "is_launch_item_orphaned detects orphan when program missing" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.orphan.plist"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.orphan</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/nonexistent/app/program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when program exists" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.active.plist"
-tmp_program="$tmp_dir/program"
-touch "$tmp_program"
-
-cat > "$tmp_plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.active</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$tmp_program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when app support active" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.appsupport.plist"
-
-mkdir -p "$HOME/Library/Application Support/TestApp"
-touch "$HOME/Library/Application Support/TestApp/recent.txt"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.appsupport</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$HOME/Library/Application Support/TestApp/Current/app</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-rm -rf "$HOME/Library/Application Support/TestApp"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "clean_orphaned_launch_agents skips when no orphans" {
+@test "clean_orphaned_launch_agents preserves user launch agents" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
 
 mkdir -p "$HOME/Library/LaunchAgents"
+cat > "$HOME/Library/LaunchAgents/com.example.custom-task.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.custom-task</string>
+</dict>
+</plist>
+PLIST
 
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
-get_path_size_kb() { echo "1"; }
-run_with_timeout() { shift; "$@"; }
 
 clean_orphaned_launch_agents
+
+[[ -f "$HOME/Library/LaunchAgents/com.example.custom-task.plist" ]]
 EOF
 
     [ "$status" -eq 0 ]

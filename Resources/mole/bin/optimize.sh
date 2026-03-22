@@ -28,6 +28,72 @@ print_header() {
     echo -e "${PURPLE_BOLD}Optimize and Check${NC}"
 }
 
+# Bash-native JSON parsing helpers (no jq dependency).
+# Extract a simple numeric value from JSON by key.
+json_get_value() {
+    local json="$1"
+    local key="$2"
+    local value
+    value=$(echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//')
+    echo "${value:-0}"
+}
+
+# Validate JSON has expected structure (basic check).
+json_validate() {
+    local json="$1"
+    # Check for required keys
+    [[ "$json" == *'"memory_used_gb"'* ]] &&
+        [[ "$json" == *'"optimizations"'* ]] &&
+        [[ "$json" == *'{'* ]] && [[ "$json" == *'}'* ]]
+}
+
+# Parse optimization items from JSON array.
+# Outputs pipe-delimited records: action|name|description|safe
+parse_optimization_items() {
+    local json="$1"
+    # Extract the optimizations array content
+    local in_array=false
+    local brace_count=0
+    local current_item=""
+
+    while IFS= read -r line; do
+        # Detect start of optimizations array
+        if [[ "$line" == *'"optimizations"'*'['* ]]; then
+            in_array=true
+            continue
+        fi
+
+        [[ "$in_array" != "true" ]] && continue
+
+        # Count braces to track object boundaries
+        if [[ "$line" == *'{'* ]]; then
+            ((brace_count++))
+        fi
+
+        if ((brace_count > 0)); then
+            current_item+="$line"
+        fi
+
+        if [[ "$line" == *'}'* ]]; then
+            ((brace_count--))
+            if ((brace_count == 0)) && [[ -n "$current_item" ]]; then
+                # Extract fields from the collected item
+                local action name desc safe
+                action=$(echo "$current_item" | grep -o '"action"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"action"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+                name=$(echo "$current_item" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+                desc=$(echo "$current_item" | grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+                safe=$(echo "$current_item" | grep -o '"safe"[[:space:]]*:[[:space:]]*[a-z]*' | sed 's/.*:[[:space:]]*//')
+
+                [[ -n "$action" ]] && echo "${action}|${name}|${desc}|${safe}"
+                current_item=""
+            fi
+        fi
+
+        # End of array
+        [[ "$line" == *']'* ]] && ((brace_count == 0)) && break
+    done <<< "$json"
+}
+
 run_system_checks() {
     # Skip checks in dry-run mode.
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
@@ -139,12 +205,12 @@ show_optimization_summary() {
 show_system_health() {
     local health_json="$1"
 
-    local mem_used=$(echo "$health_json" | jq -r '.memory_used_gb // 0' 2> /dev/null || echo "0")
-    local mem_total=$(echo "$health_json" | jq -r '.memory_total_gb // 0' 2> /dev/null || echo "0")
-    local disk_used=$(echo "$health_json" | jq -r '.disk_used_gb // 0' 2> /dev/null || echo "0")
-    local disk_total=$(echo "$health_json" | jq -r '.disk_total_gb // 0' 2> /dev/null || echo "0")
-    local disk_percent=$(echo "$health_json" | jq -r '.disk_used_percent // 0' 2> /dev/null || echo "0")
-    local uptime=$(echo "$health_json" | jq -r '.uptime_days // 0' 2> /dev/null || echo "0")
+    local mem_used=$(json_get_value "$health_json" "memory_used_gb")
+    local mem_total=$(json_get_value "$health_json" "memory_total_gb")
+    local disk_used=$(json_get_value "$health_json" "disk_used_gb")
+    local disk_total=$(json_get_value "$health_json" "disk_total_gb")
+    local disk_percent=$(json_get_value "$health_json" "disk_used_percent")
+    local uptime=$(json_get_value "$health_json" "uptime_days")
 
     mem_used=${mem_used:-0}
     mem_total=${mem_total:-0}
@@ -155,11 +221,6 @@ show_system_health() {
 
     printf "${ICON_ADMIN} System  %.0f/%.0f GB RAM | %.0f/%.0f GB Disk | Uptime %.0fd\n" \
         "$mem_used" "$mem_total" "$disk_used" "$disk_total" "$uptime"
-}
-
-parse_optimizations() {
-    local health_json="$1"
-    echo "$health_json" | jq -c '.optimizations[]' 2> /dev/null
 }
 
 announce_action() {
@@ -406,12 +467,6 @@ main() {
         echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No files will be modified\n"
     fi
 
-    if ! command -v jq > /dev/null 2>&1; then
-        echo -e "${YELLOW}${ICON_ERROR}${NC} Missing dependency: jq"
-        echo -e "${GRAY}Install with: ${GREEN}brew install jq${NC}"
-        exit 1
-    fi
-
     if ! command -v bc > /dev/null 2>&1; then
         echo -e "${YELLOW}${ICON_ERROR}${NC} Missing dependency: bc"
         echo -e "${GRAY}Install with: ${GREEN}brew install bc${NC}"
@@ -431,13 +486,13 @@ main() {
         exit 1
     fi
 
-    if ! echo "$health_json" | jq empty 2> /dev/null; then
+    if ! json_validate "$health_json"; then
         if [[ -t 1 ]]; then
             stop_inline_spinner
         fi
         echo ""
         log_error "Invalid system health data format"
-        echo -e "${GRAY}${ICON_REVIEW}${NC} Check if jq, awk, sysctl, and df commands are available"
+        echo -e "${GRAY}${ICON_REVIEW}${NC} Check if awk, sysctl, and df commands are available"
         exit 1
     fi
 
@@ -463,17 +518,12 @@ main() {
     local -a confirm_items=()
     local opts_file
     opts_file=$(mktemp_file)
-    parse_optimizations "$health_json" > "$opts_file"
+    parse_optimization_items "$health_json" > "$opts_file"
 
-    while IFS= read -r opt_json; do
-        [[ -z "$opt_json" ]] && continue
+    while IFS='|' read -r action name desc safe; do
+        [[ -z "$action" ]] && continue
 
-        local name=$(echo "$opt_json" | jq -r '.name')
-        local desc=$(echo "$opt_json" | jq -r '.description')
-        local action=$(echo "$opt_json" | jq -r '.action')
-        local path=$(echo "$opt_json" | jq -r '.path // ""')
-        local safe=$(echo "$opt_json" | jq -r '.safe')
-
+        local path=""
         local item="${name}|${desc}|${action}|${path}"
 
         if [[ "$safe" == "true" ]]; then

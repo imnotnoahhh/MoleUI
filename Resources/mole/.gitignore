@@ -51,6 +51,7 @@ GEMINI.md
 ANTIGRAVITY.md
 WARP.md
 AGENTS.md
+journal/
 .cursorrules
 
 # Go build artifacts (development)
@@ -80,3 +81,4 @@ run_tests.ps1
 AGENTS.md
 mole_guidelines.md
 CLAUDE.md
+.claude/settings.local.json

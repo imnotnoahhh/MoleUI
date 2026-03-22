@@ -186,26 +186,29 @@ remove_login_item() {
 
     # Remove from Login Items using index-based deletion (handles broken items)
     if [[ -n "$clean_name" ]]; then
-        # Escape double quotes and backslashes for AppleScript
-        local escaped_name="${clean_name//\\/\\\\}"
-        escaped_name="${escaped_name//\"/\\\"}"
+        # Skip AppleScript during tests to avoid permission dialogs
+        if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+            # Escape double quotes and backslashes for AppleScript
+            local escaped_name="${clean_name//\\/\\\\}"
+            escaped_name="${escaped_name//\"/\\\"}"
 
-        osascript <<- EOF > /dev/null 2>&1 || true
-			tell application "System Events"
-			    try
-			        set itemCount to count of login items
-			        -- Delete in reverse order to avoid index shifting
-			        repeat with i from itemCount to 1 by -1
-			            try
-			                set itemName to name of login item i
-			                if itemName is "$escaped_name" then
-			                    delete login item i
-			                end if
-			            end try
-			        end repeat
-			    end try
-			end tell
-		EOF
+            osascript <<- EOF > /dev/null 2>&1 || true
+				tell application "System Events"
+				    try
+				        set itemCount to count of login items
+				        -- Delete in reverse order to avoid index shifting
+				        repeat with i from itemCount to 1 by -1
+				            try
+				                set itemName to name of login item i
+				                if itemName is "$escaped_name" then
+				                    delete login item i
+				                end if
+				            end try
+				        end repeat
+				    end try
+				end tell
+			EOF
+        fi
     fi
 }
 
@@ -527,15 +530,35 @@ batch_uninstall_applications() {
                 if brew_uninstall_cask "$cask_name" "$app_path"; then
                     used_brew_successfully=true
                 else
-                    # Fallback to manual removal if brew fails
-                    if [[ "$needs_sudo" == true ]]; then
-                        if ! safe_sudo_remove "$app_path"; then
-                            reason="brew failed, manual removal failed"
+                    # Only fall back to manual app removal when Homebrew no longer
+                    # tracks the cask. Otherwise we would recreate the mismatch
+                    # where brew still reports the app as installed after Mole
+                    # removes the bundle manually.
+                    local cask_state=2
+                    if command -v is_brew_cask_installed > /dev/null 2>&1; then
+                        if is_brew_cask_installed "$cask_name"; then
+                            cask_state=0
+                        else
+                            cask_state=$?
                         fi
+                    fi
+
+                    if [[ $cask_state -eq 1 ]]; then
+                        if [[ "$needs_sudo" == true ]]; then
+                            if ! safe_sudo_remove "$app_path"; then
+                                reason="brew cleanup incomplete, manual removal failed"
+                            fi
+                        else
+                            if ! safe_remove "$app_path" true; then
+                                reason="brew cleanup incomplete, manual removal failed"
+                            fi
+                        fi
+                    elif [[ $cask_state -eq 0 ]]; then
+                        reason="brew uninstall failed, package still installed"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     else
-                        if ! safe_remove "$app_path" true; then
-                            reason="brew failed, manual removal failed"
-                        fi
+                        reason="brew uninstall failed, package state unknown"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     fi
                 fi
             elif [[ "$needs_sudo" == true ]]; then

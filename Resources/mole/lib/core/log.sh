@@ -21,9 +21,9 @@ fi
 # Logging Configuration
 # ============================================================================
 
-readonly LOG_FILE="${HOME}/.config/mole/mole.log"
-readonly DEBUG_LOG_FILE="${HOME}/.config/mole/mole_debug_session.log"
-readonly OPERATIONS_LOG_FILE="${HOME}/.config/mole/operations.log"
+readonly LOG_FILE="${HOME}/Library/Logs/mole/mole.log"
+readonly DEBUG_LOG_FILE="${HOME}/Library/Logs/mole/mole_debug_session.log"
+readonly OPERATIONS_LOG_FILE="${HOME}/Library/Logs/mole/operations.log"
 readonly LOG_MAX_SIZE_DEFAULT=1048576   # 1MB
 readonly OPLOG_MAX_SIZE_DEFAULT=5242880 # 5MB
 
@@ -36,6 +36,22 @@ fi
 # ============================================================================
 # Log Rotation
 # ============================================================================
+
+append_log_line() {
+    local file_path="$1"
+    local line="${2:-}"
+
+    ensure_user_file "$file_path"
+    printf '%s\n' "$line" >> "$file_path" 2> /dev/null || true
+}
+
+append_log_lines() {
+    local file_path="$1"
+    shift
+
+    ensure_user_file "$file_path"
+    printf '%s\n' "$@" >> "$file_path" 2> /dev/null || true
+}
 
 # Rotate log file if it exceeds maximum size
 rotate_log_once() {
@@ -81,9 +97,9 @@ log_info() {
     echo -e "${BLUE}$1${NC}"
     local timestamp
     timestamp=$(get_timestamp)
-    echo "[$timestamp] INFO: $1" >> "$LOG_FILE" 2> /dev/null || true
+    append_log_line "$LOG_FILE" "[$timestamp] INFO: $1"
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
-        echo "[$timestamp] INFO: $1" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "[$timestamp] INFO: $1"
     fi
 }
 
@@ -92,9 +108,9 @@ log_success() {
     echo -e "  ${GREEN}${ICON_SUCCESS}${NC} $1"
     local timestamp
     timestamp=$(get_timestamp)
-    echo "[$timestamp] SUCCESS: $1" >> "$LOG_FILE" 2> /dev/null || true
+    append_log_line "$LOG_FILE" "[$timestamp] SUCCESS: $1"
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
-        echo "[$timestamp] SUCCESS: $1" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "[$timestamp] SUCCESS: $1"
     fi
 }
 
@@ -103,9 +119,9 @@ log_warning() {
     echo -e "${YELLOW}$1${NC}"
     local timestamp
     timestamp=$(get_timestamp)
-    echo "[$timestamp] WARNING: $1" >> "$LOG_FILE" 2> /dev/null || true
+    append_log_line "$LOG_FILE" "[$timestamp] WARNING: $1"
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
-        echo "[$timestamp] WARNING: $1" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "[$timestamp] WARNING: $1"
     fi
 }
 
@@ -114,9 +130,9 @@ log_error() {
     echo -e "${YELLOW}${ICON_ERROR}${NC} $1" >&2
     local timestamp
     timestamp=$(get_timestamp)
-    echo "[$timestamp] ERROR: $1" >> "$LOG_FILE" 2> /dev/null || true
+    append_log_line "$LOG_FILE" "[$timestamp] ERROR: $1"
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
-        echo "[$timestamp] ERROR: $1" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "[$timestamp] ERROR: $1"
     fi
 }
 
@@ -126,7 +142,7 @@ debug_log() {
         echo -e "${GRAY}[DEBUG]${NC} $*" >&2
         local timestamp
         timestamp=$(get_timestamp)
-        echo "[$timestamp] DEBUG: $*" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "[$timestamp] DEBUG: $*"
     fi
 }
 
@@ -163,7 +179,7 @@ log_operation() {
     local log_line="[$timestamp] [$command] $action $path"
     [[ -n "$detail" ]] && log_line+=" ($detail)"
 
-    echo "$log_line" >> "$OPERATIONS_LOG_FILE" 2> /dev/null || true
+    append_log_line "$OPERATIONS_LOG_FILE" "$log_line"
 }
 
 # Log session start marker
@@ -175,10 +191,10 @@ log_operation_session_start() {
     local timestamp
     timestamp=$(get_timestamp)
 
-    {
-        echo ""
-        echo "# ========== $command session started at $timestamp =========="
-    } >> "$OPERATIONS_LOG_FILE" 2> /dev/null || true
+    append_log_lines \
+        "$OPERATIONS_LOG_FILE" \
+        "" \
+        "# ========== $command session started at $timestamp =========="
 }
 
 # shellcheck disable=SC2329
@@ -198,9 +214,9 @@ log_operation_session_end() {
         size_human="0B"
     fi
 
-    {
-        echo "# ========== $command session ended at $timestamp, $items items, $size_human =========="
-    } >> "$OPERATIONS_LOG_FILE" 2> /dev/null || true
+    append_log_line \
+        "$OPERATIONS_LOG_FILE" \
+        "# ========== $command session ended at $timestamp, $items items, $size_human =========="
 }
 
 # Enhanced debug logging for operations
@@ -214,11 +230,18 @@ debug_operation_start() {
         [[ -n "$operation_desc" ]] && echo -e "${GRAY}[DEBUG] $operation_desc${NC}" >&2
 
         # Also log to file
-        {
-            echo ""
-            echo "=== $operation_name ==="
-            [[ -n "$operation_desc" ]] && echo "Description: $operation_desc"
-        } >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        if [[ -n "$operation_desc" ]]; then
+            append_log_lines \
+                "$DEBUG_LOG_FILE" \
+                "" \
+                "=== $operation_name ===" \
+                "Description: $operation_desc"
+        else
+            append_log_lines \
+                "$DEBUG_LOG_FILE" \
+                "" \
+                "=== $operation_name ==="
+        fi
     fi
 }
 
@@ -232,7 +255,7 @@ debug_operation_detail() {
         echo -e "${GRAY}[DEBUG] $detail_type: $detail_value${NC}" >&2
 
         # Also log to file
-        echo "$detail_type: $detail_value" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "$detail_type: $detail_value"
     fi
 }
 
@@ -252,7 +275,7 @@ debug_file_action() {
         echo -e "${GRAY}[DEBUG] $action: $msg${NC}" >&2
 
         # Also log to file
-        echo "$action: $msg" >> "$DEBUG_LOG_FILE" 2> /dev/null || true
+        append_log_line "$DEBUG_LOG_FILE" "$action: $msg"
     fi
 }
 
@@ -303,8 +326,10 @@ log_system_info() {
         fi
         echo "Shell: ${SHELL:-unknown}, ${TERM:-unknown}"
 
-        # Check sudo status non-interactively
-        if sudo -n true 2> /dev/null; then
+        # Check sudo status non-interactively (skip in test mode)
+        if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+            echo "Sudo Access: Skipped (test mode)"
+        elif sudo -n true 2> /dev/null; then
             echo "Sudo Access: Active"
         else
             echo "Sudo Access: Required"

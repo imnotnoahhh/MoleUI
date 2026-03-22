@@ -155,7 +155,7 @@ clean_deep_system() {
         if safe_sudo_remove "$cache_dir"; then
             code_sign_cleaned=$((code_sign_cleaned + 1))
         fi
-    done < <(run_with_timeout 5 command find /private/var/folders -type d -name "*.code_sign_clone" -path "*/X/*" -print0 2> /dev/null || true)
+    done < <(run_with_timeout 5 command find /private/var/folders -maxdepth 5 -type d -name "*.code_sign_clone" -path "*/X/*" -print0 2> /dev/null || true)
     stop_section_spinner
     [[ $code_sign_cleaned -gt 0 ]] && log_success "Browser code signature caches, $code_sign_cleaned items"
 

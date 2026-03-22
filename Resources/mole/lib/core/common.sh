@@ -27,6 +27,45 @@ if [[ -f "$_MOLE_CORE_DIR/sudo.sh" ]]; then
     source "$_MOLE_CORE_DIR/sudo.sh"
 fi
 
+# Normalize a path for comparisons while preserving root.
+mole_normalize_path() {
+    local path="$1"
+    local normalized="${path%/}"
+    [[ -n "$normalized" ]] && printf '%s\n' "$normalized" || printf '%s\n' "$path"
+}
+
+# Return a stable identity for an existing path. Prefer dev+inode so aliased
+# paths on case-insensitive filesystems or symlinks collapse to one identity.
+mole_path_identity() {
+    local path="$1"
+    local normalized
+    normalized=$(mole_normalize_path "$path")
+
+    if [[ -e "$normalized" || -L "$normalized" ]]; then
+        if command -v stat > /dev/null 2>&1; then
+            local fs_id=""
+            fs_id=$(stat -L -f '%d:%i' "$normalized" 2> /dev/null || stat -f '%d:%i' "$normalized" 2> /dev/null || true)
+            if [[ "$fs_id" =~ ^[0-9]+:[0-9]+$ ]]; then
+                printf 'inode:%s\n' "$fs_id"
+                return 0
+            fi
+        fi
+    fi
+
+    printf 'path:%s\n' "$normalized"
+}
+
+mole_identity_in_list() {
+    local needle="$1"
+    shift
+
+    local existing
+    for existing in "$@"; do
+        [[ "$existing" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
 # Update via Homebrew
 update_via_homebrew() {
     local current_version="$1"

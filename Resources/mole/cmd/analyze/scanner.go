@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -407,6 +409,16 @@ func calculateDirSizeFast(root string, filesScanned, dirsScanned, bytesScanned *
 
 // Use Spotlight (mdfind) to quickly find large files.
 func findLargeFilesWithSpotlight(root string, minSize int64) []fileEntry {
+	// Validate root path.
+	if err := validatePath(root); err != nil {
+		return nil
+	}
+
+	// Validate minSize is reasonable (non-negative and not excessively large).
+	if minSize < 0 || minSize > 1<<50 { // 1 PB max
+		return nil
+	}
+
 	query := fmt.Sprintf("kMDItemFSSize >= %d", minSize)
 
 	ctx, cancel := context.WithTimeout(context.Background(), mdlsTimeout)
@@ -633,6 +645,16 @@ func getDirectorySizeFromDu(path string) (int64, error) {
 }
 
 func getDirectorySizeFromDuWithExclude(path string, excludePath string) (int64, error) {
+	// Validate paths.
+	if err := validatePath(path); err != nil {
+		return 0, err
+	}
+	if excludePath != "" {
+		if err := validatePath(excludePath); err != nil {
+			return 0, err
+		}
+	}
+
 	runDuSize := func(target string) (int64, error) {
 		if _, err := os.Stat(target); err != nil {
 			return 0, err

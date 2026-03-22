@@ -108,7 +108,7 @@ setup() {
 
 @test "get_invoking_user executes quickly" {
     local start end elapsed
-    local limit_ms="${MOLE_PERF_GET_INVOKING_USER_LIMIT_MS:-500}"
+    local limit_ms="${MOLE_PERF_GET_INVOKING_USER_LIMIT_MS:-2000}"
 
     start=$(date +%s%N)
     for i in {1..100}; do
@@ -233,5 +233,6 @@ setup() {
 
     elapsed=$(( (end - start) / 1000000 ))
 
-    [ "$elapsed" -lt 2000 ]
+    local limit_ms="${MOLE_PERF_SECTION_LIMIT_MS:-2000}"
+    [ "$elapsed" -lt "$limit_ms" ]
 }

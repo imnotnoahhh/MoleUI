@@ -109,6 +109,39 @@ setup() {
 	[[ "$result" == "ALLOWED" ]]
 }
 
+@test "compact_purge_scan_path keeps the tail of long purge paths visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_SKIP_MAIN=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/purge.sh"
+compact_purge_scan_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "compact_purge_menu_path keeps the project tail visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+compact_purge_menu_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "format_purge_target_path rewrites home with tilde" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+format_purge_target_path "$HOME/www/app/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == \~/www/app/node_modules ]]
+}
+
 @test "filter_nested_artifacts: removes nested node_modules" {
 	mkdir -p "$HOME/www/project/node_modules/package/node_modules"
 
@@ -347,14 +380,28 @@ EOF
 }
 
 @test "confirm_purge_cleanup accepts Enter" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 drain_pending_input() { :; }
 confirm_purge_cleanup 2 1024 0 <<< ''
 EOF
 
-    [ "$status" -eq 0 ]
+	[ "$status" -eq 0 ]
+}
+
+@test "confirm_purge_cleanup shows selected paths" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+drain_pending_input() { :; }
+confirm_purge_cleanup 2 1024 0 "~/www/app/node_modules" "~/www/app/dist" <<< ''
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Selected paths:"* ]]
+	[[ "$output" == *"~/www/app/node_modules"* ]]
+	[[ "$output" == *"~/www/app/dist"* ]]
 }
 
 @test "confirm_purge_cleanup cancels on ESC" {

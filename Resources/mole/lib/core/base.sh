@@ -96,6 +96,7 @@ declare -a DEFAULT_WHITELIST_PATTERNS=(
     "$HOME/Library/Caches/pypoetry/virtualenvs*"
     "$HOME/Library/Caches/JetBrains*"
     "$HOME/Library/Caches/com.jetbrains.toolbox*"
+    "$HOME/Library/Caches/tealdeer/tldr-pages"
     "$HOME/Library/Application Support/JetBrains*"
     "$HOME/Library/Caches/com.apple.finder"
     "$HOME/Library/Mobile Documents*"
@@ -558,7 +559,7 @@ declare -a MOLE_TEMP_DIRS=()
 # Create tracked temporary file
 create_temp_file() {
     local temp
-    temp=$(mktemp) || return 1
+    temp=$(mktemp "${TMPDIR:-/tmp}/mole.XXXXXX") || return 1
     register_temp_file "$temp"
     echo "$temp"
 }
@@ -566,7 +567,7 @@ create_temp_file() {
 # Create tracked temporary directory
 create_temp_dir() {
     local temp
-    temp=$(mktemp -d) || return 1
+    temp=$(mktemp -d "${TMPDIR:-/tmp}/mole.XXXXXX") || return 1
     register_temp_dir "$temp"
     echo "$temp"
 }
@@ -600,7 +601,9 @@ mktemp_file() {
 
 # Cleanup all tracked temp files and directories
 cleanup_temp_files() {
-    stop_inline_spinner || true
+    if declare -F stop_inline_spinner > /dev/null 2>&1; then
+        stop_inline_spinner || true
+    fi
     local file
     if [[ ${#MOLE_TEMP_FILES[@]} -gt 0 ]]; then
         for file in "${MOLE_TEMP_FILES[@]}"; do

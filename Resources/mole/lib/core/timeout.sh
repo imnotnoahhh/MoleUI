@@ -55,6 +55,11 @@ if [[ -z "${MO_TIMEOUT_INITIALIZED:-}" ]]; then
         echo "[TIMEOUT] Install coreutils for better reliability: brew install coreutils" >&2
     fi
 
+    # Export so child processes inherit detected values and skip re-detection.
+    # Without this, children that inherit MO_TIMEOUT_INITIALIZED=1 skip the init
+    # block but have empty bin vars, forcing the slow shell fallback.
+    export MO_TIMEOUT_BIN
+    export MO_TIMEOUT_PERL_BIN
     export MO_TIMEOUT_INITIALIZED=1
 fi
 
@@ -181,7 +186,10 @@ run_with_timeout() {
     "$@" &
     local cmd_pid=$!
 
-    # Start timeout killer in background
+    # Start timeout killer in background.
+    # Redirect all FDs to /dev/null so orphaned child processes (e.g. sleep $duration)
+    # do not inherit open file descriptors from the caller and block output pipes
+    # (notably bats output capture pipes that wait for all writers to close).
     (
         # Wait for timeout duration
         sleep "$duration"
@@ -200,7 +208,7 @@ run_with_timeout() {
                 kill -KILL -"$cmd_pid" 2> /dev/null || kill -KILL "$cmd_pid" 2> /dev/null || true
             fi
         fi
-    ) &
+    ) < /dev/null > /dev/null 2>&1 &
     local killer_pid=$!
 
     # Wait for command to complete

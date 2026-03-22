@@ -72,10 +72,10 @@ setup() {
     mkdir -p "$test_cache"
 
     run bash -c "
-        run_with_timeout() { shift; \"\$@\"; }
-        export -f run_with_timeout
         source '$PROJECT_ROOT/lib/core/common.sh'
         source '$PROJECT_ROOT/lib/clean/caches.sh'
+        run_with_timeout() { shift; \"\$@\"; }
+        export -f run_with_timeout
         clean_service_worker_cache 'TestBrowser' '$test_cache'
     "
     [ "$status" -eq 0 ]
@@ -89,6 +89,10 @@ setup() {
     mkdir -p "$test_cache/def456_https_example.com_0"
 
     run bash -c "
+        export DRY_RUN=true
+        export PROTECTED_SW_DOMAINS=(capcut.com photopea.com)
+        source '$PROJECT_ROOT/lib/core/common.sh'
+        source '$PROJECT_ROOT/lib/clean/caches.sh'
         run_with_timeout() {
             local timeout=\"\$1\"
             shift
@@ -105,10 +109,6 @@ setup() {
             \"\$@\"
         }
         export -f run_with_timeout
-        export DRY_RUN=true
-        export PROTECTED_SW_DOMAINS=(capcut.com photopea.com)
-        source '$PROJECT_ROOT/lib/core/common.sh'
-        source '$PROJECT_ROOT/lib/clean/caches.sh'
         clean_service_worker_cache 'TestBrowser' '$test_cache'
     "
     [ "$status" -eq 0 ]
@@ -134,6 +134,25 @@ setup() {
         clean_project_caches
     "
     [ "$status" -eq 0 ]
+
+    rm -rf "$HOME/Projects"
+}
+
+@test "clean_project_caches removes pycache directories as single targets" {
+    mkdir -p "$HOME/Projects/python-app/__pycache__"
+    touch "$HOME/Projects/python-app/pyproject.toml"
+    touch "$HOME/Projects/python-app/__pycache__/module.pyc"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+safe_clean() { echo "$2|$1"; }
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Python bytecode cache|$HOME/Projects/python-app/__pycache__"* ]]
+    [[ "$output" != *"module.pyc"* ]]
 
     rm -rf "$HOME/Projects"
 }
@@ -217,6 +236,25 @@ EOF
     [[ "$output" == *"Next.js build cache|$HOME/go/src/github.com/example/demo/.next/cache/test.cache"* ]]
 
     rm -rf "$HOME/go"
+}
+
+@test "discover_project_cache_roots dedupes aliased roots by filesystem identity" {
+    mkdir -p "$HOME/code/demo/.dart_tool"
+    touch "$HOME/code/demo/pubspec.yaml"
+    mkdir -p "$HOME/.config/mole"
+    ln -s "$HOME/code" "$HOME/Code"
+    printf '%s\n' "$HOME/Code" > "$HOME/.config/mole/purge_paths"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+roots=$(discover_project_cache_roots)
+printf '%s\n' "$roots"
+printf 'COUNT=%s\n' "$(printf '%s\n' "$roots" | sed '/^$/d' | wc -l | tr -d ' ')"
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"COUNT=1"* ]]
 }
 
 @test "clean_project_caches skips stalled root scans" {

@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-clean-home.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -96,6 +100,41 @@ run_clean_dry_run() {
     [[ "$output" == *"User app cache"* ]]
     [[ "$output" == *"Potential space"* ]]
     [ -f "$HOME/Library/Caches/TestApp/cache.tmp" ]
+}
+
+@test "mo clean --dry-run reports stale login item without deleting it" {
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$HOME/Library/LaunchAgents/com.example.stale.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.stale</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Missing.app/Contents/MacOS/Missing</string>
+    </array>
+</dict>
+</plist>
+PLIST
+
+    run env HOME="$HOME" MOLE_TEST_MODE=1 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Potential stale login item: com.example.stale.plist"* ]]
+    [ -f "$HOME/Library/LaunchAgents/com.example.stale.plist" ]
+}
+
+@test "mo clean --dry-run does not export duplicate targets across sections" {
+    mkdir -p "$HOME/Library/Application Support/Code/CachedData"
+    echo "cache" > "$HOME/Library/Application Support/Code/CachedData/data.bin"
+
+    run env HOME="$HOME" MOLE_TEST_MODE=0 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+
+    run grep -c "Application Support/Code/CachedData" "$HOME/.config/mole/clean-list.txt"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
 }
 
 @test "mo clean honors whitelist entries" {
@@ -322,4 +361,3 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Time Machine backup in progress, skipping cleanup"* ]]
 }
-

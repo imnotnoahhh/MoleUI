@@ -24,6 +24,7 @@ source "$SCRIPT_DIR/../lib/clean/user.sh"
 SYSTEM_CLEAN=false
 DRY_RUN=false
 PROTECT_FINDER_METADATA=false
+EXTERNAL_VOLUME_TARGET=""
 IS_M_SERIES=$([[ "$(uname -m)" == "arm64" ]] && echo "true" || echo "false")
 
 EXPORT_LIST_FILE="$HOME/.config/mole/clean-list.txt"
@@ -129,12 +130,27 @@ PROJECT_ARTIFACT_HINT_EXAMPLES=()
 PROJECT_ARTIFACT_HINT_ESTIMATED_KB=0
 PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES=0
 PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL=false
+declare -a DRY_RUN_SEEN_IDENTITIES=()
 
 # shellcheck disable=SC2329
 note_activity() {
     if [[ "${TRACK_SECTION:-0}" == "1" ]]; then
         SECTION_ACTIVITY=1
     fi
+}
+
+# shellcheck disable=SC2329
+register_dry_run_cleanup_target() {
+    local path="$1"
+    local identity
+    identity=$(mole_path_identity "$path")
+
+    if [[ ${#DRY_RUN_SEEN_IDENTITIES[@]} -gt 0 ]] && mole_identity_in_list "$identity" "${DRY_RUN_SEEN_IDENTITIES[@]}"; then
+        return 1
+    fi
+
+    DRY_RUN_SEEN_IDENTITIES+=("$identity")
+    return 0
 }
 
 CLEANUP_DONE=false
@@ -380,7 +396,12 @@ safe_clean() {
             log_operation "clean" "SKIPPED" "$path" "whitelist"
         fi
         [[ "$skip" == "true" ]] && continue
-        [[ -e "$path" ]] && existing_paths+=("$path")
+        if [[ -e "$path" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+                register_dry_run_cleanup_target "$path" || continue
+            fi
+            existing_paths+=("$path")
+        fi
     done
 
     if [[ "$show_scan_feedback" == "true" ]]; then
@@ -705,11 +726,25 @@ start_cleanup() {
     # Set current command for operation logging
     export MOLE_CURRENT_COMMAND="clean"
     log_operation_session_start "clean"
+    DRY_RUN_SEEN_IDENTITIES=()
 
     if [[ -t 1 ]]; then
         printf '\033[2J\033[H'
     fi
     printf '\n'
+    if [[ -n "$EXTERNAL_VOLUME_TARGET" ]]; then
+        echo -e "${PURPLE_BOLD}Clean External Volume${NC}"
+        echo -e "${GRAY}${EXTERNAL_VOLUME_TARGET}${NC}"
+        echo ""
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "${YELLOW}Dry Run Mode${NC}, Preview only, no deletions"
+            echo ""
+        fi
+        SYSTEM_CLEAN=false
+        return 0
+    fi
+
     echo -e "${PURPLE_BOLD}Clean Your Mac${NC}"
     echo ""
 
@@ -802,9 +837,15 @@ EOF
 }
 
 perform_cleanup() {
+    if [[ -n "$EXTERNAL_VOLUME_TARGET" ]]; then
+        total_items=0
+        files_cleaned=0
+        total_size_cleaned=0
+    fi
+
     # Test mode skips expensive scans and returns minimal output.
     local test_mode_enabled=false
-    if [[ "${MOLE_TEST_MODE:-0}" == "1" ]]; then
+    if [[ -z "$EXTERNAL_VOLUME_TARGET" && "${MOLE_TEST_MODE:-0}" == "1" ]]; then
         test_mode_enabled=true
         if [[ "$DRY_RUN" == "true" ]]; then
             echo -e "${YELLOW}Dry Run Mode${NC}, Preview only, no deletions"
@@ -838,7 +879,7 @@ perform_cleanup() {
         total_size_cleaned=0
     fi
 
-    if [[ "$test_mode_enabled" == "false" ]]; then
+    if [[ "$test_mode_enabled" == "false" && -z "$EXTERNAL_VOLUME_TARGET" ]]; then
         echo -e "${BLUE}${ICON_ADMIN}${NC} $(detect_architecture) | Free space: $(get_free_space)"
     fi
 
@@ -853,7 +894,9 @@ perform_cleanup() {
     fi
 
     # Pre-check TCC permissions to avoid mid-run prompts.
-    check_tcc_permissions
+    if [[ -z "$EXTERNAL_VOLUME_TARGET" ]]; then
+        check_tcc_permissions
+    fi
 
     if [[ ${#WHITELIST_PATTERNS[@]} -gt 0 ]]; then
         local predefined_count=0
@@ -914,98 +957,103 @@ perform_cleanup() {
     # Allow per-section failures without aborting the full run.
     set +e
 
-    # ===== 1. System =====
-    if [[ "$SYSTEM_CLEAN" == "true" ]]; then
-        start_section "System"
-        clean_deep_system
-        clean_local_snapshots
+    if [[ -n "$EXTERNAL_VOLUME_TARGET" ]]; then
+        start_section "External volume"
+        clean_external_volume_target "$EXTERNAL_VOLUME_TARGET"
+        end_section
+    else
+        # ===== 1. System =====
+        if [[ "$SYSTEM_CLEAN" == "true" ]]; then
+            start_section "System"
+            clean_deep_system
+            clean_local_snapshots
+            end_section
+        fi
+
+        if [[ ${#WHITELIST_WARNINGS[@]} -gt 0 ]]; then
+            echo ""
+            for warning in "${WHITELIST_WARNINGS[@]}"; do
+                echo -e "  ${GRAY}${ICON_WARNING}${NC} Whitelist: $warning"
+            done
+        fi
+
+        # ===== 2. User essentials =====
+        start_section "User essentials"
+        clean_user_essentials
+        clean_finder_metadata
+        end_section
+
+        # ===== 3. App caches (merged sandboxed and standard app caches) =====
+        start_section "App caches"
+        clean_app_caches
+        end_section
+
+        # ===== 4. Browsers =====
+        start_section "Browsers"
+        clean_browsers
+        end_section
+
+        # ===== 5. Cloud & Office =====
+        start_section "Cloud & Office"
+        clean_cloud_storage
+        clean_office_applications
+        end_section
+
+        # ===== 6. Developer tools (merged CLI and GUI tooling) =====
+        start_section "Developer tools"
+        clean_developer_tools
+        end_section
+
+        # ===== 7. Applications =====
+        start_section "Applications"
+        clean_user_gui_applications
+        end_section
+
+        # ===== 8. Virtualization =====
+        start_section "Virtualization"
+        clean_virtualization_tools
+        end_section
+
+        # ===== 9. Application Support =====
+        start_section "Application Support"
+        clean_application_support_logs
+        end_section
+
+        # ===== 10. Orphaned data =====
+        start_section "Orphaned data"
+        clean_orphaned_app_data
+        clean_orphaned_system_services
+        show_user_launch_agent_hint_notice
+        end_section
+
+        # ===== 11. Apple Silicon =====
+        clean_apple_silicon_caches
+
+        # ===== 12. Device backups =====
+        start_section "Device backups"
+        check_ios_device_backups
+        end_section
+
+        # ===== 13. Time Machine =====
+        start_section "Time Machine"
+        clean_time_machine_failed_backups
+        end_section
+
+        # ===== 14. Large files =====
+        start_section "Large files"
+        check_large_file_candidates
+        end_section
+
+        # ===== 15. System Data clues =====
+        start_section "System Data clues"
+        show_system_data_hint_notice
+        end_section
+
+        # ===== 16. Project artifacts =====
+        start_section "Project artifacts"
+        show_project_artifact_hint_notice
         end_section
     fi
-
-    if [[ ${#WHITELIST_WARNINGS[@]} -gt 0 ]]; then
-        echo ""
-        for warning in "${WHITELIST_WARNINGS[@]}"; do
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Whitelist: $warning"
-        done
-    fi
-
-    # ===== 2. User essentials =====
-    start_section "User essentials"
-    clean_user_essentials
-    clean_finder_metadata
-    scan_external_volumes
-    end_section
-
-    # ===== 3. App caches (merged sandboxed and standard app caches) =====
-    start_section "App caches"
-    clean_app_caches
-    end_section
-
-    # ===== 4. Browsers =====
-    start_section "Browsers"
-    clean_browsers
-    end_section
-
-    # ===== 5. Cloud & Office =====
-    start_section "Cloud & Office"
-    clean_cloud_storage
-    clean_office_applications
-    end_section
-
-    # ===== 6. Developer tools (merged CLI and GUI tooling) =====
-    start_section "Developer tools"
-    clean_developer_tools
-    end_section
-
-    # ===== 7. Applications =====
-    start_section "Applications"
-    clean_user_gui_applications
-    end_section
-
-    # ===== 8. Virtualization =====
-    start_section "Virtualization"
-    clean_virtualization_tools
-    end_section
-
-    # ===== 9. Application Support =====
-    start_section "Application Support"
-    clean_application_support_logs
-    end_section
-
-    # ===== 10. Orphaned data =====
-    start_section "Orphaned data"
-    clean_orphaned_app_data
-    clean_orphaned_system_services
-    clean_orphaned_launch_agents
-    end_section
-
-    # ===== 11. Apple Silicon =====
-    clean_apple_silicon_caches
-
-    # ===== 12. Device backups =====
-    start_section "Device backups"
-    check_ios_device_backups
-    end_section
-
-    # ===== 13. Time Machine =====
-    start_section "Time Machine"
-    clean_time_machine_failed_backups
-    end_section
-
-    # ===== 14. Large files =====
-    start_section "Large files"
-    check_large_file_candidates
-    end_section
-
-    # ===== 15. System Data clues =====
-    start_section "System Data clues"
-    show_system_data_hint_notice
-    end_section
-
-    # ===== 16. Project artifacts =====
-    start_section "Project artifacts"
-    show_project_artifact_hint_notice
-    end_section
 
     # ===== Final summary =====
     echo ""
@@ -1095,8 +1143,8 @@ perform_cleanup() {
 }
 
 main() {
-    for arg in "$@"; do
-        case "$arg" in
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
             "--help" | "-h")
                 show_clean_help
                 exit 0
@@ -1108,12 +1156,21 @@ main() {
                 DRY_RUN=true
                 export MOLE_DRY_RUN=1
                 ;;
+            "--external")
+                shift
+                if [[ $# -eq 0 ]]; then
+                    echo "Missing path for --external" >&2
+                    exit 1
+                fi
+                EXTERNAL_VOLUME_TARGET=$(validate_external_volume_target "$1") || exit 1
+                ;;
             "--whitelist")
                 source "$SCRIPT_DIR/../lib/manage/whitelist.sh"
                 manage_whitelist "clean"
                 exit 0
                 ;;
         esac
+        shift
     done
 
     start_cleanup

@@ -362,7 +362,7 @@ EOF
 	touch "$HOME/.local/bin/mo"
 	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -410,7 +410,7 @@ EOF
 	touch "$HOME/.local/bin/mo"
 	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -424,4 +424,36 @@ EOF
 	[ -f "$HOME/.local/bin/mo" ]
 	[ -d "$HOME/.config/mole" ]
 	[ -d "$HOME/.cache/mole" ]
+}
+
+@test "remove_mole test mode ignores PATH installs outside test HOME" {
+	mkdir -p "$HOME/.local/bin" "$HOME/.config/mole" "$HOME/.cache/mole"
+	touch "$HOME/.local/bin/mole"
+	touch "$HOME/.local/bin/mo"
+
+	fake_global_bin="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-remove-path.XXXXXX")"
+	touch "$fake_global_bin/mole"
+	touch "$fake_global_bin/mo"
+	cat > "$fake_global_bin/brew" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$fake_global_bin/brew"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_global_bin:/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+export -f start_inline_spinner stop_inline_spinner
+printf '\n' | "$PROJECT_ROOT/mole" remove --dry-run
+EOF
+
+	rm -rf "$fake_global_bin"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$HOME/.local/bin/mole"* ]]
+	[[ "$output" == *"$HOME/.local/bin/mo"* ]]
+	[[ "$output" != *"$fake_global_bin/mole"* ]]
+	[[ "$output" != *"$fake_global_bin/mo"* ]]
+	[[ "$output" != *"brew uninstall --force mole"* ]]
 }

@@ -9,6 +9,10 @@ setup_file() {
 
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-brew-uninstall-home.XXXXXX")"
     export HOME
+
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
 }
 
 teardown_file() {
@@ -222,6 +226,122 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"TIMEOUT_CALL:30:brew autoremove"* ]]
     [[ "$output" != *"Checking brew dependencies"* ]]
+}
+
+@test "batch_uninstall_applications keeps brew-managed app intact when brew uninstall fails" {
+    local app_bundle="$HOME/Applications/BrewBroken.app"
+    mkdir -p "$app_bundle"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+get_file_owner() { whoami; }
+get_path_size_kb() { echo "100"; }
+bytes_to_human() { echo "$1"; }
+drain_pending_input() { :; }
+print_summary_block() { :; }
+force_kill_app() { return 0; }
+remove_apps_from_dock() { :; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { :; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+get_diagnostic_report_paths_for_app() { return 0; }
+calculate_total_size() { echo "0"; }
+has_sensitive_data() { return 1; }
+decode_file_list() { return 0; }
+remove_file_list() { :; }
+run_with_timeout() { shift; "$@"; }
+
+safe_remove() {
+    echo "SAFE_REMOVE:$1" >> "$HOME/remove.log"
+    rm -rf "$1"
+}
+
+safe_sudo_remove() {
+    echo "SAFE_SUDO_REMOVE:$1" >> "$HOME/remove.log"
+    rm -rf "$1"
+}
+
+get_brew_cask_name() { echo "brew-broken-cask"; return 0; }
+brew_uninstall_cask() { return 1; }
+is_brew_cask_installed() { return 0; }
+
+selected_apps=("0|$HOME/Applications/BrewBroken.app|BrewBroken|com.example.brewbroken|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications > /dev/null 2>&1 || true
+
+[[ -d "$HOME/Applications/BrewBroken.app" ]]
+[[ ! -f "$HOME/remove.log" ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "batch_uninstall_applications finishes cleanup after brew removes cask record" {
+    local app_bundle="$HOME/Applications/BrewCleanup.app"
+    mkdir -p "$app_bundle"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+get_file_owner() { whoami; }
+get_path_size_kb() { echo "100"; }
+bytes_to_human() { echo "$1"; }
+drain_pending_input() { :; }
+print_summary_block() { :; }
+force_kill_app() { return 0; }
+remove_apps_from_dock() { :; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { :; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+get_diagnostic_report_paths_for_app() { return 0; }
+calculate_total_size() { echo "0"; }
+has_sensitive_data() { return 1; }
+decode_file_list() { return 0; }
+remove_file_list() { :; }
+run_with_timeout() { shift; "$@"; }
+
+safe_remove() {
+    echo "SAFE_REMOVE:$1" >> "$HOME/remove.log"
+    rm -rf "$1"
+}
+
+safe_sudo_remove() {
+    echo "SAFE_SUDO_REMOVE:$1" >> "$HOME/remove.log"
+    rm -rf "$1"
+}
+
+get_brew_cask_name() { echo "brew-cleanup-cask"; return 0; }
+brew_uninstall_cask() { return 1; }
+is_brew_cask_installed() { return 1; }
+
+selected_apps=("0|$HOME/Applications/BrewCleanup.app|BrewCleanup|com.example.brewcleanup|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications > /dev/null 2>&1
+
+[[ ! -d "$HOME/Applications/BrewCleanup.app" ]]
+grep -q "SAFE_REMOVE:$HOME/Applications/BrewCleanup.app" "$HOME/remove.log"
+EOF
+
+    [ "$status" -eq 0 ]
 }
 
 @test "brew_uninstall_cask does not trigger extra sudo pre-auth" {
