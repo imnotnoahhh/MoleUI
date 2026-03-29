@@ -290,6 +290,8 @@ readonly DATA_PROTECTED_BUNDLES=(
     "clash.*"
     "Clash.*"
     "clash_*"
+    "*clash-verge*"
+    "*Clash-Verge*"
     "clashverge*"
     "ClashVerge*"
     "com.nssurge.surge-mac"
@@ -694,7 +696,7 @@ should_protect_data() {
         com.nssurge.* | com.v2ray.* | com.clash.* | ClashX* | Surge* | Shadowrocket* | Quantumult*)
             return 0
             ;;
-        clash-* | Clash-* | *-clash | *-Clash | clash.* | Clash.* | clash_* | clashverge* | ClashVerge*)
+        clash-* | Clash-* | *-clash | *-Clash | clash.* | Clash.* | clash_* | *clash-verge* | *Clash-Verge* | clashverge* | ClashVerge*)
             return 0
             ;;
         com.docker.* | com.getpostman.* | com.insomnia.*)
@@ -800,12 +802,21 @@ should_protect_path() {
         */Library/Preferences/com.apple.dock.plist | */Library/Preferences/com.apple.finder.plist)
             return 0
             ;;
+        # Protect Mole's own runtime logs so cleanup cannot delete its active log targets.
+        */Library/Logs/mole | */Library/Logs/mole/ | */Library/Logs/mole/*)
+            return 0
+            ;;
         # Bluetooth and WiFi configurations
         */ByHost/com.apple.bluetooth.* | */ByHost/com.apple.wifi.*)
             return 0
             ;;
         # iCloud Drive - protect user's cloud synced data
         */Library/Mobile\ Documents* | */Mobile\ Documents*)
+            return 0
+            ;;
+        # CoreAudio and audio subsystem caches (issue #553)
+        # Cleaning these can cause audio output loss on Intel Macs
+        *com.apple.coreaudio* | *com.apple.audio.* | *coreaudiod*)
             return 0
             ;;
     esac
@@ -943,6 +954,7 @@ find_app_files() {
         "$HOME/Library/WebKit/$bundle_id"
         "$HOME/Library/WebKit/com.apple.WebKit.WebContent/$bundle_id"
         "$HOME/Library/HTTPStorages/$bundle_id"
+        "$HOME/Library/HTTPStorages/$bundle_id.binarycookies"
         "$HOME/Library/Cookies/$bundle_id.binarycookies"
         "$HOME/Library/LaunchAgents/$bundle_id.plist"
         "$HOME/Library/Application Scripts/$bundle_id"
@@ -1037,6 +1049,7 @@ find_app_files() {
     # Handle Preferences and ByHost variants (only if bundle_id is valid)
     if [[ -n "$bundle_id" && "$bundle_id" != "unknown" && ${#bundle_id} -gt 3 ]]; then
         [[ -f ~/Library/Preferences/"$bundle_id".plist ]] && files_to_clean+=("$HOME/Library/Preferences/$bundle_id.plist")
+        [[ -d ~/Library/Preferences/"$bundle_id" ]] && files_to_clean+=("$HOME/Library/Preferences/$bundle_id")
         [[ -d ~/Library/Preferences/ByHost ]] && while IFS= read -r -d '' pref; do
             files_to_clean+=("$pref")
         done < <(command find ~/Library/Preferences/ByHost -maxdepth 1 \( -name "$bundle_id*.plist" \) -print0 2> /dev/null)
@@ -1047,6 +1060,31 @@ find_app_files() {
                 files_to_clean+=("$container")
             done < <(command find ~/Library/Group\ Containers -maxdepth 1 \( -name "*$bundle_id*" \) -print0 2> /dev/null)
         fi
+
+        # App extensions often use bundle-id-derived directories rather than the
+        # main bundle id exactly, for example share extensions or file providers.
+        local -a derived_bundle_roots=(
+            "$HOME/Library/Application Scripts"
+            "$HOME/Library/Containers"
+            "$HOME/Library/Application Support/FileProvider"
+        )
+        local derived_root=""
+        local derived_path=""
+        local existing_path=""
+        local already_added=false
+        for derived_root in "${derived_bundle_roots[@]}"; do
+            [[ -d "$derived_root" ]] || continue
+            while IFS= read -r -d '' derived_path; do
+                already_added=false
+                for existing_path in "${files_to_clean[@]}"; do
+                    if [[ "$existing_path" == "$derived_path" ]]; then
+                        already_added=true
+                        break
+                    fi
+                done
+                [[ "$already_added" == "true" ]] || files_to_clean+=("$derived_path")
+            done < <(command find "$derived_root" -maxdepth 1 -type d -name "*$bundle_id*" -print0 2> /dev/null)
+        done
     fi
 
     # Launch Agents by name (special handling)

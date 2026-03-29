@@ -160,24 +160,113 @@ EOF
 }
 
 @test "clean_dev_docker skips when daemon not running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 DRY_RUN=false bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
 run_with_timeout() { return 1; }
-clean_tool_cache() { echo "$1"; }
 safe_clean() { echo "$2"; }
-debug_log() { echo "$*"; }
+debug_log() { :; }
 docker() { return 1; }
 export -f docker
 clean_dev_docker
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Docker daemon not running"* ]]
-    [[ "$output" != *"Docker build cache"* ]]
+    [[ "$output" == *"Docker unused data · skipped (daemon not running)"* ]]
+    [[ "$output" == *"Docker BuildX cache"* ]]
+    [[ "$output" != *"Docker unused data|Docker unused data docker system prune -af --volumes"* ]]
+}
+
+@test "clean_dev_docker prunes unused docker data when daemon is running" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+run_with_timeout() { shift; "$@"; }
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { :; }
+note_activity() { :; }
+debug_log() { :; }
+docker() {
+    if [[ "$1" == "info" ]]; then
+        return 0
+    fi
+    return 0
+}
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker unused data|Docker unused data docker system prune -af --volumes"* ]]
+}
+
+@test "clean_dev_docker skips prune when Docker paths are whitelisted" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+run_with_timeout() { shift; "$@"; }
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { :; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() {
+    [[ "$1" == "$HOME/.docker" ]] && return 0
+    return 1
+}
+export -f is_path_whitelisted
+docker() {
+    if [[ "$1" == "info" ]]; then
+        return 0
+    fi
+    return 0
+}
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker unused data · skipped (whitelisted)"* ]]
+    [[ "$output" != *"docker system prune"* ]]
+}
+
+@test "clean_dev_mise respects MISE_CACHE_DIR and only targets cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MISE_CACHE_DIR="/tmp/mise-cache" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_tool_cache() { :; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+clean_dev_mise
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mise cache|/tmp/mise-cache/*"* ]]
+    [[ "$output" != *".local/share/mise"* ]]
+}
+
+@test "clean_dev_other_langs cleans configured composer cache paths" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" COMPOSER_HOME="$HOME/.config/composer-home" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_other_langs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHP Composer cache (legacy)|"* ]]
+    [[ "$output" == *"PHP Composer cache|"* ]]
 }
 
 @test "clean_developer_tools runs key stages" {
@@ -191,6 +280,7 @@ clean_homebrew() { echo "brew"; }
 clean_project_caches() { :; }
 clean_dev_python() { :; }
 clean_dev_go() { :; }
+clean_dev_mise() { echo "mise"; }
 clean_dev_rust() { :; }
 check_rust_toolchains() { :; }
 check_android_ndk() { :; }
@@ -222,6 +312,7 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"npm"* ]]
+    [[ "$output" == *"mise"* ]]
     [[ "$output" == *"brew"* ]]
 }
 

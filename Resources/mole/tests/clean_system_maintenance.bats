@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-system-clean.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -494,13 +498,11 @@ EOF
     [[ "$output" == *"COUNTS=0:0:0"* ]]
 }
 
-@test "check_macos_update avoids slow softwareupdate scans" {
+@test "check_macos_update reports background security improvements as macOS updates" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
 
 run_with_timeout() {
     local timeout="${1:-}"
@@ -514,7 +516,8 @@ run_with_timeout() {
 Software Update Tool
 
 Software Update found the following new or updated software:
-* Label: macOS 99
+* Label: macOS Background Security Improvement (a)-25D771280a
+        Title: macOS Background Security Improvement (a), Version: 26.3.1 (a), Size: 208896KiB, Recommended: YES, Action: restart,
 OUT
         return 0
     fi
@@ -529,7 +532,7 @@ echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
+    [[ "$output" == *"Background Security Improvement"* ]]
     [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
     [[ "$output" != *"BAD_TIMEOUT:"* ]]
 }
@@ -539,8 +542,6 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
 
 run_with_timeout() {
     local timeout="${1:-}"
@@ -574,13 +575,11 @@ EOF
     [[ "$output" != *"BAD_TIMEOUT:"* ]]
 }
 
-@test "check_macos_update keeps update flag when softwareupdate times out" {
+@test "check_macos_update ignores non-macOS softwareupdate entries" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
 
 run_with_timeout() {
     local timeout="${1:-}"
@@ -590,40 +589,13 @@ run_with_timeout() {
         return 124
     fi
     if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        return 124
-    fi
-    return 124
-}
+        cat <<'OUT'
+Software Update Tool
 
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
-    [[ "$output" != *"BAD_TIMEOUT:"* ]]
-}
-
-@test "check_macos_update keeps update flag when softwareupdate returns empty output" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
-run_with_timeout() {
-    local timeout="${1:-}"
-    shift
-    if [[ "$timeout" != "10" ]]; then
-        echo "BAD_TIMEOUT:$timeout"
-        return 124
-    fi
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
+Software Update found the following new or updated software:
+* Label: Numbers-14.4
+        Title: Numbers, Version: 14.4, Size: 51200KiB, Recommended: YES, Action: none,
+OUT
         return 0
     fi
     return 124
@@ -637,22 +609,69 @@ echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
+    [[ "$output" == *"System up to date"* ]]
+    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=false"* ]]
     [[ "$output" != *"BAD_TIMEOUT:"* ]]
 }
 
-@test "check_macos_update skips softwareupdate when defaults shows no updates" {
+@test "get_software_updates caches softwareupdate output in memory" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/check/all.sh"
 
-defaults() { echo "0"; }
+calls=0
+
+run_with_timeout() {
+    local timeout="${1:-}"
+    shift
+    if [[ "$timeout" != "10" ]]; then
+        echo "BAD_TIMEOUT:$timeout"
+        return 124
+    fi
+    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
+        calls=$((calls + 1))
+        cat <<'OUT'
+Software Update Tool
+
+No new software available.
+OUT
+        return 0
+    fi
+    return 124
+}
+
+first="$(get_software_updates)"
+second="$(get_software_updates)"
+printf 'CALLS=%s\n' "$calls"
+printf 'FIRST=%s\n' "$first"
+printf 'SECOND=%s\n' "$second"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CALLS=1"* ]]
+    [[ "$output" == *"FIRST=Software Update Tool"* ]]
+    [[ "$output" == *"SECOND=Software Update Tool"* ]]
+    [[ "$output" != *"BAD_TIMEOUT:"* ]]
+}
+
+@test "check_macos_update uses cached softwareupdate output when available" {
+    run bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/check/all.sh"
+mkdir -p "$HOME/.cache/mole"
+cat > "$HOME/.cache/mole/softwareupdate_list" <<'OUT'
+Software Update Tool
+
+Software Update found the following new or updated software:
+* Label: macOS 99
+        Title: macOS 99, Version: 99.1, Size: 1024KiB, Recommended: YES, Action: restart,
+OUT
 
 run_with_timeout() {
     echo "SHOULD_NOT_CALL_SOFTWAREUPDATE"
-    return 0
+    return 124
 }
 
 check_macos_update
@@ -660,9 +679,56 @@ echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"System up to date"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=false"* ]]
+    [[ "$output" == *"macOS 99, Version: 99.1"* ]]
+    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
     [[ "$output" != *"SHOULD_NOT_CALL_SOFTWAREUPDATE"* ]]
+}
+
+@test "reset_softwareupdate_cache clears in-memory softwareupdate state" {
+    run bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/check/all.sh"
+
+calls_file="$HOME/softwareupdate_calls"
+printf '0\n' > "$calls_file"
+first_file="$HOME/first_updates.txt"
+second_file="$HOME/second_updates.txt"
+rm -f "$HOME/.cache/mole/softwareupdate_list"
+SOFTWARE_UPDATE_LIST=""
+SOFTWARE_UPDATE_LIST_LOADED="false"
+run_with_timeout() {
+    local timeout="${1:-}"
+    shift
+    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
+        local calls
+        calls=$(cat "$calls_file")
+        calls=$((calls + 1))
+        printf '%s\n' "$calls" > "$calls_file"
+        cat <<OUT
+Software Update Tool
+
+* Label: macOS $calls
+        Title: macOS $calls, Version: $calls.0, Size: 1024KiB, Recommended: YES, Action: restart,
+OUT
+        return 0
+    fi
+    return 124
+}
+
+get_software_updates > "$first_file"
+reset_softwareupdate_cache
+get_software_updates > "$second_file"
+printf 'CALLS=%s\n' "$(cat "$calls_file")"
+printf 'FIRST=%s\n' "$(cat "$first_file")"
+printf 'SECOND=%s\n' "$(cat "$second_file")"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CALLS=2"* ]]
+    [[ "$output" == *"FIRST=Software Update Tool"* ]]
+    [[ "$output" == *"SECOND=Software Update Tool"* ]]
+    [[ "$output" == *"macOS 2"* ]]
 }
 
 @test "check_macos_update outputs debug info when MO_DEBUG set" {
@@ -670,8 +736,6 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
 
 export MO_DEBUG=1
 
@@ -692,7 +756,7 @@ check_macos_update 2>&1
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"[DEBUG] softwareupdate exit status:"* ]]
+    [[ "$output" == *"[DEBUG] softwareupdate cached output lines:"* ]]
 }
 
 @test "run_with_timeout succeeds without GNU timeout" {
@@ -1456,6 +1520,7 @@ opt_bluetooth_reset
 EOF
 
     [ "$status" -eq 0 ]
+    [[ "$output" == *"Bluetooth devices may disconnect briefly during refresh"* ]]
     [[ "$output" == *"Bluetooth module restarted"* ]]
 }
 

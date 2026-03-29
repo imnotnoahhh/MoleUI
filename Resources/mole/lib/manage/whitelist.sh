@@ -120,10 +120,12 @@ npm package cache|$HOME/.npm/_cacache/*|package_manager
 pip Python package cache|$HOME/.cache/pip/*|package_manager
 uv Python package cache|$HOME/.cache/uv/*|package_manager
 R renv global cache (virtual environments)|$HOME/Library/Caches/org.R-project.R/R/renv/*|package_manager
+tealdeer tldr pages cache|$HOME/Library/Caches/tealdeer/tldr-pages|package_manager
 Homebrew downloaded packages|$HOME/Library/Caches/Homebrew/*|package_manager
 Yarn package manager cache|$HOME/.cache/yarn/*|package_manager
 pnpm package store|$HOME/Library/pnpm/store/*|package_manager
-Composer PHP dependencies cache|$HOME/.composer/cache/*|package_manager
+Composer PHP dependencies cache (legacy)|$HOME/.composer/cache/*|package_manager
+Composer PHP dependencies cache|$HOME/Library/Caches/composer/*|package_manager
 RubyGems cache|$HOME/.gem/cache/*|package_manager
 Conda packages cache|$HOME/.conda/pkgs/*|package_manager
 Anaconda packages cache|$HOME/anaconda3/pkgs/*|package_manager

@@ -55,6 +55,78 @@ hint_get_path_size_kb_with_timeout() {
 }
 
 # shellcheck disable=SC2329
+hint_extract_launch_agent_program_path() {
+    local plist="$1"
+    local program=""
+
+    program=$(plutil -extract ProgramArguments.0 raw "$plist" 2> /dev/null || echo "")
+    if [[ -z "$program" ]]; then
+        program=$(plutil -extract Program raw "$plist" 2> /dev/null || echo "")
+    fi
+
+    printf '%s\n' "$program"
+}
+
+# shellcheck disable=SC2329
+hint_extract_launch_agent_associated_bundle() {
+    local plist="$1"
+    local associated=""
+
+    associated=$(plutil -extract AssociatedBundleIdentifiers.0 raw "$plist" 2> /dev/null || echo "")
+    if [[ -z "$associated" ]] || [[ "$associated" == "1" ]]; then
+        associated=$(plutil -extract AssociatedBundleIdentifiers raw "$plist" 2> /dev/null || echo "")
+        if [[ "$associated" == "{"* ]] || [[ "$associated" == "["* ]]; then
+            associated=""
+        fi
+    fi
+
+    printf '%s\n' "$associated"
+}
+
+# shellcheck disable=SC2329
+hint_is_app_scoped_launch_target() {
+    local program="$1"
+
+    case "$program" in
+        /Applications/Setapp/*.app/* | \
+            /Applications/*.app/* | \
+            "$HOME"/Applications/*.app/* | \
+            /Library/Input\ Methods/*.app/* | \
+            /Library/PrivilegedHelperTools/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# shellcheck disable=SC2329
+hint_is_system_binary() {
+    local program="$1"
+
+    case "$program" in
+        /bin/* | /sbin/* | /usr/bin/* | /usr/sbin/* | /usr/libexec/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# shellcheck disable=SC2329
+hint_launch_agent_bundle_exists() {
+    local bundle_id="$1"
+
+    [[ -z "$bundle_id" ]] && return 1
+
+    if run_with_timeout 2 mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null | head -1 | grep -q .; then
+        return 0
+    fi
+
+    return 1
+}
+
+# shellcheck disable=SC2329
 record_project_artifact_hint() {
     local path="$1"
 
@@ -350,4 +422,62 @@ show_project_artifact_hint_notice() {
         echo -e "  ${GRAY}${ICON_SUBLIST}${NC} Examples: ${GRAY}${example_text}${NC}"
     fi
     echo -e "  ${GRAY}${ICON_REVIEW}${NC} Review: mo purge"
+}
+
+# shellcheck disable=SC2329
+show_user_launch_agent_hint_notice() {
+    local launch_agents_dir="$HOME/Library/LaunchAgents"
+    [[ -d "$launch_agents_dir" ]] || return 0
+
+    local max_hits=3
+    local -a labels=()
+    local -a reasons=()
+    local -a targets=()
+    local plist
+
+    while IFS= read -r -d '' plist; do
+        local filename
+        filename=$(basename "$plist")
+        [[ "$filename" == com.apple.* ]] && continue
+
+        local reason=""
+        local target=""
+        local program=""
+        local associated=""
+
+        program=$(hint_extract_launch_agent_program_path "$plist")
+        if [[ -n "$program" ]] && hint_is_system_binary "$program"; then
+            continue
+        fi
+        if [[ -n "$program" ]] && hint_is_app_scoped_launch_target "$program" && [[ ! -e "$program" ]]; then
+            reason="Missing app/helper target"
+            target="${program/#$HOME/~}"
+        else
+            associated=$(hint_extract_launch_agent_associated_bundle "$plist")
+            if [[ -n "$associated" ]] && ! hint_launch_agent_bundle_exists "$associated"; then
+                reason="Associated app not found"
+                target="$associated"
+            fi
+        fi
+
+        if [[ -n "$reason" ]]; then
+            labels+=("$filename")
+            reasons+=("$reason")
+            targets+=("$target")
+            if [[ ${#labels[@]} -ge $max_hits ]]; then
+                break
+            fi
+        fi
+    done < <(find "$launch_agents_dir" -maxdepth 1 -name "*.plist" -print0 2> /dev/null)
+
+    [[ ${#labels[@]} -eq 0 ]] && return 0
+
+    note_activity
+
+    local i
+    for i in "${!labels[@]}"; do
+        echo -e "  ${GREEN}${ICON_LIST}${NC} Potential stale login item: ${labels[$i]}"
+        echo -e "  ${GRAY}${ICON_SUBLIST}${NC} ${reasons[$i]}: ${GRAY}${targets[$i]}${NC}"
+    done
+    echo -e "  ${GRAY}${ICON_REVIEW}${NC} Review: open ~/Library/LaunchAgents and remove only items you recognize"
 }

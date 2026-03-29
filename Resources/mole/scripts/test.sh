@@ -10,6 +10,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# Never allow the scripted test run to trigger real sudo or Touch ID prompts.
+export MOLE_TEST_NO_AUTH=1
+
 # shellcheck source=lib/core/file_ops.sh
 source "$PROJECT_ROOT/lib/core/file_ops.sh"
 
@@ -20,6 +23,20 @@ echo ""
 
 FAILED=0
 
+enforce_timeout_dependency_in_ci() {
+    if [[ "${CI:-}" != "true" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+        return 0
+    fi
+
+    if command -v gtimeout > /dev/null 2>&1 || command -v timeout > /dev/null 2>&1; then
+        return 0
+    fi
+
+    printf "${RED}${ICON_ERROR} Missing timeout binary (gtimeout/timeout) in CI${NC}\n"
+    printf "${YELLOW}${ICON_WARNING} Install coreutils to provide gtimeout${NC}\n"
+    exit 1
+}
+
 report_unit_result() {
     if [[ $1 -eq 0 ]]; then
         printf "${GREEN}${ICON_SUCCESS} Unit tests passed${NC}\n"
@@ -28,6 +45,8 @@ report_unit_result() {
         ((FAILED++))
     fi
 }
+
+enforce_timeout_dependency_in_ci
 
 echo "1. Linting test scripts..."
 if command -v shellcheck > /dev/null 2>&1; then
@@ -98,51 +117,90 @@ if command -v bats > /dev/null 2>&1 && [ -d "tests" ]; then
     if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
         use_color=true
     fi
-    if bats --help 2>&1 | grep -q -- "--formatter"; then
-        formatter="${BATS_FORMATTER:-pretty}"
-        if [[ "$formatter" == "tap" ]]; then
+
+    # Enable parallel execution across test files when GNU parallel is available.
+    # Cap at 6 jobs to balance speed vs. system load during CI.
+    bats_opts=()
+    if command -v parallel > /dev/null 2>&1 && bats --help 2>&1 | grep -q -- "--jobs"; then
+        _ncpu="$(sysctl -n hw.logicalcpu 2> /dev/null || nproc 2> /dev/null || echo 4)"
+        _jobs="$((_ncpu > 6 ? 6 : (_ncpu < 2 ? 2 : _ncpu)))"
+        # --no-parallelize-within-files ensures each test file's tests run
+        # sequentially (they share a $HOME set by setup_file and are not safe
+        # to run concurrently). Parallelism is only across files.
+        bats_opts+=("--jobs" "$_jobs" "--no-parallelize-within-files")
+        unset _ncpu _jobs
+    fi
+
+    # core_performance.bats has wall-clock timing assertions that are skewed by
+    # CPU contention from parallel test workers. When parallel mode is active,
+    # split it out to run sequentially after the parallel batch completes.
+    _perf_files=()
+    if [[ ${#bats_opts[@]} -gt 0 ]]; then
+        _all=("$@")
+        _rest=()
+        if [[ ${#_all[@]} -eq 1 && -d "${_all[0]}" ]]; then
+            while IFS= read -r _f; do
+                case "$_f" in
+                    *core_performance.bats) _perf_files+=("$_f") ;;
+                    *) _rest+=("$_f") ;;
+                esac
+            done < <(find "${_all[0]}" -type f -name '*.bats' | sort)
+        else
+            for _f in "${_all[@]}"; do
+                case "$_f" in
+                    *core_performance.bats) _perf_files+=("$_f") ;;
+                    *) _rest+=("$_f") ;;
+                esac
+            done
+        fi
+        if [[ ${#_rest[@]} -gt 0 ]]; then
+            set -- "${_rest[@]}"
+        else
+            set --
+        fi
+        unset _all _rest _f
+    fi
+
+    # Accumulate pass/fail across all bats invocations.
+    _unit_rc=0
+
+    # Main run (parallel when bats_opts has --jobs, skipped if no files remain).
+    if [[ $# -gt 0 ]]; then
+        if bats --help 2>&1 | grep -q -- "--formatter"; then
+            formatter="${BATS_FORMATTER:-pretty}"
+            if [[ "$formatter" == "tap" ]]; then
+                if $use_color; then
+                    esc=$'\033'
+                    bats ${bats_opts[@]+"${bats_opts[@]}"} --formatter tap "$@" |
+                        sed -e "s/^ok /${esc}[32mok ${esc}[0m /" \
+                            -e "s/^not ok /${esc}[31mnot ok ${esc}[0m /" || _unit_rc=1
+                else
+                    bats ${bats_opts[@]+"${bats_opts[@]}"} --formatter tap "$@" || _unit_rc=1
+                fi
+            else
+                # Pretty format for local development
+                bats ${bats_opts[@]+"${bats_opts[@]}"} --formatter "$formatter" "$@" || _unit_rc=1
+            fi
+        else
             if $use_color; then
                 esc=$'\033'
-                if bats --formatter tap "$@" |
+                bats ${bats_opts[@]+"${bats_opts[@]}"} --tap "$@" |
                     sed -e "s/^ok /${esc}[32mok ${esc}[0m /" \
-                        -e "s/^not ok /${esc}[31mnot ok ${esc}[0m /"; then
-                    report_unit_result 0
-                else
-                    report_unit_result 1
-                fi
+                        -e "s/^not ok /${esc}[31mnot ok ${esc}[0m /" || _unit_rc=1
             else
-                if bats --formatter tap "$@"; then
-                    report_unit_result 0
-                else
-                    report_unit_result 1
-                fi
-            fi
-        else
-            # Pretty format for local development
-            if bats --formatter "$formatter" "$@"; then
-                report_unit_result 0
-            else
-                report_unit_result 1
-            fi
-        fi
-    else
-        if $use_color; then
-            esc=$'\033'
-            if bats --tap "$@" |
-                sed -e "s/^ok /${esc}[32mok ${esc}[0m /" \
-                    -e "s/^not ok /${esc}[31mnot ok ${esc}[0m /"; then
-                report_unit_result 0
-            else
-                report_unit_result 1
-            fi
-        else
-            if bats --tap "$@"; then
-                report_unit_result 0
-            else
-                report_unit_result 1
+                bats ${bats_opts[@]+"${bats_opts[@]}"} --tap "$@" || _unit_rc=1
             fi
         fi
     fi
+
+    # Post-run: timing-sensitive perf tests run after parallel workers have
+    # finished so CPU contention does not skew wall-clock assertions.
+    for _pf in ${_perf_files[@]+"${_perf_files[@]}"}; do
+        bats "$_pf" || _unit_rc=1
+    done
+    unset _perf_files _pf
+
+    report_unit_result "$_unit_rc"
 else
     printf "${YELLOW}${ICON_WARNING} bats not installed or no tests found, skipping${NC}\n"
 fi
@@ -185,37 +243,42 @@ fi
 echo ""
 
 echo "6. Testing installation..."
-# Skip if Homebrew mole is installed (install.sh will refuse to overwrite)
-install_test_home=""
-if command -v brew > /dev/null 2>&1 && brew list mole &> /dev/null; then
-    printf "${GREEN}${ICON_SUCCESS} Installation test skipped, Homebrew${NC}\n"
+# Installation script is macOS-specific; skip this test on non-macOS platforms
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    printf "${YELLOW}${ICON_WARNING} Installation test skipped (non-macOS)${NC}\n"
 else
-    install_test_home="$(mktemp -d /tmp/mole-test-home.XXXXXX 2> /dev/null || true)"
-    if [[ -z "$install_test_home" ]]; then
-        install_test_home="/tmp/mole-test-home"
-        mkdir -p "$install_test_home"
+    # Skip if Homebrew mole is installed (install.sh will refuse to overwrite)
+    install_test_home=""
+    if command -v brew > /dev/null 2>&1 && brew list mole &> /dev/null; then
+        printf "${GREEN}${ICON_SUCCESS} Installation test skipped, Homebrew${NC}\n"
+    else
+        install_test_home="$(mktemp -d /tmp/mole-test-home.XXXXXX 2> /dev/null || true)"
+        if [[ -z "$install_test_home" ]]; then
+            install_test_home="/tmp/mole-test-home"
+            mkdir -p "$install_test_home"
+        fi
     fi
-fi
-if [[ -z "$install_test_home" ]]; then
-    :
-elif HOME="$install_test_home" \
-    XDG_CONFIG_HOME="$install_test_home/.config" \
-    XDG_CACHE_HOME="$install_test_home/.cache" \
-    MO_NO_OPLOG=1 \
-    ./install.sh --prefix /tmp/mole-test > /dev/null 2>&1; then
-    if [ -f /tmp/mole-test/mole ]; then
-        printf "${GREEN}${ICON_SUCCESS} Installation test passed${NC}\n"
+    if [[ -z "$install_test_home" ]]; then
+        :
+    elif HOME="$install_test_home" \
+        XDG_CONFIG_HOME="$install_test_home/.config" \
+        XDG_CACHE_HOME="$install_test_home/.cache" \
+        MO_NO_OPLOG=1 \
+        ./install.sh --prefix /tmp/mole-test > /dev/null 2>&1; then
+        if [[ -f "/tmp/mole-test/mole" ]]; then
+            printf "${GREEN}${ICON_SUCCESS} Installation test passed${NC}\n"
+        else
+            printf "${RED}${ICON_ERROR} Installation test failed${NC}\n"
+            ((FAILED++))
+        fi
     else
         printf "${RED}${ICON_ERROR} Installation test failed${NC}\n"
         ((FAILED++))
     fi
-else
-    printf "${RED}${ICON_ERROR} Installation test failed${NC}\n"
-    ((FAILED++))
-fi
-MO_NO_OPLOG=1 safe_remove "/tmp/mole-test" true || true
-if [[ -n "$install_test_home" ]]; then
-    MO_NO_OPLOG=1 safe_remove "$install_test_home" true || true
+    MO_NO_OPLOG=1 safe_remove "/tmp/mole-test" true || true
+    if [[ -n "$install_test_home" ]]; then
+        MO_NO_OPLOG=1 safe_remove "$install_test_home" true || true
+    fi
 fi
 echo ""
 

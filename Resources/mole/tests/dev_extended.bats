@@ -99,6 +99,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 safe_clean() { echo "$2"; }
+clean_service_worker_cache() { :; }
 clean_dev_editors
 EOF
 

@@ -146,6 +146,41 @@ clean_dev_go() {
     fi
     note_activity
 }
+
+get_mise_cache_path() {
+    if [[ -n "${MISE_CACHE_DIR:-}" && "${MISE_CACHE_DIR}" == /* ]]; then
+        echo "$MISE_CACHE_DIR"
+        return 0
+    fi
+
+    if command -v mise > /dev/null 2>&1; then
+        local mise_cache_path
+        mise_cache_path=$(run_with_timeout 2 mise cache path 2> /dev/null || echo "")
+        if [[ -n "$mise_cache_path" && "$mise_cache_path" == /* ]]; then
+            echo "$mise_cache_path"
+            return 0
+        fi
+    fi
+
+    echo "$HOME/Library/Caches/mise"
+}
+
+clean_dev_mise() {
+    local mise_cache_path
+    mise_cache_path=$(get_mise_cache_path)
+
+    if command -v mise > /dev/null 2>&1; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            clean_tool_cache "mise cache" bash -c 'mise cache clear > /dev/null 2>&1 || true'
+            note_activity
+        else
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} mise cache · would clean"
+            note_activity
+        fi
+    fi
+
+    safe_clean "$mise_cache_path"/* "mise cache"
+}
 # Rust/cargo caches.
 clean_dev_rust() {
     safe_clean ~/.cargo/registry/cache/* "Rust cargo cache"
@@ -198,13 +233,27 @@ clean_dev_docker() {
             fi
             stop_section_spinner
             if [[ "$docker_running" == "true" ]]; then
-                clean_tool_cache "Docker build cache" docker builder prune -af
+                # Remove unused images, stopped containers, unused networks, and
+                # anonymous volumes in one pass. This maps better to the large
+                # reclaimable "docker system df" buckets users typically see.
+                # Skip if Docker paths are whitelisted: docker system prune operates
+                # through the daemon API and bypasses filesystem-level whitelist checks.
+                if is_path_whitelisted "$HOME/.docker" ||
+                    is_path_whitelisted "$HOME/Library/Containers/com.docker.docker" ||
+                    is_path_whitelisted "$HOME/Library/Group Containers/group.com.docker"; then
+                    echo -e "  ${GRAY}${ICON_WARNING}${NC} Docker unused data · skipped (whitelisted)"
+                    debug_log "Docker cleanup skipped: Docker paths found in whitelist"
+                else
+                    clean_tool_cache "Docker unused data" docker system prune -af --volumes
+                fi
             else
+                echo -e "  ${GRAY}${ICON_WARNING}${NC} Docker unused data · skipped (daemon not running)"
+                note_activity
                 debug_log "Docker daemon not running, skipping Docker cache cleanup"
             fi
         else
             note_activity
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Docker build cache · would clean"
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Docker unused data · would clean"
         fi
     fi
     safe_clean ~/.docker/buildx/cache/* "Docker BuildX cache"
@@ -399,7 +448,9 @@ clean_xcode_device_support() {
                 done
 
                 if [[ $removed_count -gt 0 ]]; then
-                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} ${display_name} · removed ${removed_count} old versions, ${stale_size_human}"
+                    local line_color
+                    line_color=$(cleanup_result_color_kb "$stale_size_kb")
+                    echo -e "  ${line_color}${ICON_SUCCESS}${NC} ${display_name} · removed ${removed_count} old versions, ${line_color}${stale_size_human}${NC}"
                     note_activity
                 fi
             fi
@@ -615,10 +666,12 @@ clean_xcode_simulator_runtime_volumes() {
     if [[ $removed_count -gt 0 ]]; then
         local removed_human
         removed_human=$(bytes_to_human "$((removed_size_kb * 1024))")
+        local line_color
+        line_color=$(cleanup_result_color_kb "$removed_size_kb")
         if [[ $skipped_protected -gt 0 ]]; then
-            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${removed_human}), skipped ${skipped_protected} protected"
+            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${line_color}${removed_human}${NC}), skipped ${skipped_protected} protected"
         else
-            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${removed_human})"
+            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${line_color}${removed_human}${NC})"
         fi
         note_activity
     else
@@ -704,10 +757,12 @@ clean_dev_mobile() {
                             removed_unavailable=0
                         fi
 
+                        local line_color
+                        line_color=$(cleanup_result_color_kb "$unavailable_size_kb")
                         if ((removed_unavailable > 0)); then
-                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${unavailable_size_human}"
+                            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${line_color}${unavailable_size_human}${NC}"
                         else
-                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${unavailable_size_human}"
+                            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${line_color}${unavailable_size_human}${NC}"
                         fi
                     else
                         stop_section_spinner
@@ -753,7 +808,9 @@ clean_dev_mobile() {
 
                             if ((manually_removed > 0)); then
                                 if ((manual_failed == 0)); then
-                                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${manually_removed} (fallback), ${unavailable_size_human}"
+                                    local line_color
+                                    line_color=$(cleanup_result_color_kb "$unavailable_size_kb")
+                                    echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${manually_removed} (fallback), ${line_color}${unavailable_size_human}${NC}"
                                 else
                                     echo -e "  ${YELLOW}${ICON_WARNING}${NC} Xcode unavailable simulators · partially cleaned ${manually_removed}/${#unavailable_udids[@]}, ${unavailable_size_human}"
                                 fi
@@ -914,10 +971,12 @@ clean_dev_jetbrains_toolbox() {
 
     _restore_whitelist
 }
+
 # Other language tool caches.
 clean_dev_other_langs() {
     safe_clean ~/.bundle/cache/* "Ruby Bundler cache"
-    safe_clean ~/.composer/cache/* "PHP Composer cache"
+    safe_clean ~/.composer/cache/* "PHP Composer cache (legacy)"
+    safe_clean ~/Library/Caches/composer/* "PHP Composer cache"
     safe_clean ~/.nuget/packages/* "NuGet packages cache"
     # safe_clean ~/.pub-cache/* "Dart Pub cache"
     safe_clean ~/.cache/bazel/* "Bazel cache"
@@ -1024,6 +1083,7 @@ clean_dev_editors() {
     safe_clean ~/Library/Application\ Support/Code/DawnWebGPUCache/* "VS Code WebGPU cache"
     safe_clean ~/Library/Application\ Support/Code/GPUCache/* "VS Code GPU cache"
     safe_clean ~/Library/Application\ Support/Code/CachedExtensionVSIXs/* "VS Code extension cache"
+    clean_service_worker_cache "VS Code" "$HOME/Library/Application Support/Code/Service Worker/CacheStorage"
     safe_clean ~/Library/Caches/Zed/* "Zed cache"
 }
 # Main developer tools cleanup sequence.
@@ -1035,6 +1095,7 @@ clean_developer_tools() {
     clean_dev_npm
     clean_dev_python
     clean_dev_go
+    clean_dev_mise
     clean_dev_rust
     check_rust_toolchains
     clean_dev_docker

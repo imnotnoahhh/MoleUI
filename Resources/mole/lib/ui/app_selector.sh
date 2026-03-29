@@ -17,8 +17,8 @@ format_app_display() {
     fi
 
     # Format size
-    local size_str="N/A"
-    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" ]] && size_str="$size"
+    local size_str="--"
+    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" && "$size" != "N/A" && "$size" != "--" ]] && size_str="$size"
 
     # Calculate available width for app name based on terminal width
     # Accept pre-calculated max_name_width (5th param) to avoid recalculation in loops

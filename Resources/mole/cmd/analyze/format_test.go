@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -20,7 +22,7 @@ func TestRuneWidth(t *testing.T) {
 		{"CJK ideograph", '語', 2},
 		{"Full-width number", '１', 2},
 		{"ASCII space", ' ', 1},
-		{"Tab", '\t', 1},
+		{"Tab", '	', 1},
 	}
 
 	for _, tt := range tests {
