@@ -159,25 +159,266 @@ EOF
     [[ "$output" != *"(custom path)"* ]]
 }
 
-@test "clean_dev_docker skips when daemon not running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 DRY_RUN=false bash --noprofile --norc <<'EOF'
+@test "clean_dev_npm cleans default bun cache when bun is unavailable" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-run_with_timeout() { return 1; }
-clean_tool_cache() { echo "$1"; }
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() { return 1; }
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Bun cache|$HOME/.bun/install/cache/*"* ]]
+    [[ "$output" != *"bun cache|bun cache bun pm cache rm"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm uses bun cache command for default bun cache path" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "$HOME/.bun/install/cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" != *"Bun cache|$HOME/.bun/install/cache/*"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm cleans orphaned default bun cache when custom path is configured" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "/tmp/mole-bun-cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" == *"Orphaned bun cache|$HOME/.bun/install/cache/*"* ]]
+}
+
+@test "clean_dev_npm treats default bun cache path with trailing slash as same path" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "$HOME/.bun/install/cache/"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm falls back to filesystem cleanup when bun cache command fails" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 1
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "/tmp/mole-bun-cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Bun cache|/tmp/mole-bun-cache/*"* ]]
+    [[ "$output" == *"Orphaned bun cache|$HOME/.bun/install/cache/*"* ]]
+}
+
+@test "clean_dev_docker skips daemon-managed cleanup by default" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
 safe_clean() { echo "$2"; }
-debug_log() { echo "$*"; }
-docker() { return 1; }
+note_activity() { :; }
+debug_log() { :; }
+docker() { echo "docker called"; return 0; }
 export -f docker
 clean_dev_docker
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Docker daemon not running"* ]]
-    [[ "$output" != *"Docker build cache"* ]]
+    [[ "$output" == *"Docker unused data · skipped by default"* ]]
+    [[ "$output" == *"Review: docker system df"* ]]
+    [[ "$output" == *"Docker BuildX cache"* ]]
+    [[ "$output" != *"docker called"* ]]
+    [[ "$output" != *"docker system prune"* ]]
+}
+
+@test "clean_dev_docker keeps BuildX cache cleanup" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+debug_log() { :; }
+docker() { return 0; }
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker BuildX cache|$HOME/.docker/buildx/cache/*"* ]]
+}
+
+@test "clean_dev_docker no longer depends on whitelist to avoid prune" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { :; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() {
+    [[ "$1" == "$HOME/.docker" ]] && return 0
+    return 1
+}
+export -f is_path_whitelisted
+docker() { echo "docker called"; return 0; }
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker unused data · skipped by default"* ]]
+    [[ "$output" != *"whitelisted"* ]]
+    [[ "$output" != *"mo clean --whitelist"* ]]
+    [[ "$output" != *"docker called"* ]]
+    [[ "$output" != *"docker system prune"* ]]
+}
+
+@test "clean_dev_mise respects MISE_CACHE_DIR and only targets cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MISE_CACHE_DIR="/tmp/mise-cache" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_tool_cache() { :; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+clean_dev_mise
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mise cache|/tmp/mise-cache/*"* ]]
+    [[ "$output" != *".local/share/mise"* ]]
+}
+
+@test "clean_dev_other_langs cleans configured composer cache paths" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" COMPOSER_HOME="$HOME/.config/composer-home" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_other_langs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHP Composer cache (legacy)|"* ]]
+    [[ "$output" == *"PHP Composer cache|"* ]]
 }
 
 @test "clean_developer_tools runs key stages" {
@@ -191,6 +432,7 @@ clean_homebrew() { echo "brew"; }
 clean_project_caches() { :; }
 clean_dev_python() { :; }
 clean_dev_go() { :; }
+clean_dev_mise() { echo "mise"; }
 clean_dev_rust() { :; }
 check_rust_toolchains() { :; }
 check_android_ndk() { :; }
@@ -222,6 +464,7 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"npm"* ]]
+    [[ "$output" == *"mise"* ]]
     [[ "$output" == *"brew"* ]]
 }
 

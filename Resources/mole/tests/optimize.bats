@@ -141,6 +141,60 @@ EOF
     [[ "$output" == *"Font cache cleared"* ]]
 }
 
+@test "optimize does not auto-fix Gatekeeper anymore" {
+    run grep -n "spctl --master-enable\\|SECURITY_FIXES+=([\"']gatekeeper|" "$PROJECT_ROOT/bin/optimize.sh"
+
+    [ "$status" -eq 1 ]
+}
+
+@test "opt_font_cache_rebuild skips when Firefox helpers are running" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+pgrep() {
+    case "$*" in
+        *"Firefox|org\\.mozilla\\.firefox|firefox .*contentproc|firefox .*plugin-container|firefox .*crashreporter"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+export -f pgrep
+opt_font_cache_rebuild
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Font cache rebuild skipped · Firefox still running"* ]]
+}
+
+@test "browser_family_is_running does not treat generic renderer helpers as Zen Browser" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+pgrep() {
+    case "$*" in
+        *"renderer|gpu"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+export -f pgrep
+if browser_family_is_running "Zen Browser"; then
+    echo "MATCHED"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"MATCHED"* ]]
+}
+
 @test "opt_dock_refresh clears cache files" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail

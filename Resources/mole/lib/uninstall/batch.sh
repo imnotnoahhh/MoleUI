@@ -11,12 +11,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Batch uninstall with a single confirmation.
 
-get_lsregister_path() {
-    echo "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-}
-
 is_uninstall_dry_run() {
     [[ "${MOLE_DRY_RUN:-0}" == "1" ]]
+}
+
+app_declares_local_network_usage() {
+    local app_path="$1"
+    local info_plist="$app_path/Contents/Info.plist"
+
+    [[ -f "$info_plist" ]] || return 1
+
+    if plutil -extract NSLocalNetworkUsageDescription raw "$info_plist" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    if plutil -extract NSBonjourServices xml1 -o - "$info_plist" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
 }
 
 # High-performance sensitive data detection (pure Bash, no subprocess)
@@ -186,26 +199,29 @@ remove_login_item() {
 
     # Remove from Login Items using index-based deletion (handles broken items)
     if [[ -n "$clean_name" ]]; then
-        # Escape double quotes and backslashes for AppleScript
-        local escaped_name="${clean_name//\\/\\\\}"
-        escaped_name="${escaped_name//\"/\\\"}"
+        # Skip AppleScript during tests to avoid permission dialogs
+        if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+            # Escape double quotes and backslashes for AppleScript
+            local escaped_name="${clean_name//\\/\\\\}"
+            escaped_name="${escaped_name//\"/\\\"}"
 
-        osascript <<- EOF > /dev/null 2>&1 || true
-			tell application "System Events"
-			    try
-			        set itemCount to count of login items
-			        -- Delete in reverse order to avoid index shifting
-			        repeat with i from itemCount to 1 by -1
-			            try
-			                set itemName to name of login item i
-			                if itemName is "$escaped_name" then
-			                    delete login item i
-			                end if
-			            end try
-			        end repeat
-			    end try
-			end tell
-		EOF
+            osascript <<- EOF > /dev/null 2>&1 || true
+				tell application "System Events"
+				    try
+				        set itemCount to count of login items
+				        -- Delete in reverse order to avoid index shifting
+				        repeat with i from itemCount to 1 by -1
+				            try
+				                set itemName to name of login item i
+				                if itemName is "$escaped_name" then
+				                    delete login item i
+				                end if
+				            end try
+				        end repeat
+				    end try
+				end tell
+			EOF
+        fi
     fi
 }
 
@@ -282,6 +298,7 @@ batch_uninstall_applications() {
     # Pre-scan: running apps, sudo needs, size.
     local -a running_apps=()
     local -a sudo_apps=()
+    local -a brew_cask_apps=()
     local total_estimated_size=0
     local -a app_details=()
 
@@ -317,6 +334,10 @@ batch_uninstall_applications() {
                 cask_name="$detected_cask"
                 is_brew_cask="true"
             fi
+        fi
+
+        if [[ "$is_brew_cask" == "true" ]]; then
+            brew_cask_apps+=("$app_name")
         fi
 
         # Check if sudo is needed
@@ -363,6 +384,11 @@ batch_uninstall_applications() {
             has_sensitive_data="true"
         fi
 
+        local has_local_network_usage="false"
+        if app_declares_local_network_usage "$app_path"; then
+            has_local_network_usage="true"
+        fi
+
         # Store details for later use (base64 keeps lists on one line).
         local encoded_files
         encoded_files=$(printf '%s' "$related_files" | base64 | tr -d '\n' || echo "")
@@ -370,7 +396,7 @@ batch_uninstall_applications() {
         encoded_system_files=$(printf '%s' "$system_files" | base64 | tr -d '\n' || echo "")
         local encoded_diag_system
         encoded_diag_system=$(printf '%s' "$diag_system" | base64 | tr -d '\n' || echo "")
-        app_details+=("$app_name|$app_path|$bundle_id|$total_kb|$encoded_files|$encoded_system_files|$has_sensitive_data|$needs_sudo|$is_brew_cask|$cask_name|$encoded_diag_system")
+        app_details+=("$app_name|$app_path|$bundle_id|$total_kb|$encoded_files|$encoded_system_files|$has_sensitive_data|$needs_sudo|$is_brew_cask|$cask_name|$encoded_diag_system|$has_local_network_usage")
     done
     if [[ -t 1 ]]; then stop_inline_spinner; fi
 
@@ -380,10 +406,7 @@ batch_uninstall_applications() {
 
     # Warn if brew cask apps are present.
     local has_brew_cask=false
-    for detail in "${app_details[@]}"; do
-        IFS='|' read -r _ _ _ _ _ _ _ _ is_brew_cask_flag _ <<< "$detail"
-        [[ "$is_brew_cask_flag" == "true" ]] && has_brew_cask=true
-    done
+    [[ ${#brew_cask_apps[@]} -gt 0 ]] && has_brew_cask=true
 
     if [[ "$has_brew_cask" == "true" ]]; then
         echo -e "${GRAY}${ICON_WARNING} Homebrew apps will be fully cleaned, --zap removes configs and data${NC}"
@@ -392,7 +415,7 @@ batch_uninstall_applications() {
     echo ""
 
     for detail in "${app_details[@]}"; do
-        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo_flag is_brew_cask cask_name encoded_diag_system <<< "$detail"
+        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo_flag is_brew_cask cask_name encoded_diag_system has_local_network_usage <<< "$detail"
         local app_size_display=$(bytes_to_human "$((total_kb * 1024))")
 
         local brew_tag=""
@@ -464,11 +487,19 @@ batch_uninstall_applications() {
     # that user explicitly chose to uninstall. System-critical components remain protected.
     export MOLE_UNINSTALL_MODE=1
 
-    # Request sudo if needed for non-Homebrew removal operations.
-    # Note: Homebrew resets sudo timestamp at process startup, so pre-auth would
-    # cause duplicate password prompts in cask-only flows.
-    if [[ ${#sudo_apps[@]} -gt 0 && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
-        if ! ensure_sudo_session "Admin required for system apps: ${sudo_apps[*]}"; then
+    # Establish sudo once before uninstalling apps that need admin access.
+    # Homebrew cask removal can prompt via sudo during uninstall hooks, which
+    # does not work reliably under Mole's timed non-interactive execution path.
+    if [[ "${MOLE_DRY_RUN:-0}" != "1" ]] &&
+        { [[ ${#sudo_apps[@]} -gt 0 ]] || [[ ${#brew_cask_apps[@]} -gt 0 ]]; }; then
+        local admin_prompt="Admin required to uninstall selected apps"
+        if [[ ${#sudo_apps[@]} -gt 0 && ${#brew_cask_apps[@]} -eq 0 ]]; then
+            admin_prompt="Admin required for system apps: ${sudo_apps[*]}"
+        elif [[ ${#brew_cask_apps[@]} -gt 0 && ${#sudo_apps[@]} -eq 0 ]]; then
+            admin_prompt="Admin required for Homebrew casks: ${brew_cask_apps[*]}"
+        fi
+
+        if ! ensure_sudo_session "$admin_prompt"; then
             echo ""
             log_error "Admin access denied"
             _restore_uninstall_traps
@@ -481,10 +512,11 @@ batch_uninstall_applications() {
     local brew_apps_removed=0 # Track successful brew uninstalls for silent autoremove
     local -a failed_items=()
     local -a success_items=()
+    local -a local_network_warning_apps=()
     local current_index=0
     for detail in "${app_details[@]}"; do
         current_index=$((current_index + 1))
-        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo is_brew_cask cask_name encoded_diag_system <<< "$detail"
+        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo is_brew_cask cask_name encoded_diag_system has_local_network_usage <<< "$detail"
         local related_files=$(decode_file_list "$encoded_files" "$app_name")
         local system_files=$(decode_file_list "$encoded_system_files" "$app_name")
         local diag_system=$(decode_file_list "$encoded_diag_system" "$app_name")
@@ -527,15 +559,35 @@ batch_uninstall_applications() {
                 if brew_uninstall_cask "$cask_name" "$app_path"; then
                     used_brew_successfully=true
                 else
-                    # Fallback to manual removal if brew fails
-                    if [[ "$needs_sudo" == true ]]; then
-                        if ! safe_sudo_remove "$app_path"; then
-                            reason="brew failed, manual removal failed"
+                    # Only fall back to manual app removal when Homebrew no longer
+                    # tracks the cask. Otherwise we would recreate the mismatch
+                    # where brew still reports the app as installed after Mole
+                    # removes the bundle manually.
+                    local cask_state=2
+                    if command -v is_brew_cask_installed > /dev/null 2>&1; then
+                        if is_brew_cask_installed "$cask_name"; then
+                            cask_state=0
+                        else
+                            cask_state=$?
                         fi
+                    fi
+
+                    if [[ $cask_state -eq 1 ]]; then
+                        if [[ "$needs_sudo" == true ]]; then
+                            if ! safe_sudo_remove "$app_path"; then
+                                reason="brew cleanup incomplete, manual removal failed"
+                            fi
+                        else
+                            if ! safe_remove "$app_path" true; then
+                                reason="brew cleanup incomplete, manual removal failed"
+                            fi
+                        fi
+                    elif [[ $cask_state -eq 0 ]]; then
+                        reason="brew uninstall failed, package still installed"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     else
-                        if ! safe_remove "$app_path" true; then
-                            reason="brew failed, manual removal failed"
-                        fi
+                        reason="brew uninstall failed, package state unknown"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     fi
                 fi
             elif [[ "$needs_sudo" == true ]]; then
@@ -644,6 +696,9 @@ batch_uninstall_applications() {
             files_cleaned=$((files_cleaned + 1))
             total_items=$((total_items + 1))
             success_items+=("$app_path")
+            if [[ "$has_local_network_usage" == "true" ]]; then
+                local_network_warning_apps+=("$app_name")
+            fi
         else
             if [[ -t 1 ]]; then
                 if [[ ${#app_details[@]} -gt 1 ]]; then
@@ -759,6 +814,19 @@ batch_uninstall_applications() {
     if [[ $success_count -eq 0 && $failed_count -eq 0 ]]; then
         summary_status="info"
         summary_details+=("No applications were uninstalled.")
+    fi
+
+    if [[ ${#local_network_warning_apps[@]} -gt 0 ]]; then
+        local local_network_list=""
+        local idx
+        for ((idx = 0; idx < ${#local_network_warning_apps[@]}; idx++)); do
+            [[ $idx -gt 0 ]] && local_network_list+=", "
+            local_network_list+="${local_network_warning_apps[idx]}"
+        done
+
+        summary_details+=("${ICON_REVIEW} Local Network permissions on macOS 15+ can outlive app removal: ${YELLOW}${local_network_list}${NC}")
+        summary_details+=("${GRAY}${ICON_SUBLIST}${NC} Mole does not reset ${GRAY}/Volumes/Data/Library/Preferences/com.apple.networkextension*.plist${NC}")
+        summary_details+=("${GRAY}${ICON_SUBLIST}${NC} If stale or duplicate entries remain, clear them manually in Recovery mode because the reset is global${NC}")
     fi
 
     local title="Uninstall complete"

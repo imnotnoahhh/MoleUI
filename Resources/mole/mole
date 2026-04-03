@@ -13,12 +13,11 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.30.0"
+VERSION="1.33.0"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
-    local pam_sudo_file="/etc/pam.d/sudo"
-    [[ -f "$pam_sudo_file" ]] && grep -q "pam_tid.so" "$pam_sudo_file" 2> /dev/null
+    grep -q "pam_tid.so" /etc/pam.d/sudo /etc/pam.d/sudo_local 2> /dev/null
 }
 
 get_latest_version() {
@@ -494,6 +493,10 @@ update_mole() {
 # Remove flow (Homebrew + manual + config/cache).
 remove_mole() {
     local dry_run_mode="${1:-false}"
+    local test_mode=false
+    if [[ "${MOLE_TEST_MODE:-0}" == "1" ]]; then
+        test_mode=true
+    fi
 
     if [[ -t 1 ]]; then
         start_inline_spinner "Detecting Mole installations..."
@@ -507,37 +510,47 @@ remove_mole() {
     local -a manual_installs=()
     local -a alias_installs=()
 
-    if command -v brew > /dev/null 2>&1; then
-        brew_cmd="brew"
-    elif [[ -x "/opt/homebrew/bin/brew" ]]; then
-        brew_cmd="/opt/homebrew/bin/brew"
-    elif [[ -x "/usr/local/bin/brew" ]]; then
-        brew_cmd="/usr/local/bin/brew"
-    fi
-
-    if [[ -n "$brew_cmd" ]]; then
-        if "$brew_cmd" list mole > /dev/null 2>&1; then
-            brew_has_mole="true"
+    if [[ "$test_mode" != "true" ]]; then
+        if command -v brew > /dev/null 2>&1; then
+            brew_cmd="brew"
+        elif [[ -x "/opt/homebrew/bin/brew" ]]; then
+            brew_cmd="/opt/homebrew/bin/brew"
+        elif [[ -x "/usr/local/bin/brew" ]]; then
+            brew_cmd="/usr/local/bin/brew"
         fi
-    fi
 
-    if [[ "$brew_has_mole" == "true" ]] || is_homebrew_install; then
-        is_homebrew=true
+        if [[ -n "$brew_cmd" ]]; then
+            if "$brew_cmd" list mole > /dev/null 2>&1; then
+                brew_has_mole="true"
+            fi
+        fi
+
+        if [[ "$brew_has_mole" == "true" ]] || is_homebrew_install; then
+            is_homebrew=true
+        fi
     fi
 
     local found_mole
-    found_mole=$(command -v mole 2> /dev/null || true)
-    if [[ -n "$found_mole" && -f "$found_mole" ]]; then
-        if [[ ! -L "$found_mole" ]] || ! readlink "$found_mole" | grep -q "Cellar/mole"; then
-            manual_installs+=("$found_mole")
+    found_mole=""
+    if [[ "$test_mode" != "true" ]]; then
+        found_mole=$(command -v mole 2> /dev/null || true)
+        if [[ -n "$found_mole" && -f "$found_mole" ]]; then
+            if [[ ! -L "$found_mole" ]] || ! readlink "$found_mole" | grep -q "Cellar/mole"; then
+                manual_installs+=("$found_mole")
+            fi
         fi
     fi
 
-    local -a fallback_paths=(
-        "/usr/local/bin/mole"
-        "$HOME/.local/bin/mole"
-        "/opt/local/bin/mole"
-    )
+    local -a fallback_paths=()
+    if [[ "$test_mode" == "true" ]]; then
+        fallback_paths=("$HOME/.local/bin/mole")
+    else
+        fallback_paths=(
+            "/usr/local/bin/mole"
+            "$HOME/.local/bin/mole"
+            "/opt/local/bin/mole"
+        )
+    fi
 
     for path in "${fallback_paths[@]}"; do
         if [[ -f "$path" && "$path" != "$found_mole" ]]; then
@@ -548,18 +561,26 @@ remove_mole() {
     done
 
     local found_mo
-    found_mo=$(command -v mo 2> /dev/null || true)
-    if [[ -n "$found_mo" && -f "$found_mo" ]]; then
-        if [[ ! -L "$found_mo" ]] || ! readlink "$found_mo" | grep -q "Cellar/mole"; then
-            alias_installs+=("$found_mo")
+    found_mo=""
+    if [[ "$test_mode" != "true" ]]; then
+        found_mo=$(command -v mo 2> /dev/null || true)
+        if [[ -n "$found_mo" && -f "$found_mo" ]]; then
+            if [[ ! -L "$found_mo" ]] || ! readlink "$found_mo" | grep -q "Cellar/mole"; then
+                alias_installs+=("$found_mo")
+            fi
         fi
     fi
 
-    local -a alias_fallback=(
-        "/usr/local/bin/mo"
-        "$HOME/.local/bin/mo"
-        "/opt/local/bin/mo"
-    )
+    local -a alias_fallback=()
+    if [[ "$test_mode" == "true" ]]; then
+        alias_fallback=("$HOME/.local/bin/mo")
+    else
+        alias_fallback=(
+            "/usr/local/bin/mo"
+            "$HOME/.local/bin/mo"
+            "/opt/local/bin/mo"
+        )
+    fi
 
     for alias in "${alias_fallback[@]}"; do
         if [[ -f "$alias" && "$alias" != "$found_mo" ]]; then
@@ -737,7 +758,7 @@ show_main_menu() {
 
     if [[ -t 0 ]]; then
         printf '\r\033[2K\n'
-        local controls="${GRAY}↑↓  |  Enter  |  M More"
+        local controls="${GRAY}↑↓  |  Enter  |  M More  |  V Version"
         if ! is_touchid_configured; then
             controls="${controls}  |  T TouchID"
         elif [[ "${MAIN_MENU_SHOW_UPDATE:-false}" == "true" ]]; then

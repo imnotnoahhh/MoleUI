@@ -187,3 +187,69 @@ EOF
     ")
     [[ "$result" == "loaded" ]]
 }
+
+@test "normalize_paths_for_cleanup handles large nested batches without hanging" {
+    local limit_ms="${MOLE_PERF_NORMALIZE_PATHS_LIMIT_MS:-4000}"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" LIMIT_MS="$limit_ms" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+
+python - <<'PY'
+from pathlib import Path
+import os
+project_root = Path(os.environ["PROJECT_ROOT"])
+text = (project_root / "bin/clean.sh").read_text()
+start = text.index("normalize_paths_for_cleanup() {")
+depth = 0
+end = None
+for i in range(start, len(text)):
+    ch = text[i]
+    if ch == "{":
+        depth += 1
+    elif ch == "}":
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+Path("/tmp/normalize_paths_for_cleanup.sh").write_text(text[start:end] + "\n")
+PY
+
+source /tmp/normalize_paths_for_cleanup.sh
+
+paths=(
+    "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches"
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/"
+)
+for i in $(seq 1 6000); do
+    paths+=("$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches/item-$i")
+    paths+=("$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/item-$i")
+done
+
+start_ns=$(python - <<'PY'
+import time
+print(time.time_ns())
+PY
+)
+normalized=()
+while IFS= read -r line; do
+    normalized+=("$line")
+done < <(normalize_paths_for_cleanup "${paths[@]}")
+end_ns=$(python - <<'PY'
+import time
+print(time.time_ns())
+PY
+)
+elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+
+printf 'COUNT=%s ELAPSED_MS=%s\n' "${#normalized[@]}" "$elapsed_ms"
+printf '%s\n' "${normalized[@]}"
+
+[[ ${#normalized[@]} -eq 2 ]]
+[[ "${normalized[0]}" == "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches" || "${normalized[1]}" == "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches" ]]
+[[ "${normalized[0]}" == "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches" || "${normalized[1]}" == "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches" ]]
+(( elapsed_ms < LIMIT_MS ))
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"COUNT=2"* ]]
+}

@@ -135,6 +135,16 @@ uninstall_resolve_display_name() {
     if [[ "$display_name" == /* ]]; then
         display_name="$app_name"
     fi
+
+    # Keep versioned bundle names when metadata collapses distinct installs.
+    if [[ -n "$display_name" && "$app_name" == "$display_name"* && "$app_name" != "$display_name" ]]; then
+        local suffix
+        suffix="${app_name#"$display_name"}"
+        if [[ "$suffix" == *[0-9]* ]]; then
+            display_name="$app_name"
+        fi
+    fi
+
     display_name="${display_name%.app}"
     display_name="${display_name//|/-}"
     display_name="${display_name//[$'\t\r\n']/}"
@@ -469,12 +479,11 @@ scan_applications() {
         while IFS= read -r -d '' app_path; do
             if [[ ! -e "$app_path" ]]; then continue; fi
 
-            local app_name
-            app_name=$(basename "$app_path" .app)
+            local app_name="${app_path##*/}"
+            app_name="${app_name%.app}"
 
             # Skip nested apps inside another .app bundle.
-            local parent_dir
-            parent_dir=$(dirname "$app_path")
+            local parent_dir="${app_path%/*}"
             if [[ "$parent_dir" == *".app" || "$parent_dir" == *".app/"* ]]; then
                 continue
             fi
@@ -485,9 +494,10 @@ scan_applications() {
                 if [[ -n "$link_target" ]]; then
                     local resolved_target="$link_target"
                     if [[ "$link_target" != /* ]]; then
-                        local link_dir
-                        link_dir=$(dirname "$app_path")
-                        resolved_target=$(cd "$link_dir" 2> /dev/null && cd "$(dirname "$link_target")" 2> /dev/null && pwd)/$(basename "$link_target") 2> /dev/null || echo ""
+                        local link_dir="${app_path%/*}"
+                        local _link_parent="${link_target%/*}"
+                        [[ "$_link_parent" == "$link_target" ]] && _link_parent="."
+                        resolved_target=$(cd "$link_dir" 2> /dev/null && cd "$_link_parent" 2> /dev/null && pwd)/"${link_target##*/}" 2> /dev/null || echo ""
                     fi
                     case "$resolved_target" in
                         /System/* | /usr/bin/* | /usr/lib/* | /bin/* | /sbin/* | /private/etc/*)
@@ -545,6 +555,15 @@ scan_applications() {
 
         if should_protect_from_uninstall "$bundle_id"; then
             return 0
+        fi
+
+        local plist="$app_path/Contents/Info.plist"
+        if [[ -f "$plist" ]]; then
+            local bg_only
+            bg_only=$(defaults read "$plist" LSBackgroundOnly 2> /dev/null || echo "")
+            if [[ "$bg_only" == "1" || "$bg_only" == "YES" || "$bg_only" == "true" ]]; then
+                return 0
+            fi
         fi
 
         local display_name="${cached_display_name:-}"
@@ -636,6 +655,8 @@ scan_applications() {
     local current_epoch
     current_epoch=$(get_epoch_seconds)
     local inline_metadata_count=0
+    local inline_metadata_effective_limit=$MOLE_UNINSTALL_INLINE_METADATA_LIMIT
+    [[ $cache_source_is_temp == true ]] && inline_metadata_effective_limit=99999
     local metadata_total=0
     metadata_total=$(wc -l < "$merged_file" 2> /dev/null || echo "0")
     [[ "$metadata_total" =~ ^[0-9]+$ ]] || metadata_total=0
@@ -661,7 +682,7 @@ scan_applications() {
         fi
 
         local final_size_kb=0
-        local final_size="N/A"
+        local final_size="--"
         if [[ "$cached_size_kb" =~ ^[0-9]+$ && $cached_size_kb -gt 0 ]]; then
             final_size_kb="$cached_size_kb"
             final_size=$(bytes_to_human "$((cached_size_kb * 1024))")
@@ -696,7 +717,7 @@ scan_applications() {
         fi
 
         if [[ $needs_refresh == true ]]; then
-            if [[ $inline_metadata_count -lt $MOLE_UNINSTALL_INLINE_METADATA_LIMIT ]]; then
+            if [[ $inline_metadata_count -lt $inline_metadata_effective_limit ]]; then
                 local inline_metadata inline_size_kb inline_epoch inline_updated_epoch
                 inline_metadata=$(uninstall_collect_inline_metadata "$app_path" "${app_mtime:-0}" "$current_epoch")
                 IFS='|' read -r inline_size_kb inline_epoch inline_updated_epoch <<< "$inline_metadata"

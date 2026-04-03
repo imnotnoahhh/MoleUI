@@ -76,6 +76,61 @@ setup() {
     [ -d "$result" ]
 }
 
+@test "get_mole_temp_root uses writable TMPDIR when available" {
+    local writable_tmp="$HOME/custom-tmp"
+    mkdir -p "$writable_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$writable_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_mole_temp_root")
+    [ "$result" = "$writable_tmp" ]
+}
+
+@test "get_mole_temp_root falls back to user cache when TMPDIR is not writable" {
+    local blocked_tmp="$HOME/blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_mole_temp_root")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
+    [ -d "$HOME/.cache/mole/tmp" ]
+}
+
+@test "get_mole_temp_root caches the first resolved directory" {
+    local first_tmp="$HOME/first-tmp"
+    local second_tmp="$HOME/second-tmp"
+    mkdir -p "$first_tmp" "$second_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$first_tmp" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        ensure_mole_temp_root
+        first=\$MOLE_RESOLVED_TMPDIR
+        export TMPDIR='$second_tmp'
+        ensure_mole_temp_root
+        second=\$MOLE_RESOLVED_TMPDIR
+        printf '%s|%s\n' \"\$first\" \"\$second\"
+    ")
+
+    [ "$result" = "$first_tmp|$first_tmp" ]
+}
+
+@test "get_mole_temp_root falls back to /tmp when TMPDIR and invoking home are unavailable" {
+    result=$(env HOME="$HOME" TMPDIR="/var/empty" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        get_invoking_home() { echo '/var/empty'; }
+        get_mole_temp_root
+    ")
+
+    [ "$result" = "/tmp" ]
+}
+
+@test "common.sh exports resolved TMPDIR for runtime callers" {
+    local blocked_tmp="$HOME/common-blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; printf '%s\n' \"\$TMPDIR\"")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
+}
+
 @test "get_user_home returns home for valid user" {
     current_user="${USER:-$(whoami)}"
     result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_user_home '$current_user'")

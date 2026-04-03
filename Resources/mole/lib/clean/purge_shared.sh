@@ -42,6 +42,7 @@ readonly MOLE_PURGE_TARGETS=(
     "Pods"          # CocoaPods
     ".cxx"          # React Native Android NDK build cache
     ".expo"         # Expo
+    ".build"        # Swift Package Manager
 )
 
 readonly MOLE_PURGE_DEFAULT_SEARCH_PATHS=(
@@ -73,6 +74,7 @@ readonly MOLE_PURGE_PROJECT_INDICATORS=(
     "Gemfile"
     "composer.json"
     "pubspec.yaml"
+    "Package.swift" # Swift Package Manager
     "Makefile"
     "build.zig"
     "build.zig.zon"

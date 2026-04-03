@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-user-core.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -76,6 +80,41 @@ EOF
     [[ "$output" == *"Trash · emptied, 2 items"* ]]
 }
 
+@test "clean_user_essentials keeps Mole runtime logs while cleaning other user logs" {
+    mkdir -p "$HOME/Library/Logs/mole"
+    mkdir -p "$HOME/Library/Logs/OtherApp"
+    touch "$HOME/Library/Logs/mole/operations.log"
+    touch "$HOME/Library/Logs/OtherApp/old.log"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+DRY_RUN=false
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+is_path_whitelisted() { return 1; }
+safe_clean() {
+    local path=""
+    for path in "${@:1:$#-1}"; do
+        if should_protect_path "$path"; then
+            continue
+        fi
+        /bin/rm -rf "$path"
+    done
+}
+
+clean_user_essentials
+
+[[ -d "$HOME/Library/Logs/mole" ]]
+[[ -f "$HOME/Library/Logs/mole/operations.log" ]]
+[[ ! -e "$HOME/Library/Logs/OtherApp/old.log" ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
 @test "clean_app_caches includes macOS system caches" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -114,7 +153,7 @@ EOF
     [[ "$output" == *"SPIN_START:Scanning app caches..."* ]]
 }
 
-@test "clean_support_app_data targets crash, wallpaper, and messages preview caches only" {
+@test "clean_support_app_data targets crash, idle assets, and messages preview caches only" {
     local support_home="$HOME/support-cache-home-1"
     run env HOME="$support_home" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -137,13 +176,14 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"FIND:$support_home/Library/Application Support/CrashReporter:30:f"* ]]
     [[ "$output" == *"FIND:$support_home/Library/Application Support/com.apple.idleassetsd:30:f"* ]]
+    [[ "$output" != *"Aerial wallpaper videos"* ]]
     [[ "$output" == *"Messages sticker cache"* ]]
     [[ "$output" == *"Messages preview attachment cache"* ]]
     [[ "$output" == *"Messages preview sticker cache"* ]]
     [[ "$output" != *"Messages attachments"* ]]
 }
 
-@test "clean_support_app_data skips messages preview caches while Messages is running" {
+@test "clean_support_app_data always cleans messages preview caches" {
     local support_home="$HOME/support-cache-home-2"
     run env HOME="$support_home" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -158,10 +198,9 @@ clean_support_app_data
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Messages is running"* ]]
-    [[ "$output" != *"Messages sticker cache"* ]]
-    [[ "$output" != *"Messages preview attachment cache"* ]]
-    [[ "$output" != *"Messages preview sticker cache"* ]]
+    [[ "$output" == *"Messages sticker cache"* ]]
+    [[ "$output" == *"Messages preview attachment cache"* ]]
+    [[ "$output" == *"Messages preview sticker cache"* ]]
 }
 
 @test "clean_app_caches skips protected containers" {
@@ -186,6 +225,39 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" != *"App caches"* ]] || [[ "$output" == *"already clean"* ]]
+}
+
+@test "clean_app_caches skips expensive size scans for large sandboxed caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+bytes_to_human() { echo "0B"; }
+note_activity() { :; }
+safe_clean() { :; }
+should_protect_data() { return 1; }
+is_critical_system_component() { return 1; }
+get_path_size_kb() {
+    echo "SHOULD_NOT_SIZE_SCAN"
+    return 0
+}
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+mkdir -p "$HOME/Library/Containers/com.example.large/Data/Library/Caches"
+for i in $(seq 1 101); do
+    touch "$HOME/Library/Containers/com.example.large/Data/Library/Caches/file-$i.tmp"
+done
+
+clean_app_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Sandboxed app caches"* ]]
+    [[ "$output" != *"SHOULD_NOT_SIZE_SCAN"* ]]
 }
 
 @test "clean_application_support_logs counts nested directory contents in dry-run size summary" {
@@ -252,6 +324,37 @@ EOF
     [[ "$output" == *"SPIN:Scanning Application Support... 1/1 [adspower_global, bulk clean]"* ]]
     [[ "$output" == *"Application Support logs/caches"* ]]
     [[ "$output" != *"151250 items"* ]]
+    [[ "$output" != *"REMOVE:"* ]]
+}
+
+@test "clean_application_support_logs skips whitelisted application support directories" {
+    local support_home="$HOME/support-appsupport-whitelist"
+    run env HOME="$support_home" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+mkdir -p "$HOME"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+safe_remove() { echo "REMOVE:$1"; }
+update_progress_if_needed() { return 1; }
+should_protect_data() { return 1; }
+is_critical_system_component() { return 1; }
+WHITELIST_PATTERNS=("$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev")
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+mkdir -p "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/logs"
+touch "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/logs/runtime.log"
+
+clean_application_support_logs
+test -f "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/logs/runtime.log"
+rm -rf "$HOME/Library/Application Support"
+EOF
+
+    [ "$status" -eq 0 ]
     [[ "$output" != *"REMOVE:"* ]]
 }
 
@@ -415,6 +518,36 @@ EOF
     [[ "$output" != *"Group Containers logs/caches"* ]]
 }
 
+@test "clean_group_container_caches skips per-item size scans for large candidates" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+bytes_to_human() { echo "0B"; }
+note_activity() { :; }
+get_path_size_kb() {
+    echo "SHOULD_NOT_SIZE_SCAN"
+    return 0
+}
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+mkdir -p "$HOME/Library/Group Containers/group.com.example.large/Library/Caches"
+for i in $(seq 1 101); do
+    touch "$HOME/Library/Group Containers/group.com.example.large/Library/Caches/file-$i.tmp"
+done
+
+clean_group_container_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Group Containers logs/caches"* ]]
+    [[ "$output" != *"SHOULD_NOT_SIZE_SCAN"* ]]
+}
+
 @test "clean_finder_metadata respects protection flag" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PROTECT_FINDER_METADATA=true /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -447,6 +580,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
 safe_clean() { echo "$2"; }
+clean_service_worker_cache() { :; }
 note_activity() { :; }
 files_cleaned=0
 total_size_cleaned=0
@@ -510,4 +644,75 @@ EOF
     [[ "$output" == *"FOUND: .DS_Store"* ]]
     [[ "$output" == *"FOUND: .hidden_dir"* ]]
     [[ "$output" == *"FOUND: regular_file.txt"* ]]
+}
+
+@test "validate_external_volume_target canonicalizes root before comparing target" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+mock_bin="$HOME/bin"
+mkdir -p "$mock_bin"
+cat > "$mock_bin/diskutil" <<'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+chmod +x "$mock_bin/diskutil"
+export PATH="$mock_bin:$PATH"
+
+real_root="$(mktemp -d "$HOME/ext-real.XXXXXX")"
+link_root="$HOME/ext-link"
+ln -s "$real_root" "$link_root"
+mkdir -p "$link_root/USB"
+export MOLE_EXTERNAL_VOLUMES_ROOT="$link_root"
+
+resolved=$(validate_external_volume_target "$link_root/USB")
+echo "RESOLVED=$resolved"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"RESOLVED="*"/USB"* ]]
+    [[ "$output" != *"must be under"* ]]
+}
+
+@test "clean_app_caches caps precise sandbox size scans when many containers exist" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true MOLE_CONTAINER_CACHE_PRECISE_SIZE_LIMIT=2 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+safe_clean() { :; }
+clean_support_app_data() { :; }
+clean_group_container_caches() { :; }
+bytes_to_human() { echo "0B"; }
+note_activity() { :; }
+should_protect_data() { return 1; }
+is_critical_system_component() { return 1; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+count_file="$HOME/size-count"
+get_path_size_kb() {
+    local count
+    count=$(cat "$count_file" 2> /dev/null || echo "0")
+    count=$((count + 1))
+    echo "$count" > "$count_file"
+    echo "1"
+}
+
+for i in $(seq 1 5); do
+    mkdir -p "$HOME/Library/Containers/com.example.$i/Data/Library/Caches"
+    touch "$HOME/Library/Containers/com.example.$i/Data/Library/Caches/file-$i.tmp"
+done
+
+clean_app_caches
+echo "SIZE_CALLS=$(cat "$count_file")"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Sandboxed app caches"* ]]
+    [[ "$output" == *"SIZE_CALLS=2"* ]]
 }

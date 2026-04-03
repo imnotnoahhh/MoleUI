@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -9,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func resetOverviewSnapshotForTest() {
@@ -177,6 +181,68 @@ func TestOverviewStoreAndLoad(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("snapshot mismatch after reset: want %d, got %d", want, got)
+	}
+}
+
+func TestUpdateKeyEscGoesBackFromDirectoryView(t *testing.T) {
+	m := model{
+		path: "/tmp/child",
+		history: []historyEntry{
+			{
+				Path:        "/tmp",
+				Entries:     []dirEntry{{Name: "child", Path: "/tmp/child", Size: 1, IsDir: true}},
+				TotalSize:   1,
+				Selected:    0,
+				EntryOffset: 0,
+			},
+		},
+		entries: []dirEntry{{Name: "file.txt", Path: "/tmp/child/file.txt", Size: 1}},
+	}
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatalf("expected no command when returning from cached history, got %v", cmd)
+	}
+
+	got, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", updated)
+	}
+	if got.path != "/tmp" {
+		t.Fatalf("expected path /tmp after Esc, got %s", got.path)
+	}
+	if got.status == "" {
+		t.Fatalf("expected status to be updated after Esc navigation")
+	}
+}
+
+func TestUpdateKeyCtrlCQuits(t *testing.T) {
+	m := model{}
+
+	_, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatalf("expected quit command for Ctrl+C")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from quit command")
+	}
+}
+
+func TestViewShowsEscBackAndCtrlCQuitHints(t *testing.T) {
+	m := model{
+		path:       "/tmp/project",
+		history:    []historyEntry{{Path: "/tmp"}},
+		entries:    []dirEntry{{Name: "cache", Path: "/tmp/project/cache", Size: 1, IsDir: true}},
+		largeFiles: []fileEntry{{Name: "large.bin", Path: "/tmp/project/large.bin", Size: 1024}},
+		totalSize:  1024,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Esc Back") {
+		t.Fatalf("expected Esc Back hint in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl+C Quit") {
+		t.Fatalf("expected Ctrl+C Quit hint in view, got:\n%s", view)
 	}
 }
 

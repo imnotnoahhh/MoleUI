@@ -13,6 +13,11 @@ list_login_items() {
         return
     fi
 
+    # Skip AppleScript during tests to avoid permission dialogs
+    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+        return
+    fi
+
     local raw_items
     raw_items=$(osascript -e 'tell application "System Events" to get the name of every login item' 2> /dev/null || echo "")
     [[ -z "$raw_items" || "$raw_items" == "missing value" ]] && return
@@ -207,6 +212,7 @@ reset_brew_cache() {
 reset_softwareupdate_cache() {
     clear_cache_file "$CACHE_DIR/softwareupdate_list"
     SOFTWARE_UPDATE_LIST=""
+    SOFTWARE_UPDATE_LIST_LOADED="false"
 }
 
 reset_mole_cache() {
@@ -228,19 +234,90 @@ is_cache_valid() {
 
 # Cache software update list to avoid calling softwareupdate twice
 SOFTWARE_UPDATE_LIST=""
+SOFTWARE_UPDATE_LIST_LOADED="false"
+
+software_update_has_entries() {
+    printf '%s\n' "$1" | grep -qE '^[[:space:]]*\* Label:'
+}
+
+is_macos_software_update_text() {
+    local text
+    text=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+
+    case "$text" in
+        *macos* | *background\ security\ improvement* | *rapid\ security\ response* | *security\ response*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+get_first_macos_software_update_summary() {
+    printf '%s\n' "$1" | awk '
+        /^\* Label:/ {
+            label=$0
+            sub(/^[[:space:]]*\* Label: */, "", label)
+            next
+        }
+        /^[[:space:]]*Title:/ {
+            title=$0
+            sub(/^[[:space:]]*Title: */, "", title)
+            sub(/, Version:.*/, "", title)
+            sub(/, Size:.*/, "", title)
+            combined=tolower(label " " title)
+            if (combined ~ /macos|background security improvement|rapid security response|security response/) {
+                print title
+                exit
+            }
+        }
+    '
+}
 
 get_software_updates() {
     local cache_file="$CACHE_DIR/softwareupdate_list"
-
-    # Optimized: Use defaults to check if updates are pending (much faster)
-    local pending_updates
-    pending_updates=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate LastRecommendedUpdatesAvailable 2> /dev/null || echo "0")
-
-    if [[ "$pending_updates" -gt 0 ]]; then
-        echo "Updates Available"
-    else
-        echo ""
+    if [[ "${SOFTWARE_UPDATE_LIST_LOADED:-false}" == "true" ]]; then
+        printf '%s\n' "$SOFTWARE_UPDATE_LIST"
+        return 0
     fi
+
+    if is_cache_valid "$cache_file"; then
+        SOFTWARE_UPDATE_LIST=$(cat "$cache_file" 2> /dev/null || true)
+        SOFTWARE_UPDATE_LIST_LOADED="true"
+        printf '%s\n' "$SOFTWARE_UPDATE_LIST"
+        return 0
+    fi
+
+    local spinner_started=false
+    if [[ -t 1 && -z "${SOFTWAREUPDATE_SPINNER_SHOWN:-}" ]]; then
+        MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking system updates..."
+        spinner_started=true
+        export SOFTWAREUPDATE_SPINNER_SHOWN=1
+    fi
+
+    local output=""
+    local sw_status=0
+    if output=$(run_with_timeout 10 softwareupdate -l --no-scan 2> /dev/null); then
+        SOFTWARE_UPDATE_LIST="$output"
+        ensure_user_file "$cache_file"
+        printf '%s' "$SOFTWARE_UPDATE_LIST" > "$cache_file" 2> /dev/null || true
+    else
+        sw_status=$?
+        SOFTWARE_UPDATE_LIST=""
+        if [[ -f "$cache_file" ]]; then
+            SOFTWARE_UPDATE_LIST=$(cat "$cache_file" 2> /dev/null || true)
+        fi
+        if [[ -n "${MO_DEBUG:-}" ]]; then
+            echo "[DEBUG] softwareupdate preload exit status: $sw_status" >&2
+        fi
+    fi
+
+    if [[ "$spinner_started" == "true" ]]; then
+        stop_inline_spinner
+    fi
+
+    SOFTWARE_UPDATE_LIST_LOADED="true"
+    printf '%s\n' "$SOFTWARE_UPDATE_LIST"
 }
 
 check_homebrew_updates() {
@@ -285,17 +362,26 @@ check_homebrew_updates() {
             spinner_started=true
         fi
 
-        if formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null); then
-            :
-        else
-            formula_status=$?
-        fi
-
-        if cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null); then
-            :
-        else
-            cask_status=$?
-        fi
+        local _brew_formula_tmp _brew_cask_tmp
+        _brew_formula_tmp=$(mktemp_file "brew_formula")
+        _brew_cask_tmp=$(mktemp_file "brew_cask")
+        (
+            run_with_timeout 8 brew outdated --formula --quiet > "$_brew_formula_tmp" 2> /dev/null
+            echo $? > "${_brew_formula_tmp}.status"
+        ) &
+        local _formula_pid=$!
+        (
+            run_with_timeout 8 brew outdated --cask --quiet > "$_brew_cask_tmp" 2> /dev/null
+            echo $? > "${_brew_cask_tmp}.status"
+        ) &
+        local _cask_pid=$!
+        wait "$_formula_pid" 2> /dev/null || true
+        wait "$_cask_pid" 2> /dev/null || true
+        formula_outdated=$(cat "$_brew_formula_tmp" 2> /dev/null || true)
+        cask_outdated=$(cat "$_brew_cask_tmp" 2> /dev/null || true)
+        formula_status=$(cat "${_brew_formula_tmp}.status" 2> /dev/null || echo "1")
+        cask_status=$(cat "${_brew_cask_tmp}.status" 2> /dev/null || echo "1")
+        rm -f "$_brew_formula_tmp" "$_brew_cask_tmp" "${_brew_formula_tmp}.status" "${_brew_cask_tmp}.status" 2> /dev/null || true
 
         if [[ "$spinner_started" == "true" ]]; then
             stop_inline_spinner
@@ -304,8 +390,12 @@ check_homebrew_updates() {
         if [[ $formula_status -eq 0 || $cask_status -eq 0 ]]; then
             formula_count=$(printf '%s\n' "$formula_outdated" | awk 'NF {count++} END {print count + 0}')
             cask_count=$(printf '%s\n' "$cask_outdated" | awk 'NF {count++} END {print count + 0}')
-            ensure_user_file "$cache_file"
-            printf '%s %s\n' "$formula_count" "$cask_count" > "$cache_file" 2> /dev/null || true
+            # Only cache when both calls succeeded; partial results (one side failed)
+            # must not be written as zeros — next run should retry the failed side.
+            if [[ $formula_status -eq 0 && $cask_status -eq 0 ]]; then
+                ensure_user_file "$cache_file"
+                printf '%s %s\n' "$formula_count" "$cask_count" > "$cache_file" 2> /dev/null || true
+            fi
         elif [[ $formula_status -eq 124 || $cask_status -eq 124 ]]; then
             printf "  ${GRAY}${ICON_WARNING}${NC} %-12s ${YELLOW}%s${NC}\n" "Homebrew" "Check timed out"
             return
@@ -346,52 +436,30 @@ check_macos_update() {
     # Check whitelist
     if command -v is_whitelisted > /dev/null && is_whitelisted "check_macos_updates"; then return; fi
 
-    # Fast check using system preferences
     local updates_available="false"
-    if [[ $(get_software_updates) == "Updates Available" ]]; then
-        updates_available="true"
+    local macos_update_summary=""
+    local sw_output=""
+    sw_output=$(get_software_updates)
 
-        # Verify with softwareupdate using --no-scan to avoid triggering a fresh scan
-        # which can timeout. We prioritize avoiding false negatives (missing actual updates)
-        # over false positives, so we only clear the update flag when softwareupdate
-        # explicitly reports "No new software available"
-        local sw_output=""
-        local sw_status=0
-        local spinner_started=false
-        if [[ -t 1 ]]; then
-            MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking macOS updates..."
-            spinner_started=true
-        fi
+    if [[ -n "${MO_DEBUG:-}" ]]; then
+        echo "[DEBUG] softwareupdate cached output lines: $(printf '%s\n' "$sw_output" | wc -l | tr -d ' ')" >&2
+    fi
 
-        local softwareupdate_timeout=10
-        if sw_output=$(run_with_timeout "$softwareupdate_timeout" softwareupdate -l --no-scan 2> /dev/null); then
-            :
-        else
-            sw_status=$?
-        fi
-
-        if [[ "$spinner_started" == "true" ]]; then
-            stop_inline_spinner
-        fi
-
-        # Debug logging for troubleshooting
-        if [[ -n "${MO_DEBUG:-}" ]]; then
-            echo "[DEBUG] softwareupdate exit status: $sw_status, output lines: $(echo "$sw_output" | wc -l | tr -d ' ')" >&2
-        fi
-
-        # Prefer avoiding false negatives: if the system indicates updates are pending,
-        # only clear the flag when softwareupdate returns a list without any update entries.
-        if [[ $sw_status -eq 0 && -n "$sw_output" ]]; then
-            if ! echo "$sw_output" | grep -qE '^[[:space:]]*\*'; then
-                updates_available="false"
-            fi
+    if software_update_has_entries "$sw_output"; then
+        macos_update_summary=$(get_first_macos_software_update_summary "$sw_output")
+        if [[ -n "$macos_update_summary" ]] || is_macos_software_update_text "$sw_output"; then
+            updates_available="true"
         fi
     fi
 
     export MACOS_UPDATE_AVAILABLE="$updates_available"
 
     if [[ "$updates_available" == "true" ]]; then
-        printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "Update available"
+        if [[ -n "$macos_update_summary" ]]; then
+            printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "$macos_update_summary"
+        else
+            printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "Update available"
+        fi
     else
         printf "  ${GREEN}✓${NC} %-12s %s\n" "macOS" "System up to date"
     fi
@@ -490,7 +558,7 @@ get_appstore_update_labels() {
             sub(/^[[:space:]]*\* Label: */, "", label)
             sub(/,.*/, "", label)
             lower=tolower(label)
-            if (index(lower, "macos") == 0) {
+            if (lower !~ /macos|background security improvement|rapid security response|security response/) {
                 print label
             }
         }
@@ -504,7 +572,7 @@ get_macos_update_labels() {
             sub(/^[[:space:]]*\* Label: */, "", label)
             sub(/,.*/, "", label)
             lower=tolower(label)
-            if (index(lower, "macos") != 0) {
+            if (lower ~ /macos|background security improvement|rapid security response|security response/) {
                 print label
             }
         }

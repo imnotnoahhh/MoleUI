@@ -246,6 +246,9 @@ func createOverviewEntries() []dirEntry {
 		dirEntry{Name: "System Library", Path: "/Library", IsDir: true, Size: -1},
 	)
 
+	// Hidden space insights — paths that silently accumulate disk usage.
+	entries = append(entries, createInsightEntries()...)
+
 	return entries
 }
 
@@ -612,20 +615,22 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.deleteConfirm = false
 			m.deleteTarget = nil
 			return m, nil
+		case "ctrl+c":
+			return m, tea.Quit
 		default:
 			return m, nil
 		}
 	}
 
 	switch msg.String() {
-	case "q", "ctrl+c", "Q":
+	case "q", "Q", "ctrl+c":
 		return m, tea.Quit
 	case "esc":
 		if m.showLargeFiles {
 			m.showLargeFiles = false
 			return m, nil
 		}
-		return m, tea.Quit
+		return m.goBack()
 	case "up", "k", "K":
 		if m.showLargeFiles {
 			if m.largeSelected > 0 {
@@ -635,7 +640,11 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else if len(m.entries) > 0 && m.selected > 0 {
-			m.selected--
+			next := m.selected - 1
+			for next > 0 && m.entries[next].Size == 0 {
+				next--
+			}
+			m.selected = next
 			if m.selected < m.offset {
 				m.offset = m.selected
 			}
@@ -650,7 +659,11 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else if len(m.entries) > 0 && m.selected < len(m.entries)-1 {
-			m.selected++
+			next := m.selected + 1
+			for next < len(m.entries)-1 && m.entries[next].Size == 0 {
+				next++
+			}
+			m.selected = next
 			viewport := calculateViewport(m.height, false)
 			if m.selected >= m.offset+viewport {
 				m.offset = m.selected - viewport + 1
@@ -666,53 +679,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showLargeFiles = false
 			return m, nil
 		}
-		if len(m.history) == 0 {
-			if !m.inOverviewMode() {
-				return m, m.switchToOverviewMode()
-			}
-			return m, nil
-		}
-		last := m.history[len(m.history)-1]
-		m.history = m.history[:len(m.history)-1]
-		m.path = last.Path
-		m.selected = last.Selected
-		m.offset = last.EntryOffset
-		m.largeSelected = last.LargeSelected
-		m.largeOffset = last.LargeOffset
-		m.isOverview = last.IsOverview
-		if last.Dirty {
-			// On overview return, refresh cached entries.
-			if last.IsOverview {
-				m.hydrateOverviewEntries()
-				m.totalSize = sumKnownEntrySizes(m.entries)
-				m.status = "Ready"
-				m.scanning = false
-				if nextPendingOverviewIndex(m.entries) >= 0 {
-					m.overviewScanning = true
-					return m, m.scheduleOverviewScans()
-				}
-				return m, nil
-			}
-			m.status = "Scanning..."
-			m.scanning = true
-			return m, tea.Batch(m.scanCmd(m.path), tickCmd())
-		}
-		m.entries = last.Entries
-		m.largeFiles = last.LargeFiles
-		m.totalSize = last.TotalSize
-		m.clampEntrySelection()
-		m.clampLargeSelection()
-		if len(m.entries) == 0 {
-			m.selected = 0
-		} else if m.selected >= len(m.entries) {
-			m.selected = len(m.entries) - 1
-		}
-		if m.selected < 0 {
-			m.selected = 0
-		}
-		m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
-		m.scanning = false
-		return m, nil
+		return m.goBack()
 	case "r", "R":
 		m.multiSelected = make(map[string]bool)
 		m.largeMultiSelected = make(map[string]bool)
@@ -775,18 +742,14 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					for path := range m.largeMultiSelected {
 						go func(p string) {
-							ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-							defer cancel()
-							_ = exec.CommandContext(ctx, "open", p).Run()
+							_ = safeOpen(p, false)
 						}(path)
 					}
 					m.status = fmt.Sprintf("Opening %d items...", count)
 				} else {
 					selected := m.largeFiles[m.largeSelected]
 					go func(path string) {
-						ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-						defer cancel()
-						_ = exec.CommandContext(ctx, "open", path).Run()
+						_ = safeOpen(path, false)
 					}(selected.Path)
 					m.status = fmt.Sprintf("Opening %s...", selected.Name)
 				}
@@ -800,18 +763,14 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				for path := range m.multiSelected {
 					go func(p string) {
-						ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-						defer cancel()
-						_ = exec.CommandContext(ctx, "open", p).Run()
+						_ = safeOpen(p, false)
 					}(path)
 				}
 				m.status = fmt.Sprintf("Opening %d items...", count)
 			} else {
 				selected := m.entries[m.selected]
 				go func(path string) {
-					ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-					defer cancel()
-					_ = exec.CommandContext(ctx, "open", path).Run()
+					_ = safeOpen(path, false)
 				}(selected.Path)
 				m.status = fmt.Sprintf("Opening %s...", selected.Name)
 			}
@@ -829,18 +788,14 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					for path := range m.largeMultiSelected {
 						go func(p string) {
-							ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-							defer cancel()
-							_ = exec.CommandContext(ctx, "open", "-R", p).Run()
+							_ = safeOpen(p, true)
 						}(path)
 					}
 					m.status = fmt.Sprintf("Showing %d items in Finder...", count)
 				} else {
 					selected := m.largeFiles[m.largeSelected]
 					go func(path string) {
-						ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-						defer cancel()
-						_ = exec.CommandContext(ctx, "open", "-R", path).Run()
+						_ = safeOpen(path, true)
 					}(selected.Path)
 					m.status = fmt.Sprintf("Showing %s in Finder...", selected.Name)
 				}
@@ -854,18 +809,14 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				for path := range m.multiSelected {
 					go func(p string) {
-						ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-						defer cancel()
-						_ = exec.CommandContext(ctx, "open", "-R", p).Run()
+						_ = safeOpen(p, true)
 					}(path)
 				}
 				m.status = fmt.Sprintf("Showing %d items in Finder...", count)
 			} else {
 				selected := m.entries[m.selected]
 				go func(path string) {
-					ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
-					defer cancel()
-					_ = exec.CommandContext(ctx, "open", "-R", path).Run()
+					_ = safeOpen(path, true)
 				}(selected.Path)
 				m.status = fmt.Sprintf("Showing %s in Finder...", selected.Name)
 			}
@@ -975,6 +926,57 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	return m, nil
+}
+
+func (m model) goBack() (tea.Model, tea.Cmd) {
+	if len(m.history) == 0 {
+		if !m.inOverviewMode() {
+			return m, m.switchToOverviewMode()
+		}
+		return m, tea.Quit
+	}
+
+	last := m.history[len(m.history)-1]
+	m.history = m.history[:len(m.history)-1]
+	m.path = last.Path
+	m.selected = last.Selected
+	m.offset = last.EntryOffset
+	m.largeSelected = last.LargeSelected
+	m.largeOffset = last.LargeOffset
+	m.isOverview = last.IsOverview
+	if last.Dirty {
+		// On overview return, refresh cached entries.
+		if last.IsOverview {
+			m.hydrateOverviewEntries()
+			m.totalSize = sumKnownEntrySizes(m.entries)
+			m.status = "Ready"
+			m.scanning = false
+			if nextPendingOverviewIndex(m.entries) >= 0 {
+				m.overviewScanning = true
+				return m, m.scheduleOverviewScans()
+			}
+			return m, nil
+		}
+		m.status = "Scanning..."
+		m.scanning = true
+		return m, tea.Batch(m.scanCmd(m.path), tickCmd())
+	}
+	m.entries = last.Entries
+	m.largeFiles = last.LargeFiles
+	m.totalSize = last.TotalSize
+	m.clampEntrySelection()
+	m.clampLargeSelection()
+	if len(m.entries) == 0 {
+		m.selected = 0
+	} else if m.selected >= len(m.entries) {
+		m.selected = len(m.entries) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+	m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
+	m.scanning = false
 	return m, nil
 }
 
@@ -1163,7 +1165,7 @@ func (m *model) removePathFromView(path string) {
 
 func scanOverviewPathCmd(path string, index int) tea.Cmd {
 	return func() tea.Msg {
-		size, err := measureOverviewSize(path)
+		size, err := measureInsightSize(path)
 		return overviewSizeMsg{
 			Path:  path,
 			Index: index,
@@ -1171,4 +1173,18 @@ func scanOverviewPathCmd(path string, index int) tea.Cmd {
 			Err:   err,
 		}
 	}
+}
+
+// safeOpen executes 'open' command with path validation.
+func safeOpen(path string, reveal bool) error {
+	if err := validatePath(path); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
+	defer cancel()
+	args := []string{path}
+	if reveal {
+		args = []string{"-R", path}
+	}
+	return exec.CommandContext(ctx, "open", args...).Run()
 }

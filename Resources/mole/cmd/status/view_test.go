@@ -749,29 +749,52 @@ func TestMiniBar(t *testing.T) {
 
 func TestFormatDiskLine(t *testing.T) {
 	tests := []struct {
-		name  string
-		label string
-		disk  DiskStatus
+		name         string
+		label        string
+		disk         DiskStatus
+		wantUsed     string
+		wantFree     string
+		wantNoSubstr string
 	}{
 		{
-			name:  "empty label defaults to DISK",
-			label: "",
-			disk:  DiskStatus{UsedPercent: 50.5, Used: 100 << 30, Total: 200 << 30},
+			name:         "empty label defaults to DISK",
+			label:        "",
+			disk:         DiskStatus{UsedPercent: 50.5, Used: 100 << 30, Total: 200 << 30},
+			wantUsed:     "100G used",
+			wantFree:     "100G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "internal disk",
-			label: "INTR",
-			disk:  DiskStatus{UsedPercent: 67.2, Used: 336 << 30, Total: 500 << 30},
+			name:         "internal disk",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 67.2, Used: 336 << 30, Total: 500 << 30},
+			wantUsed:     "336G used",
+			wantFree:     "164G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "external disk",
-			label: "EXTR1",
-			disk:  DiskStatus{UsedPercent: 85.0, Used: 850 << 30, Total: 1000 << 30},
+			name:         "external disk",
+			label:        "EXTR1",
+			disk:         DiskStatus{UsedPercent: 85.0, Used: 850 << 30, Total: 1000 << 30},
+			wantUsed:     "850G used",
+			wantFree:     "150G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "low usage",
-			label: "INTR",
-			disk:  DiskStatus{UsedPercent: 15.3, Used: 15 << 30, Total: 100 << 30},
+			name:         "low usage",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 15.3, Used: 15 << 30, Total: 100 << 30},
+			wantUsed:     "15G used",
+			wantFree:     "85G free",
+			wantNoSubstr: "%",
+		},
+		{
+			name:         "used exceeds total clamps free to zero",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 110.0, Used: 110 << 30, Total: 100 << 30},
+			wantUsed:     "110G used",
+			wantFree:     "0 free",
+			wantNoSubstr: "%",
 		},
 	}
 
@@ -786,10 +809,54 @@ func TestFormatDiskLine(t *testing.T) {
 			if expectedLabel == "" {
 				expectedLabel = "DISK"
 			}
-			if !contains(got, expectedLabel) {
+			if !strings.Contains(got, expectedLabel) {
 				t.Errorf("formatDiskLine(%q, ...) = %q, should contain label %q", tt.label, got, expectedLabel)
 			}
+			if !strings.Contains(got, tt.wantUsed) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should contain used value %q", tt.label, got, tt.wantUsed)
+			}
+			if !strings.Contains(got, tt.wantFree) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should contain free value %q", tt.label, got, tt.wantFree)
+			}
+			if tt.wantNoSubstr != "" && strings.Contains(got, tt.wantNoSubstr) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should not contain %q", tt.label, got, tt.wantNoSubstr)
+			}
 		})
+	}
+}
+
+func TestRenderDiskCardAddsMetaLineForSingleDisk(t *testing.T) {
+	card := renderDiskCard([]DiskStatus{{
+		UsedPercent: 28.4,
+		Used:        263 << 30,
+		Total:       926 << 30,
+		Fstype:      "apfs",
+	}}, DiskIOStatus{ReadRate: 0, WriteRate: 0.1})
+
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() single disk expected 4 lines, got %d", len(card.lines))
+	}
+
+	meta := stripANSI(card.lines[1])
+	if meta != "Total  926G · APFS" {
+		t.Fatalf("renderDiskCard() single disk meta line = %q, want %q", meta, "Total  926G · APFS")
+	}
+}
+
+func TestRenderDiskCardDoesNotAddMetaLineForMultipleDisks(t *testing.T) {
+	card := renderDiskCard([]DiskStatus{
+		{UsedPercent: 28.4, Used: 263 << 30, Total: 926 << 30, Fstype: "apfs"},
+		{UsedPercent: 50.0, Used: 500 << 30, Total: 1000 << 30, Fstype: "apfs"},
+	}, DiskIOStatus{})
+
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() multiple disks expected 4 lines, got %d", len(card.lines))
+	}
+
+	for _, line := range card.lines {
+		if stripANSI(line) == "Total  926G · APFS" || stripANSI(line) == "Total  1000G · APFS" {
+			t.Fatalf("renderDiskCard() multiple disks should not add meta line, got %q", line)
+		}
 	}
 }
 
@@ -1066,6 +1133,37 @@ func TestRenderMemoryCardShowsSwapSizeOnWideWidth(t *testing.T) {
 	}
 }
 
+func TestModelViewPadsToTerminalHeight(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"narrow terminal", 60, 40},
+		{"wide terminal", 120, 40},
+		{"tall terminal", 120, 80},
+		{"short terminal", 120, 10},
+		{"zero height", 120, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{
+				width:   tt.width,
+				height:  tt.height,
+				ready:   true,
+				metrics: MetricsSnapshot{},
+			}
+
+			view := m.View()
+			got := lipgloss.Height(view)
+			if got < tt.height {
+				t.Errorf("View() height = %d, want >= %d (terminal height)", got, tt.height)
+			}
+		})
+	}
+}
+
 func TestModelViewErrorRendersSingleMole(t *testing.T) {
 	m := model{
 		width:      120,
@@ -1101,17 +1199,4 @@ func stripANSI(s string) string {
 		}
 	}
 	return result.String()
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
-}
-
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

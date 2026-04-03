@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -251,9 +252,27 @@ func collectThermal() ThermalStatus {
 				} else if valUint, err := strconv.ParseUint(valStr, 10, 64); err == nil {
 					// Strategy 2: Try parsing as an unsigned integer (Two's Complement).
 					// ioreg often returns negative values as huge uint64 numbers (e.g. 2^64 - 100).
-					// Casting such a uint64 to int64 correctly restores the negative value.
-					powerMW = float64(int64(valUint))
+					// Explicitly handle two's complement rather than relying on an unchecked cast.
+					var signed int64
+					if valUint <= math.MaxInt64 {
+						// Fits in positive int64 range directly.
+						signed = int64(valUint)
+					} else {
+						// Interpret as negative two's complement value.
+						// For a uint64 v > MaxInt64, the corresponding negative int64 is:
+						// -(^v + 1) where ^ is bitwise NOT in 64 bits.
+						negMag := ^valUint + 1
+						// negMag now holds the magnitude of the negative value as uint64.
+						if negMag <= math.MaxInt64 {
+							signed = -int64(negMag)
+						} else {
+							// Magnitude too large to represent; skip this parsing strategy.
+							goto skipUintParse
+						}
+					}
+					powerMW = float64(signed)
 					parsed = true
+				skipUintParse:
 				}
 
 				if parsed {
