@@ -158,6 +158,98 @@ EOF
 	[ "$status" -eq 0 ]
 }
 
+@test "batch_uninstall_applications warns when removed app declares Local Network usage" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+request_sudo_access() { return 0; }
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+enter_alt_screen() { :; }
+leave_alt_screen() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+remove_apps_from_dock() { :; }
+pgrep() { return 1; }
+pkill() { return 0; }
+sudo() { return 0; }
+
+app_bundle="$HOME/Applications/NetworkApp.app"
+mkdir -p "$app_bundle/Contents"
+cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.NetworkApp</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Discover devices on the local network</string>
+</dict>
+</plist>
+PLIST
+
+selected_apps=()
+selected_apps+=("0|$app_bundle|NetworkApp|com.example.NetworkApp|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Local Network permissions"* ]]
+	[[ "$output" == *"NetworkApp"* ]]
+	[[ "$output" == *"Recovery mode"* ]]
+}
+
+@test "batch_uninstall_applications skips Local Network warning for regular apps" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+request_sudo_access() { return 0; }
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+enter_alt_screen() { :; }
+leave_alt_screen() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+remove_apps_from_dock() { :; }
+pgrep() { return 1; }
+pkill() { return 0; }
+sudo() { return 0; }
+
+app_bundle="$HOME/Applications/PlainApp.app"
+mkdir -p "$app_bundle/Contents"
+cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.PlainApp</string>
+</dict>
+</plist>
+PLIST
+
+selected_apps=()
+selected_apps+=("0|$app_bundle|PlainApp|com.example.PlainApp|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"Local Network permissions"* ]]
+}
+
 @test "batch_uninstall_applications preview shows full related file list" {
 	mkdir -p "$HOME/Applications/TestApp.app"
 	mkdir -p "$HOME/Library/Application Support/TestApp"
@@ -255,6 +347,44 @@ if result=$(decode_file_list "not-valid-base64!!!" "TestApp" 2>/dev/null); then
 else
     true
 fi
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
+@test "uninstall_resolve_display_name keeps versioned app names when metadata is generic" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+function run_with_timeout() {
+    shift
+    "$@"
+}
+
+function mdls() {
+    echo "Xcode"
+}
+
+function plutil() {
+    if [[ "$3" == *"Info.plist" ]]; then
+        echo "Xcode"
+        return 0
+    fi
+    return 1
+}
+
+MOLE_UNINSTALL_USER_LC_ALL=""
+MOLE_UNINSTALL_USER_LANG=""
+
+eval "$(sed -n '/^uninstall_resolve_display_name()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
+
+app_path="$HOME/Applications/Xcode 16.4.app"
+mkdir -p "$app_path/Contents"
+touch "$app_path/Contents/Info.plist"
+
+result=$(uninstall_resolve_display_name "$app_path" "Xcode 16.4.app")
+[[ "$result" == "Xcode 16.4" ]] || exit 1
 EOF
 
 	[ "$status" -eq 0 ]
@@ -360,9 +490,9 @@ EOF
 	mkdir -p "$HOME/.local/bin"
 	touch "$HOME/.local/bin/mole"
 	touch "$HOME/.local/bin/mo"
-	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole"
+	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -402,15 +532,16 @@ EOF
 	[ ! -f "$HOME/.local/bin/mo" ]
 	[ ! -d "$HOME/.config/mole" ]
 	[ ! -d "$HOME/.cache/mole" ]
+	[ ! -d "$HOME/Library/Logs/mole" ]
 }
 
 @test "remove_mole dry-run keeps manual binaries and caches" {
 	mkdir -p "$HOME/.local/bin"
 	touch "$HOME/.local/bin/mole"
 	touch "$HOME/.local/bin/mo"
-	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole"
+	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -424,4 +555,153 @@ EOF
 	[ -f "$HOME/.local/bin/mo" ]
 	[ -d "$HOME/.config/mole" ]
 	[ -d "$HOME/.cache/mole" ]
+	[ -d "$HOME/Library/Logs/mole" ]
+}
+
+@test "remove_mole test mode ignores PATH installs outside test HOME" {
+	mkdir -p "$HOME/.local/bin" "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+	touch "$HOME/.local/bin/mole"
+	touch "$HOME/.local/bin/mo"
+
+	fake_global_bin="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-remove-path.XXXXXX")"
+	touch "$fake_global_bin/mole"
+	touch "$fake_global_bin/mo"
+	cat > "$fake_global_bin/brew" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$fake_global_bin/brew"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_global_bin:/usr/bin:/bin" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+export -f start_inline_spinner stop_inline_spinner
+printf '\n' | "$PROJECT_ROOT/mole" remove --dry-run
+EOF
+
+	rm -rf "$fake_global_bin"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$HOME/.local/bin/mole"* ]]
+	[[ "$output" == *"$HOME/.local/bin/mo"* ]]
+	[[ "$output" != *"$fake_global_bin/mole"* ]]
+	[[ "$output" != *"$fake_global_bin/mo"* ]]
+	[[ "$output" != *"brew uninstall --force mole"* ]]
+}
+@test "match_apps_by_name finds exact match case-insensitively" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1.2 GB|1000000|1258291"
+	"1001|$HOME/Applications/TestApp2.app|TestApp2|com.example.TestApp2|500 MB|1000001|512000"
+	"1002|$HOME/Applications/TestApp3.app|TestApp3|com.example.TestApp3|300 MB|1000002|307200"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "testapp"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]}"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"count=1"* ]]
+	[[ "$output" == *"TestApp"* ]]
+}
+
+@test "match_apps_by_name finds by directory name" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1002|$HOME/Applications/TestApp.app|Test Application|com.example.TestApp|300 MB|1000002|307200"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "TestApp"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]}"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"count=1"* ]]
+	[[ "$output" == *"Test Application"* ]]
+}
+
+@test "match_apps_by_name warns on no match" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1.2 GB|1000000|1258291"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "nonexistent"
+echo "count=${#selected_apps[@]}"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Warning: No application found matching 'nonexistent'"* ]]
+	[[ "$output" == *"count=0"* ]]
+}
+
+@test "match_apps_by_name handles multiple app names" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1.2 GB|1000000|1258291"
+	"1001|$HOME/Applications/TestApp2.app|TestApp2|com.example.TestApp2|500 MB|1000001|512000"
+	"1002|$HOME/Applications/TestApp3.app|TestApp3|com.example.TestApp3|300 MB|1000002|307200"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "testapp2" "testapp3"
+echo "count=${#selected_apps[@]}"
+for app in "${selected_apps[@]}"; do
+    IFS='|' read -r _ _ name _ _ _ _ <<< "$app"
+    echo "matched=$name"
+done
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"count=2"* ]]
+	[[ "$output" == *"matched=TestApp2"* ]]
+	[[ "$output" == *"matched=TestApp3"* ]]
+}
+
+@test "match_apps_by_name falls back to substring match" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1.2 GB|1000000|1258291"
+	"1001|$HOME/Applications/SlackDesktop.app|Slack|com.tinyspeck.slackmacgap|200 MB|1000001|204800"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "test"
+echo "count=${#selected_apps[@]}"
+for app in "${selected_apps[@]}"; do
+    IFS='|' read -r _ _ name _ _ _ _ <<< "$app"
+    echo "matched=$name"
+done
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"count=1"* ]]
+	[[ "$output" == *"matched=TestApp"* ]]
+}
+
+@test "match_apps_by_name does not duplicate when same name given twice" {
+	run bash --noprofile --norc <<'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1.2 GB|1000000|1258291"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "testapp" "testapp"
+echo "count=${#selected_apps[@]}"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"count=1"* ]]
 }

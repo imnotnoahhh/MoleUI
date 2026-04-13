@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     name: Unit & Integration Tests
@@ -14,12 +17,12 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
 
       - name: Install tools
-        run: brew install bats-core shellcheck
+        run: brew install bats-core shellcheck coreutils
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
-          go-version: "1.24.6"
+          go-version-file: go.mod
 
       - name: Run test script
         env:
@@ -51,6 +54,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Install tools
+        run: brew install bats-core coreutils
 
       - name: Check for unsafe rm usage
         run: |
@@ -86,3 +92,10 @@ jobs:
             exit 1
           fi
           echo "✓ No secrets found"
+
+      - name: Run high-risk path regression tests
+        env:
+          BATS_FORMATTER: tap
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
+        run: bats tests/core_safe_functions.bats tests/purge.bats tests/installer.bats

@@ -92,7 +92,10 @@ validate_path_for_deletion() {
         # Validate resolved target against protected paths
         if [[ -n "$resolved_target" ]]; then
             case "$resolved_target" in
-                /System/* | /usr/bin/* | /usr/lib/* | /bin/* | /sbin/* | /private/etc/*)
+                / | /System | /System/* | /bin | /bin/* | /sbin | /sbin/* | \
+                    /usr | /usr/bin | /usr/bin/* | /usr/lib | /usr/lib/* | \
+                    /etc | /etc/* | /private/etc | /private/etc/* | \
+                    /Library/Extensions | /Library/Extensions/*)
                     log_error "Symlink points to protected system path: $path -> $resolved_target"
                     return 1
                     ;;

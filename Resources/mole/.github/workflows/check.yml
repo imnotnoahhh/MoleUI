@@ -21,7 +21,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Homebrew
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v4
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v4
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -36,9 +36,9 @@ jobs:
         run: brew install shfmt shellcheck golangci-lint
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
-          go-version: '1.24.6'
+          go-version-file: go.mod
 
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
@@ -66,6 +66,8 @@ jobs:
     name: Check
     runs-on: macos-latest
     needs: format
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -74,7 +76,7 @@ jobs:
           ref: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref) || github.ref }}
 
       - name: Cache Homebrew
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v4
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v4
         with:
           path: |
             ~/Library/Caches/Homebrew
@@ -89,9 +91,9 @@ jobs:
         run: brew install shfmt shellcheck golangci-lint
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
-          go-version: '1.24.6'
+          go-version-file: go.mod
 
       - name: Run check script
         run: ./scripts/check.sh --no-format

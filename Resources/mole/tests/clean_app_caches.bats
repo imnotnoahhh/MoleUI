@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-app-caches.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -54,20 +58,36 @@ EOF
     [[ "$output" == *"Xcode documentation index"* ]]
 }
 
-@test "clean_media_players protects spotify offline cache" {
+@test "clean_media_players protects spotify offline cache when bnk has content" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 mkdir -p "$HOME/Library/Application Support/Spotify/PersistentCache/Storage"
-touch "$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk"
+dd if=/dev/zero of="$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk" bs=1024 count=2 2>/dev/null
 safe_clean() { echo "CLEAN:$2"; }
 clean_media_players
 EOF
 
     [ "$status" -eq 0 ]
+    [[ "$output" != *"CLEAN:Spotify cache"* ]]
     [[ "$output" == *"Spotify cache protected"* ]]
-    [[ "$output" != *"CLEAN: Spotify cache"* ]]
+}
+
+@test "clean_media_players cleans spotify cache when bnk is empty" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+mkdir -p "$HOME/Library/Application Support/Spotify/PersistentCache/Storage"
+> "$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk"
+safe_clean() { echo "CLEAN:$2"; }
+clean_media_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Spotify cache protected"* ]]
+    [[ "$output" == *"CLEAN:Spotify cache"* ]]
 }
 
 @test "clean_user_gui_applications calls all sections" {
@@ -80,13 +100,17 @@ safe_clean() { :; }
 clean_xcode_tools() { echo "xcode"; }
 clean_code_editors() { echo "editors"; }
 clean_communication_apps() { echo "comm"; }
+clean_dingtalk() { echo "dingtalk"; }
+clean_ai_apps() { echo "ai"; }
 clean_user_gui_applications
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"xcode"* ]]
-    [[ "$output" == *"editors"* ]]
+    [[ "$output" != *"xcode"* ]]
+    [[ "$output" != *"editors"* ]]
     [[ "$output" == *"comm"* ]]
+    [[ "$output" == *"dingtalk"* ]]
+    [[ "$output" == *"ai"* ]]
 }
 
 @test "clean_ai_apps calls expected caches" {
@@ -207,4 +231,48 @@ EOF
     [[ "$output" == *"Steam shader cache"* ]]
     [[ "$output" == *"Minecraft logs"* ]]
     [[ "$output" == *"Lunar Client logs"* ]]
+}
+
+@test "clean_code_editors includes Zed caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Zed cache"* ]]
+    [[ "$output" == *"Zed logs"* ]]
+}
+
+@test "clean_shell_utils includes Warp and Ghostty caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_shell_utils
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warp cache"* ]]
+    [[ "$output" == *"Warp log"* ]]
+    [[ "$output" == *"Warp Sentry crash reports"* ]]
+    [[ "$output" == *"Ghostty cache"* ]]
+}
+
+@test "clean_video_players includes Stremio caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_video_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stremio cache"* ]]
+    [[ "$output" == *"Stremio server cache"* ]]
 }

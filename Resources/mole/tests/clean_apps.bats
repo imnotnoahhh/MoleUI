@@ -10,6 +10,10 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-apps-module.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
@@ -28,8 +32,8 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 start_inline_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
-get_file_size() { echo 10; }
-bytes_to_human() { echo "0B"; }
+get_file_size() { echo $((2 * 1024 * 1024 * 1024)); }
+bytes_to_human() { echo "2.15GB"; }
 files_cleaned=0
 total_size_cleaned=0
 total_items=0
@@ -40,6 +44,30 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"DS test"* ]]
+    [[ "$output" == *$'\033[0;33m→\033[0m'* ]]
+}
+
+@test "clean_ds_store_tree uses green for successful cleanups" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+start_inline_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+get_file_size() { echo 512; }
+bytes_to_human() { echo "512B"; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+mkdir -p "$HOME/test_ds"
+touch "$HOME/test_ds/.DS_Store"
+clean_ds_store_tree "$HOME/test_ds" "DS test"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DS test"* ]]
+    [[ "$output" == *$'\033[0;32m✓\033[0m'* ]]
 }
 
 @test "scan_installed_apps uses cache when fresh" {
@@ -57,6 +85,48 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"com.example.App"* ]]
+}
+
+@test "scan_installed_apps filters missing value from osascript output" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+# Create a fake .app with a plist that has no CFBundleIdentifier
+mkdir -p "$HOME/Applications/FakeApp.app/Contents"
+cat > "$HOME/Applications/FakeApp.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>FakeApp</string>
+</dict>
+</plist>
+PLIST
+
+# Create a valid .app alongside it
+mkdir -p "$HOME/Applications/GoodApp.app/Contents"
+cat > "$HOME/Applications/GoodApp.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.GoodApp</string>
+</dict>
+</plist>
+PLIST
+
+debug_log() { :; }
+scan_installed_apps "$HOME/installed.txt"
+cat "$HOME/installed.txt"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"com.example.GoodApp"* ]]
+    [[ "$output" != *"missing value"* ]]
 }
 
 @test "is_bundle_orphaned returns true for old uninstalled bundle" {
@@ -367,7 +437,7 @@ EOF
 }
 
 @test "clean_orphaned_system_services respects dry-run" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
@@ -412,142 +482,31 @@ EOF
     [[ "$output" != *"launchctl-called"* ]]
 }
 
-@test "is_launch_item_orphaned detects orphan when program missing" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.orphan.plist"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.orphan</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/nonexistent/app/program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when program exists" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.active.plist"
-tmp_program="$tmp_dir/program"
-touch "$tmp_program"
-
-cat > "$tmp_plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.active</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$tmp_program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when app support active" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.appsupport.plist"
-
-mkdir -p "$HOME/Library/Application Support/TestApp"
-touch "$HOME/Library/Application Support/TestApp/recent.txt"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.appsupport</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$HOME/Library/Application Support/TestApp/Current/app</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-rm -rf "$HOME/Library/Application Support/TestApp"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "clean_orphaned_launch_agents skips when no orphans" {
+@test "clean_orphaned_launch_agents preserves user launch agents" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
 
 mkdir -p "$HOME/Library/LaunchAgents"
+cat > "$HOME/Library/LaunchAgents/com.example.custom-task.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.custom-task</string>
+</dict>
+</plist>
+PLIST
 
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
-get_path_size_kb() { echo "1"; }
-run_with_timeout() { shift; "$@"; }
 
 clean_orphaned_launch_agents
+
+[[ -f "$HOME/Library/LaunchAgents/com.example.custom-task.plist" ]]
 EOF
 
     [ "$status" -eq 0 ]
