@@ -101,14 +101,14 @@ setup() {
 @test "completion fish generates valid fish script" {
 	run "$PROJECT_ROOT/bin/completion.sh" fish
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"complete -c mole"* ]]
-	[[ "$output" == *"complete -c mo"* ]]
+	[[ "$output" == *"complete -f -c mole"* ]]
+	[[ "$output" == *"complete -f -c mo"* ]]
 }
 
 @test "completion fish includes both mole and mo commands" {
 	output="$("$PROJECT_ROOT/bin/completion.sh" fish)"
-	mole_count=$(echo "$output" | grep -c "complete -c mole")
-	mo_count=$(echo "$output" | grep -c "complete -c mo")
+	mole_count=$(echo "$output" | grep -c "complete -f -c mole")
+	mo_count=$(echo "$output" | grep -c "complete -f -c mo")
 
 	[ "$mole_count" -gt 0 ]
 	[ "$mo_count" -gt 0 ]

@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import "time"
@@ -19,11 +21,15 @@ const (
 	cacheReuseWindow       = 24 * time.Hour
 	staleCacheTTL          = 3 * 24 * time.Hour
 
-	// Worker pool limits.
-	minWorkers         = 16
-	maxWorkers         = 64
-	cpuMultiplier      = 4
-	maxDirWorkers      = 32
+	// Worker pool limits. Deliberately conservative: the App Library scan
+	// blocks many goroutines in syscalls on high-fan-out trees (Steam
+	// workshop/temp, browser caches), and each blocked goroutine holds an
+	// OS thread. Exceeding the per-user thread limit on macOS produces a
+	// fatal "runtime: failed to create new OS thread" with no recovery.
+	minWorkers         = 4
+	maxWorkers         = 16
+	cpuMultiplier      = 1
+	maxDirWorkers      = 8
 	openCommandTimeout = 10 * time.Second
 )
 

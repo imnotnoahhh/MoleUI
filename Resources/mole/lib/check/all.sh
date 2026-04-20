@@ -13,6 +13,11 @@ list_login_items() {
         return
     fi
 
+    # Skip AppleScript during tests to avoid permission dialogs
+    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+        return
+    fi
+
     local raw_items
     raw_items=$(osascript -e 'tell application "System Events" to get the name of every login item' 2> /dev/null || echo "")
     [[ -z "$raw_items" || "$raw_items" == "missing value" ]] && return
@@ -34,7 +39,8 @@ check_touchid_sudo() {
     if command -v is_whitelisted > /dev/null && is_whitelisted "check_touchid"; then return; fi
     # Check if Touch ID is configured for sudo
     local pam_file="/etc/pam.d/sudo"
-    if [[ -f "$pam_file" ]] && grep -q "pam_tid.so" "$pam_file" 2> /dev/null; then
+    local pam_local="/etc/pam.d/sudo_local"
+    if grep -q "pam_tid.so" "$pam_file" "$pam_local" 2> /dev/null; then
         echo -e "  ${GREEN}✓${NC} Touch ID     Biometric authentication enabled"
     else
         # Check if Touch ID is supported
@@ -136,8 +142,8 @@ check_firewall() {
         return
     fi
 
-    # Fall back to macOS built-in firewall check
-    local firewall_output=$(sudo /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2> /dev/null || echo "")
+    # Fall back to macOS built-in firewall check (no sudo needed for read-only query)
+    local firewall_output=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2> /dev/null || echo "")
     if [[ "$firewall_output" == *"State = 1"* ]] || [[ "$firewall_output" == *"State = 2"* ]]; then
         echo -e "  ${GREEN}✓${NC} Firewall     Network protection enabled"
     else
@@ -207,6 +213,7 @@ reset_brew_cache() {
 reset_softwareupdate_cache() {
     clear_cache_file "$CACHE_DIR/softwareupdate_list"
     SOFTWARE_UPDATE_LIST=""
+    SOFTWARE_UPDATE_LIST_LOADED="false"
 }
 
 reset_mole_cache() {
@@ -228,19 +235,90 @@ is_cache_valid() {
 
 # Cache software update list to avoid calling softwareupdate twice
 SOFTWARE_UPDATE_LIST=""
+SOFTWARE_UPDATE_LIST_LOADED="false"
+
+software_update_has_entries() {
+    printf '%s\n' "$1" | grep -qE '^[[:space:]]*\* Label:'
+}
+
+is_macos_software_update_text() {
+    local text
+    text=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+
+    case "$text" in
+        *macos* | *background\ security\ improvement* | *rapid\ security\ response* | *security\ response*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+get_first_macos_software_update_summary() {
+    printf '%s\n' "$1" | awk '
+        /^\* Label:/ {
+            label=$0
+            sub(/^[[:space:]]*\* Label: */, "", label)
+            next
+        }
+        /^[[:space:]]*Title:/ {
+            title=$0
+            sub(/^[[:space:]]*Title: */, "", title)
+            sub(/, Version:.*/, "", title)
+            sub(/, Size:.*/, "", title)
+            combined=tolower(label " " title)
+            if (combined ~ /macos|background security improvement|rapid security response|security response/) {
+                print title
+                exit
+            }
+        }
+    '
+}
 
 get_software_updates() {
     local cache_file="$CACHE_DIR/softwareupdate_list"
-
-    # Optimized: Use defaults to check if updates are pending (much faster)
-    local pending_updates
-    pending_updates=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate LastRecommendedUpdatesAvailable 2> /dev/null || echo "0")
-
-    if [[ "$pending_updates" -gt 0 ]]; then
-        echo "Updates Available"
-    else
-        echo ""
+    if [[ "${SOFTWARE_UPDATE_LIST_LOADED:-false}" == "true" ]]; then
+        printf '%s\n' "$SOFTWARE_UPDATE_LIST"
+        return 0
     fi
+
+    if is_cache_valid "$cache_file"; then
+        SOFTWARE_UPDATE_LIST=$(cat "$cache_file" 2> /dev/null || true)
+        SOFTWARE_UPDATE_LIST_LOADED="true"
+        printf '%s\n' "$SOFTWARE_UPDATE_LIST"
+        return 0
+    fi
+
+    local spinner_started=false
+    if [[ -t 1 && -z "${SOFTWAREUPDATE_SPINNER_SHOWN:-}" ]]; then
+        MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking system updates..."
+        spinner_started=true
+        export SOFTWAREUPDATE_SPINNER_SHOWN=1
+    fi
+
+    local output=""
+    local sw_status=0
+    if output=$(run_with_timeout 10 softwareupdate -l --no-scan 2> /dev/null); then
+        SOFTWARE_UPDATE_LIST="$output"
+        ensure_user_file "$cache_file"
+        printf '%s' "$SOFTWARE_UPDATE_LIST" > "$cache_file" 2> /dev/null || true
+    else
+        sw_status=$?
+        SOFTWARE_UPDATE_LIST=""
+        if [[ -f "$cache_file" ]]; then
+            SOFTWARE_UPDATE_LIST=$(cat "$cache_file" 2> /dev/null || true)
+        fi
+        if [[ -n "${MO_DEBUG:-}" ]]; then
+            echo "[DEBUG] softwareupdate preload exit status: $sw_status" >&2
+        fi
+    fi
+
+    if [[ "$spinner_started" == "true" ]]; then
+        stop_inline_spinner
+    fi
+
+    SOFTWARE_UPDATE_LIST_LOADED="true"
+    printf '%s\n' "$SOFTWARE_UPDATE_LIST"
 }
 
 check_homebrew_updates() {
@@ -285,17 +363,26 @@ check_homebrew_updates() {
             spinner_started=true
         fi
 
-        if formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null); then
-            :
-        else
-            formula_status=$?
-        fi
-
-        if cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null); then
-            :
-        else
-            cask_status=$?
-        fi
+        local _brew_formula_tmp _brew_cask_tmp
+        _brew_formula_tmp=$(mktemp_file "brew_formula")
+        _brew_cask_tmp=$(mktemp_file "brew_cask")
+        (
+            run_with_timeout 8 brew outdated --formula --quiet > "$_brew_formula_tmp" 2> /dev/null
+            echo $? > "${_brew_formula_tmp}.status"
+        ) &
+        local _formula_pid=$!
+        (
+            run_with_timeout 8 brew outdated --cask --quiet > "$_brew_cask_tmp" 2> /dev/null
+            echo $? > "${_brew_cask_tmp}.status"
+        ) &
+        local _cask_pid=$!
+        wait "$_formula_pid" 2> /dev/null || true
+        wait "$_cask_pid" 2> /dev/null || true
+        formula_outdated=$(cat "$_brew_formula_tmp" 2> /dev/null || true)
+        cask_outdated=$(cat "$_brew_cask_tmp" 2> /dev/null || true)
+        formula_status=$(cat "${_brew_formula_tmp}.status" 2> /dev/null || echo "1")
+        cask_status=$(cat "${_brew_cask_tmp}.status" 2> /dev/null || echo "1")
+        rm -f "$_brew_formula_tmp" "$_brew_cask_tmp" "${_brew_formula_tmp}.status" "${_brew_cask_tmp}.status" 2> /dev/null || true
 
         if [[ "$spinner_started" == "true" ]]; then
             stop_inline_spinner
@@ -304,8 +391,12 @@ check_homebrew_updates() {
         if [[ $formula_status -eq 0 || $cask_status -eq 0 ]]; then
             formula_count=$(printf '%s\n' "$formula_outdated" | awk 'NF {count++} END {print count + 0}')
             cask_count=$(printf '%s\n' "$cask_outdated" | awk 'NF {count++} END {print count + 0}')
-            ensure_user_file "$cache_file"
-            printf '%s %s\n' "$formula_count" "$cask_count" > "$cache_file" 2> /dev/null || true
+            # Only cache when both calls succeeded; partial results (one side failed)
+            # must not be written as zeros — next run should retry the failed side.
+            if [[ $formula_status -eq 0 && $cask_status -eq 0 ]]; then
+                ensure_user_file "$cache_file"
+                printf '%s %s\n' "$formula_count" "$cask_count" > "$cache_file" 2> /dev/null || true
+            fi
         elif [[ $formula_status -eq 124 || $cask_status -eq 124 ]]; then
             printf "  ${GRAY}${ICON_WARNING}${NC} %-12s ${YELLOW}%s${NC}\n" "Homebrew" "Check timed out"
             return
@@ -346,52 +437,30 @@ check_macos_update() {
     # Check whitelist
     if command -v is_whitelisted > /dev/null && is_whitelisted "check_macos_updates"; then return; fi
 
-    # Fast check using system preferences
     local updates_available="false"
-    if [[ $(get_software_updates) == "Updates Available" ]]; then
-        updates_available="true"
+    local macos_update_summary=""
+    local sw_output=""
+    sw_output=$(get_software_updates)
 
-        # Verify with softwareupdate using --no-scan to avoid triggering a fresh scan
-        # which can timeout. We prioritize avoiding false negatives (missing actual updates)
-        # over false positives, so we only clear the update flag when softwareupdate
-        # explicitly reports "No new software available"
-        local sw_output=""
-        local sw_status=0
-        local spinner_started=false
-        if [[ -t 1 ]]; then
-            MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking macOS updates..."
-            spinner_started=true
-        fi
+    if [[ -n "${MO_DEBUG:-}" ]]; then
+        echo "[DEBUG] softwareupdate cached output lines: $(printf '%s\n' "$sw_output" | wc -l | tr -d ' ')" >&2
+    fi
 
-        local softwareupdate_timeout=10
-        if sw_output=$(run_with_timeout "$softwareupdate_timeout" softwareupdate -l --no-scan 2> /dev/null); then
-            :
-        else
-            sw_status=$?
-        fi
-
-        if [[ "$spinner_started" == "true" ]]; then
-            stop_inline_spinner
-        fi
-
-        # Debug logging for troubleshooting
-        if [[ -n "${MO_DEBUG:-}" ]]; then
-            echo "[DEBUG] softwareupdate exit status: $sw_status, output lines: $(echo "$sw_output" | wc -l | tr -d ' ')" >&2
-        fi
-
-        # Prefer avoiding false negatives: if the system indicates updates are pending,
-        # only clear the flag when softwareupdate returns a list without any update entries.
-        if [[ $sw_status -eq 0 && -n "$sw_output" ]]; then
-            if ! echo "$sw_output" | grep -qE '^[[:space:]]*\*'; then
-                updates_available="false"
-            fi
+    if software_update_has_entries "$sw_output"; then
+        macos_update_summary=$(get_first_macos_software_update_summary "$sw_output")
+        if [[ -n "$macos_update_summary" ]] || is_macos_software_update_text "$sw_output"; then
+            updates_available="true"
         fi
     fi
 
     export MACOS_UPDATE_AVAILABLE="$updates_available"
 
     if [[ "$updates_available" == "true" ]]; then
-        printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "Update available"
+        if [[ -n "$macos_update_summary" ]]; then
+            printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "$macos_update_summary"
+        else
+            printf "  ${GRAY}%s${NC} %-12s ${YELLOW}%s${NC}\n" "$ICON_WARNING" "macOS" "Update available"
+        fi
     else
         printf "  ${GREEN}✓${NC} %-12s %s\n" "macOS" "System up to date"
     fi
@@ -490,7 +559,7 @@ get_appstore_update_labels() {
             sub(/^[[:space:]]*\* Label: */, "", label)
             sub(/,.*/, "", label)
             lower=tolower(label)
-            if (index(lower, "macos") == 0) {
+            if (lower !~ /macos|background security improvement|rapid security response|security response/) {
                 print label
             }
         }
@@ -504,7 +573,7 @@ get_macos_update_labels() {
             sub(/^[[:space:]]*\* Label: */, "", label)
             sub(/,.*/, "", label)
             lower=tolower(label)
-            if (index(lower, "macos") != 0) {
+            if (lower ~ /macos|background security improvement|rapid security response|security response/) {
                 print label
             }
         }
@@ -698,9 +767,100 @@ check_swap_usage() {
     fi
 }
 
+check_disk_smart() {
+    # Check whitelist
+    if command -v is_whitelisted > /dev/null && is_whitelisted "check_disk_smart"; then return; fi
+
+    if ! command -v diskutil > /dev/null 2>&1; then
+        return
+    fi
+
+    local boot_disk smart_status
+    boot_disk=$(diskutil info / 2> /dev/null | awk -F: '/Part of Whole/ {gsub(/^[ \t]+/, "", $2); print $2}')
+    [[ -z "$boot_disk" ]] && return
+    smart_status=$(diskutil info "$boot_disk" 2> /dev/null | awk -F: '/SMART Status/ {gsub(/^[ \t]+/, "", $2); print $2}')
+
+    if [[ -z "$smart_status" ]]; then
+        return
+    fi
+
+    if [[ "$smart_status" == "Verified" ]]; then
+        echo -e "  ${GREEN}✓${NC} Disk Health  SMART Verified"
+    elif [[ "$smart_status" == "Failing" ]]; then
+        echo -e "  ${RED}✗${NC} Disk Health  ${RED}SMART Failing — back up immediately${NC}"
+    else
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Disk Health  ${YELLOW}SMART: ${smart_status}${NC}"
+    fi
+}
+
+check_orphan_launch_agents() {
+    if command -v is_whitelisted > /dev/null && is_whitelisted "check_orphan_launch_agents"; then return; fi
+
+    local -a search_dirs orphans=()
+    IFS=: read -r -a search_dirs <<< "${MOLE_LAUNCH_AGENT_DIRS:-$HOME/Library/LaunchAgents:/Library/LaunchAgents}"
+
+    local plist label program
+    for dir in "${search_dirs[@]}"; do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r -d '' plist; do
+            label=$(basename "$plist" .plist)
+            [[ "$label" == com.apple.* ]] && continue
+            program=$(/usr/bin/plutil -extract Program raw -o - "$plist" 2> /dev/null ||
+                /usr/bin/plutil -extract ProgramArguments.0 raw -o - "$plist" 2> /dev/null)
+            [[ "$program" == /* && ! -e "$program" ]] && orphans+=("$label")
+        done < <(find "$dir" -maxdepth 1 -name "*.plist" -print0 2> /dev/null)
+    done
+
+    local count=${#orphans[@]}
+    if [[ $count -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} Launch Agents None orphaned"
+        return
+    fi
+
+    local s=""
+    ((count > 1)) && s="s"
+    echo -e "  ${GRAY}${ICON_WARNING}${NC} Launch Agents ${YELLOW}${count} orphan${s}${NC}"
+    local preview="${orphans[0]}"
+    ((count > 1)) && preview="${preview}, ${orphans[1]}"
+    ((count > 2)) && preview="${preview}, ${orphans[2]}"
+    ((count > 3)) && preview="${preview} +$((count - 3))"
+    echo -e "    ${GRAY}${preview}${NC}"
+}
+
 check_brew_health() {
     # Check whitelist
     if command -v is_whitelisted > /dev/null && is_whitelisted "check_brew_health"; then return; fi
+
+    if ! command -v brew > /dev/null 2>&1; then
+        return
+    fi
+
+    # Detect taps with no installed formulae or casks.
+    local -a stale_taps=()
+    local installed
+    installed=$(run_with_timeout 5 brew list --full-name 2> /dev/null || true)
+    local tap
+    while IFS= read -r tap; do
+        [[ -z "$tap" ]] && continue
+        # Skip the core taps — they are always needed.
+        [[ "$tap" == "homebrew/core" || "$tap" == "homebrew/cask" ]] && continue
+        if ! printf '%s\n' "$installed" | grep -q "^${tap}/"; then
+            stale_taps+=("$tap")
+        fi
+    done < <(run_with_timeout 5 brew tap 2> /dev/null)
+
+    local n=${#stale_taps[@]}
+    if [[ $n -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} Brew Taps    All taps in use"
+    else
+        local s=""
+        ((n > 1)) && s="s"
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Brew Taps    ${YELLOW}${n} unused tap${s}${NC}"
+        local preview="${stale_taps[0]}"
+        ((n > 1)) && preview="${preview}, ${stale_taps[1]}"
+        ((n > 2)) && preview="${preview} +$((n - 2))"
+        echo -e "    ${GRAY}${preview}${NC}"
+    fi
 }
 
 check_system_health() {
@@ -709,6 +869,9 @@ check_system_health() {
     check_memory_usage
     check_swap_usage
     check_login_items
+    check_disk_smart
+    check_orphan_launch_agents
+    check_brew_health
     check_cache_size
     # Time Machine check is optional; skip by default to avoid noise on systems without backups
 }

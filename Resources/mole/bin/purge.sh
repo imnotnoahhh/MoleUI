@@ -40,6 +40,53 @@ note_activity() {
     fi
 }
 
+# Keep the most specific tail of a long purge path visible on the live scan line.
+compact_purge_scan_path() {
+    local path="$1"
+    local max_path_len="${2:-0}"
+
+    if ! [[ "$max_path_len" =~ ^[0-9]+$ ]] || [[ "$max_path_len" -lt 4 ]]; then
+        max_path_len=4
+    fi
+
+    if [[ ${#path} -le $max_path_len ]]; then
+        echo "$path"
+        return
+    fi
+
+    local suffix_len=$((max_path_len - 3))
+    local suffix="${path: -$suffix_len}"
+    local path_tail=""
+    local remainder="$path"
+
+    while [[ "$remainder" == */* ]]; do
+        local segment="/${remainder##*/}"
+        remainder="${remainder%/*}"
+
+        if [[ -z "$path_tail" ]]; then
+            if [[ ${#segment} -le $suffix_len ]]; then
+                path_tail="$segment"
+            else
+                break
+            fi
+            continue
+        fi
+
+        if [[ $((${#segment} + ${#path_tail})) -le $suffix_len ]]; then
+            path_tail="${segment}${path_tail}"
+        else
+            break
+        fi
+    done
+
+    if [[ -n "$path_tail" ]]; then
+        echo "...${path_tail}"
+        return
+    fi
+
+    echo "...$suffix"
+}
+
 # Main purge function
 start_purge() {
     # Set current command for operation logging
@@ -127,24 +174,13 @@ perform_purge() {
             # Set up trap to exit cleanly (erase the spinner line via /dev/tty)
             trap 'printf "\r\033[2K" >/dev/tty 2>/dev/null; exit 0' INT TERM
 
-            # Truncate path to guaranteed fit
-            truncate_path() {
-                local path="$1"
-                if [[ ${#path} -le $max_path_len ]]; then
-                    echo "$path"
-                    return
-                fi
-                local side_len=$(((max_path_len - 3) / 2))
-                echo "${path:0:$side_len}...${path: -$side_len}"
-            }
-
             while [[ -f "$stats_dir/purge_scanning" ]]; do
                 local current_path
                 current_path=$(cat "$stats_dir/purge_scanning" 2> /dev/null || echo "")
 
                 if [[ -n "$current_path" ]]; then
                     local display_path="${current_path/#$HOME/~}"
-                    display_path=$(truncate_path "$display_path")
+                    display_path=$(compact_purge_scan_path "$display_path" "$max_path_len")
                     last_path="$display_path"
                 fi
 
@@ -290,5 +326,13 @@ main() {
     perform_purge
     show_cursor
 }
+
+if [[ "${MOLE_SKIP_MAIN:-0}" == "1" ]]; then
+    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+        return 0
+    else
+        exit 0
+    fi
+fi
 
 main "$@"

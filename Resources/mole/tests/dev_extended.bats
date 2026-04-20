@@ -99,6 +99,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 safe_clean() { echo "$2"; }
+clean_service_worker_cache() { :; }
 clean_dev_editors
 EOF
 
@@ -270,6 +271,115 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"/241.1"* ]]
     [[ "$output" != *"/241.2"* ]]
+}
+
+@test "clean_dev_ai_agents keeps newest version and removes older ones by mtime" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    local cursor_root="$HOME/.local/share/cursor-agent/versions"
+    mkdir -p "$claude_root" "$cursor_root"
+    touch -t 202604170829 "$claude_root/2.1.112"
+    touch -t 202604180902 "$claude_root/2.1.113"
+    touch -t 202604181002 "$claude_root/2.1.114"
+    mkdir -p "$cursor_root/2026.04.08-old" "$cursor_root/2026.04.15-new"
+    touch -t 202604080000 "$cursor_root/2026.04.08-old"
+    touch -t 202604150000 "$cursor_root/2026.04.15-new"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1|$2"; }
+clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/2.1.112|Claude Code old version"* ]]
+    [[ "$output" == *"/2.1.113|Claude Code old version"* ]]
+    [[ "$output" != *"/2.1.114|"* ]]
+    [[ "$output" == *"/2026.04.08-old|Cursor Agent old version"* ]]
+    [[ "$output" != *"/2026.04.15-new|"* ]]
+}
+
+@test "clean_dev_ai_agents respects MOLE_AI_AGENTS_KEEP and skips missing roots" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    mkdir -p "$claude_root"
+    touch -t 202604170000 "$claude_root/2.1.100"
+    touch -t 202604180000 "$claude_root/2.1.101"
+    touch -t 202604190000 "$claude_root/2.1.102"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1"; }
+MOLE_AI_AGENTS_KEEP=2 clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/2.1.100"* ]]
+    [[ "$output" != *"/2.1.101"* ]]
+    [[ "$output" != *"/2.1.102"* ]]
+}
+
+@test "clean_dev_jetbrains_logs only targets JetBrains logs" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { printf '%s|%s\n' "$1" "$2"; }
+clean_dev_jetbrains_logs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$HOME/Library/Logs/JetBrains/*|JetBrains IDE logs"* ]]
+    [[ "$output" != *"Library/Caches/JetBrains"* ]]
+}
+
+@test "clean_developer_tools includes JetBrains logs but not JetBrains cache sweep" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+stop_section_spinner() { :; }
+note_activity() { :; }
+safe_clean() { printf '%s|%s\n' "$1" "$2"; }
+clean_tool_cache() { :; }
+check_rust_toolchains() { :; }
+clean_dev_npm() { :; }
+clean_dev_python() { :; }
+clean_dev_go() { :; }
+clean_dev_mise() { :; }
+clean_dev_rust() { :; }
+clean_dev_docker() { :; }
+clean_dev_cloud() { :; }
+clean_dev_nix() { :; }
+clean_dev_shell() { :; }
+clean_dev_frontend() { :; }
+clean_project_caches() { :; }
+clean_dev_mobile() { :; }
+clean_dev_jvm() { :; }
+clean_dev_jetbrains_toolbox() { :; }
+clean_dev_ai_agents() { :; }
+clean_dev_other_langs() { :; }
+clean_dev_cicd() { :; }
+clean_dev_database() { :; }
+clean_dev_api_tools() { :; }
+clean_dev_network() { :; }
+clean_dev_misc() { :; }
+clean_dev_elixir() { :; }
+clean_dev_haskell() { :; }
+clean_dev_ocaml() { :; }
+clean_xcode_tools() { :; }
+clean_code_editors() { :; }
+clean_homebrew() { :; }
+clean_developer_tools
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$HOME/Library/Logs/JetBrains/*|JetBrains IDE logs"* ]]
+    [[ "$output" != *"Library/Caches/JetBrains"* ]]
 }
 
 @test "clean_xcode_simulator_runtime_volumes shows scan progress and skips sizing in-use volumes" {

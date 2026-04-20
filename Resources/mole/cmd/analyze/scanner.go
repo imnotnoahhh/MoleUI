@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -10,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +62,14 @@ func trySend[T any](ch chan<- T, item T, timeout time.Duration) bool {
 }
 
 func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (scanResult, error) {
+	return scanPathConcurrentWithOptions(root, filesScanned, dirsScanned, bytesScanned, currentPath, true, maxEntries)
+}
+
+func scanPathConcurrentAllEntries(root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (scanResult, error) {
+	return scanPathConcurrentWithOptions(root, filesScanned, dirsScanned, bytesScanned, currentPath, true, 0)
+}
+
+func scanPathConcurrentWithOptions(root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value, useSpotlight bool, entryLimit int) (scanResult, error) {
 	children, err := os.ReadDir(root)
 	if err != nil {
 		return scanResult{}, err
@@ -67,10 +78,16 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 	var total int64
 	var localFilesScanned int64
 	var localBytesScanned int64
+	var subtreeFilesScanned atomic.Int64
 
-	// Keep Top N heaps.
+	collectAllEntries := entryLimit <= 0
+	var collectedEntries []dirEntry
+
+	// Keep Top N heaps when a limit is requested.
 	entriesHeap := &entryHeap{}
-	heap.Init(entriesHeap)
+	if !collectAllEntries {
+		heap.Init(entriesHeap)
+	}
 
 	largeFilesHeap := &largeFileHeap{}
 	heap.Init(largeFilesHeap)
@@ -95,7 +112,12 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 	go func() {
 		defer collectorWg.Done()
 		for entry := range entryChan {
-			if entriesHeap.Len() < maxEntries {
+			if collectAllEntries {
+				collectedEntries = append(collectedEntries, entry)
+				continue
+			}
+
+			if entriesHeap.Len() < entryLimit {
 				heap.Push(entriesHeap, entry)
 			} else if entry.Size > (*entriesHeap)[0].Size {
 				heap.Pop(entriesHeap)
@@ -171,21 +193,22 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 					defer wg.Done()
 					defer func() { <-sem }()
 
-					var size int64
+					result := scanResult{}
 					if cached, err := loadStoredOverviewSize(path); err == nil && cached > 0 {
-						size = cached
-					} else if cached, err := loadCacheFromDisk(path); err == nil {
-						size = cached.TotalSize
+						result.TotalSize = cached
 					} else {
-						size = calculateDirSizeConcurrent(path, largeFileChan, &largeFileMinSize, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+						result = scanSubdirWithCache(path, largeFileChan, &largeFileMinSize, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
 					}
-					atomic.AddInt64(&total, size)
+					atomic.AddInt64(&total, result.TotalSize)
+					if result.TotalFiles > 0 {
+						subtreeFilesScanned.Add(result.TotalFiles)
+					}
 					atomic.AddInt64(dirsScanned, 1)
 
 					trySend(entryChan, dirEntry{
 						Name:       name,
 						Path:       path,
-						Size:       size,
+						Size:       result.TotalSize,
 						IsDir:      true,
 						LastAccess: time.Time{},
 					}, 100*time.Millisecond)
@@ -229,14 +252,17 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				size := calculateDirSizeConcurrent(path, largeFileChan, &largeFileMinSize, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
-				atomic.AddInt64(&total, size)
+				result := scanSubdirWithCache(path, largeFileChan, &largeFileMinSize, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+				atomic.AddInt64(&total, result.TotalSize)
+				if result.TotalFiles > 0 {
+					subtreeFilesScanned.Add(result.TotalFiles)
+				}
 				atomic.AddInt64(dirsScanned, 1)
 
 				trySend(entryChan, dirEntry{
 					Name:       name,
 					Path:       path,
-					Size:       size,
+					Size:       result.TotalSize,
 					IsDir:      true,
 					LastAccess: time.Time{},
 				}, 100*time.Millisecond)
@@ -286,9 +312,17 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 	collectorWg.Wait()
 
 	// Convert heaps to sorted slices (descending).
-	entries := make([]dirEntry, entriesHeap.Len())
-	for i := len(entries) - 1; i >= 0; i-- {
-		entries[i] = heap.Pop(entriesHeap).(dirEntry)
+	var entries []dirEntry
+	if collectAllEntries {
+		entries = append(entries, collectedEntries...)
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].Size > entries[j].Size
+		})
+	} else {
+		entries = make([]dirEntry, entriesHeap.Len())
+		for i := len(entries) - 1; i >= 0; i-- {
+			entries[i] = heap.Pop(entriesHeap).(dirEntry)
+		}
 	}
 
 	largeFiles := make([]fileEntry, largeFilesHeap.Len())
@@ -297,16 +331,61 @@ func scanPathConcurrent(root string, filesScanned, dirsScanned, bytesScanned *in
 	}
 
 	// Use Spotlight for large files when it expands the list.
-	if spotlightFiles := findLargeFilesWithSpotlight(root, spotlightMinFileSize); len(spotlightFiles) > len(largeFiles) {
-		largeFiles = spotlightFiles
+	if useSpotlight {
+		if spotlightFiles := findLargeFilesWithSpotlight(root, spotlightMinFileSize); len(spotlightFiles) > len(largeFiles) {
+			largeFiles = spotlightFiles
+		}
 	}
 
 	return scanResult{
 		Entries:    entries,
 		LargeFiles: largeFiles,
 		TotalSize:  total,
-		TotalFiles: atomic.LoadInt64(filesScanned),
+		TotalFiles: localFilesScanned + subtreeFilesScanned.Load(),
 	}, nil
+}
+
+func publishLargeFiles(files []fileEntry, largeFileChan chan<- fileEntry) {
+	for _, file := range files {
+		trySend(largeFileChan, file, 100*time.Millisecond)
+	}
+}
+
+func loadCachedSubdirResult(path string, largeFileChan chan<- fileEntry) (scanResult, bool) {
+	cached, err := loadCacheFromDisk(path)
+	if err != nil {
+		return scanResult{}, false
+	}
+
+	result := scanResult{
+		Entries:    cached.Entries,
+		LargeFiles: cached.LargeFiles,
+		TotalSize:  cached.TotalSize,
+		TotalFiles: cached.TotalFiles,
+	}
+	publishLargeFiles(result.LargeFiles, largeFileChan)
+	return result, true
+}
+
+func scanSubdirWithCache(root string, largeFileChan chan<- fileEntry, largeFileMinSize *int64, dirSem, duSem, duQueueSem chan struct{}, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) scanResult {
+	if cached, ok := loadCachedSubdirResult(root, largeFileChan); ok {
+		if cached.TotalFiles > 0 {
+			atomic.AddInt64(filesScanned, cached.TotalFiles)
+		}
+		if cached.TotalSize > 0 {
+			atomic.AddInt64(bytesScanned, cached.TotalSize)
+		}
+		return cached
+	}
+
+	result, err := scanPathConcurrentWithOptions(root, filesScanned, dirsScanned, bytesScanned, currentPath, false, maxEntries)
+	if err == nil {
+		publishLargeFiles(result.LargeFiles, largeFileChan)
+		_ = saveCacheToDiskWithOptions(root, result, true)
+		return result
+	}
+
+	return scanResult{TotalSize: calculateDirSizeConcurrent(root, largeFileChan, largeFileMinSize, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)}
 }
 
 func shouldFoldDirWithPath(name, path string) bool {
@@ -341,7 +420,7 @@ func calculateDirSizeFast(root string, filesScanned, dirsScanned, bytesScanned *
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	concurrency := min(runtime.NumCPU()*4, 64)
+	concurrency := min(runtime.NumCPU()*cpuMultiplier, maxWorkers)
 	sem := make(chan struct{}, concurrency)
 
 	var walk func(string)
@@ -407,6 +486,16 @@ func calculateDirSizeFast(root string, filesScanned, dirsScanned, bytesScanned *
 
 // Use Spotlight (mdfind) to quickly find large files.
 func findLargeFilesWithSpotlight(root string, minSize int64) []fileEntry {
+	// Validate root path.
+	if err := validatePath(root); err != nil {
+		return nil
+	}
+
+	// Validate minSize is reasonable (non-negative and not excessively large).
+	if minSize < 0 || minSize > 1<<50 { // 1 PB max
+		return nil
+	}
+
 	query := fmt.Sprintf("kMDItemFSSize >= %d", minSize)
 
 	ctx, cancel := context.WithTimeout(context.Background(), mdlsTimeout)
@@ -610,12 +699,12 @@ func measureOverviewSize(path string) (int64, error) {
 		excludePath = filepath.Join(home, "Library")
 	}
 
-	if duSize, err := getDirectorySizeFromDuWithExclude(path, excludePath); err == nil && duSize > 0 {
+	if duSize, err := getDirectorySizeFromDuWithExclude(path, excludePath); err == nil {
 		_ = storeOverviewSize(path, duSize)
 		return duSize, nil
 	}
 
-	if logicalSize, err := getDirectoryLogicalSizeWithExclude(path, excludePath); err == nil && logicalSize > 0 {
+	if logicalSize, err := getDirectoryLogicalSizeWithExclude(path, excludePath); err == nil {
 		_ = storeOverviewSize(path, logicalSize)
 		return logicalSize, nil
 	}
@@ -633,6 +722,16 @@ func getDirectorySizeFromDu(path string) (int64, error) {
 }
 
 func getDirectorySizeFromDuWithExclude(path string, excludePath string) (int64, error) {
+	// Validate paths.
+	if err := validatePath(path); err != nil {
+		return 0, err
+	}
+	if excludePath != "" {
+		if err := validatePath(excludePath); err != nil {
+			return 0, err
+		}
+	}
+
 	runDuSize := func(target string) (int64, error) {
 		if _, err := os.Stat(target); err != nil {
 			return 0, err
