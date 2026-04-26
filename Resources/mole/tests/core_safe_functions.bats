@@ -66,6 +66,9 @@ teardown() {
 }
 
 @test "validate_path_for_deletion rejects system directories" {
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/'"
+    [ "$status" -eq 1 ]
+
     run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '/System'"
     [ "$status" -eq 1 ]
 
@@ -84,6 +87,15 @@ teardown() {
 @test "safe_remove validates path before deletion" {
     run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_remove '/System/test' 2>&1"
     [ "$status" -eq 1 ]
+}
+
+@test "validate_path_for_deletion rejects symlink to protected system path" {
+    local link_path="$TEST_DIR/system-link"
+    ln -s "/System" "$link_path"
+
+    run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; validate_path_for_deletion '$link_path' 2>&1"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"protected system path"* ]]
 }
 
 @test "safe_remove successfully removes file" {
@@ -132,6 +144,22 @@ teardown() {
 @test "safe_find_delete validates base directory" {
     run bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '/nonexistent' '*.tmp' 7 'f' 2>&1"
     [ "$status" -eq 1 ]
+}
+
+@test "safe_sudo_remove refuses symlink paths" {
+    local target_dir="$TEST_DIR/real"
+    local link_dir="$TEST_DIR/link"
+    mkdir -p "$target_dir"
+    ln -s "$target_dir" "$link_dir"
+
+    run bash -c "
+        source '$PROJECT_ROOT/lib/core/common.sh'
+        sudo() { return 0; }
+        export -f sudo
+        safe_sudo_remove '$link_dir' 2>&1
+    "
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Refusing to sudo remove symlink"* ]]
 }
 
 @test "safe_find_delete rejects symlinked directory" {

@@ -400,9 +400,9 @@ paginated_multi_select() {
     draw_header() {
         printf "\033[1;1H" >&2
         if [[ -n "$filter_text" ]]; then
-            printf "\r\033[2K${PURPLE_BOLD}%s${NC}  ${YELLOW}/ Filter: ${filter_text}_${NC}  ${GRAY}(%d/%d)${NC}\n" "${title}" "${#view_indices[@]}" "$total_items" >&2
+            printf "\r\033[2K${PURPLE_BOLD}%s${NC}  ${YELLOW}/ Search: ${filter_text}_${NC}  ${GRAY}(%d/%d)${NC}\n" "${title}" "${#view_indices[@]}" "$total_items" >&2
         elif [[ -n "${MOLE_READ_KEY_FORCE_CHAR:-}" ]]; then
-            printf "\r\033[2K${PURPLE_BOLD}%s${NC}  ${YELLOW}/ Filter: _ ${NC}${GRAY}(type to search)${NC}\n" "${title}" >&2
+            printf "\r\033[2K${PURPLE_BOLD}%s${NC}  ${YELLOW}/ Search: _ ${NC}${GRAY}(type to search)${NC}\n" "${title}" >&2
         else
             printf "\r\033[2K${PURPLE_BOLD}%s${NC}  ${GRAY}%d/%d selected${NC}\n" "${title}" "$selected_count" "$total_items" >&2
         fi
@@ -511,7 +511,7 @@ paginated_multi_select() {
 
         local sort_ctrl="${GRAY}S ${sort_status}${NC}"
         local order_ctrl="${GRAY}O ${reverse_arrow}${NC}"
-        local filter_ctrl="${GRAY}/ Filter${NC}"
+        local filter_ctrl="${GRAY}/ Search${NC}"
 
         if [[ -n "$filter_text" ]]; then
             local -a _segs_filter=("${GRAY}Backspace${NC}" "${GRAY}Ctrl+U Clear${NC}" "${GRAY}ESC Clear${NC}")

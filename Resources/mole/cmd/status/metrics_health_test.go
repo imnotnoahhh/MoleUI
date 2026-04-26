@@ -12,6 +12,7 @@ func TestCalculateHealthScorePerfect(t *testing.T) {
 		[]DiskStatus{{UsedPercent: 30}},
 		DiskIOStatus{ReadRate: 5, WriteRate: 5},
 		ThermalStatus{CPUTemp: 40},
+		nil, 0,
 	)
 
 	if score != 100 {
@@ -29,6 +30,7 @@ func TestCalculateHealthScoreDetectsIssues(t *testing.T) {
 		[]DiskStatus{{UsedPercent: 95}},
 		DiskIOStatus{ReadRate: 120, WriteRate: 80},
 		ThermalStatus{CPUTemp: 90},
+		nil, 0,
 	)
 
 	if score >= 40 {
@@ -160,11 +162,82 @@ func TestCalculateHealthScoreEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score, _ := calculateHealthScore(tt.cpu, tt.mem, tt.disks, tt.diskIO, tt.thermal)
+			score, _ := calculateHealthScore(tt.cpu, tt.mem, tt.disks, tt.diskIO, tt.thermal, nil, 0)
 			if score < tt.wantMin || score > tt.wantMax {
 				t.Errorf("calculateHealthScore() = %d, want range [%d, %d]", score, tt.wantMin, tt.wantMax)
 			}
 		})
+	}
+}
+
+func TestBatteryHealthLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		cycles   int
+		capacity int
+		label    string
+		severity string
+	}{
+		{"new battery", 100, 98, "Healthy", "ok"},
+		{"moderate cycles", 600, 92, "Fair", "warn"},
+		{"high cycles", 950, 85, "Service Soon", "danger"},
+		{"low capacity", 200, 75, "Service Soon", "danger"},
+		{"warn capacity", 200, 88, "Fair", "warn"},
+		{"zero values", 0, 0, "Healthy", "ok"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			label, severity := batteryHealthLabel(tt.cycles, tt.capacity)
+			if label != tt.label {
+				t.Errorf("batteryHealthLabel(%d, %d) label = %q, want %q", tt.cycles, tt.capacity, label, tt.label)
+			}
+			if severity != tt.severity {
+				t.Errorf("batteryHealthLabel(%d, %d) severity = %q, want %q", tt.cycles, tt.capacity, severity, tt.severity)
+			}
+		})
+	}
+}
+
+func TestUptimeSeverity(t *testing.T) {
+	tests := []struct {
+		name string
+		secs uint64
+		want string
+	}{
+		{"fresh restart", 3600, "ok"},
+		{"6 days", 6 * 86400, "ok"},
+		{"8 days", 8 * 86400, "warn"},
+		{"15 days", 15 * 86400, "danger"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uptimeSeverity(tt.secs)
+			if got != tt.want {
+				t.Errorf("uptimeSeverity(%d) = %q, want %q", tt.secs, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHealthScoreBatteryPenalty(t *testing.T) {
+	base := func(batts []BatteryStatus, uptime uint64) int {
+		s, _ := calculateHealthScore(
+			CPUStatus{Usage: 10}, MemoryStatus{UsedPercent: 20},
+			[]DiskStatus{{UsedPercent: 30}}, DiskIOStatus{ReadRate: 5, WriteRate: 5},
+			ThermalStatus{CPUTemp: 40}, batts, uptime,
+		)
+		return s
+	}
+
+	perfect := base(nil, 0)
+	withOldBattery := base([]BatteryStatus{{CycleCount: 950, Capacity: 75}}, 0)
+	withLongUptime := base(nil, 15*86400)
+
+	if withOldBattery >= perfect {
+		t.Errorf("old battery should reduce score: got %d vs perfect %d", withOldBattery, perfect)
+	}
+	if withLongUptime >= perfect {
+		t.Errorf("long uptime should reduce score: got %d vs perfect %d", withLongUptime, perfect)
 	}
 }
 

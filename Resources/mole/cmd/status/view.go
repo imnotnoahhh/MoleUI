@@ -17,7 +17,12 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 	lineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#404040"))
 
-	primaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	primaryStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	alertBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2B1200")).
+			Background(lipgloss.Color("#FFD75F")).
+			Bold(true).
+			Padding(0, 1)
 )
 
 const (
@@ -172,7 +177,16 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		optionalInfoParts = append(optionalInfoParts, m.Hardware.OSVersion)
 	}
 	if !compactHeader && m.Uptime != "" {
-		optionalInfoParts = append(optionalInfoParts, subtleStyle.Render("up "+m.Uptime))
+		uptimeText := "up " + m.Uptime
+		switch uptimeSeverity(m.UptimeSeconds) {
+		case "danger":
+			uptimeText = dangerStyle.Render(uptimeText + " ↻")
+		case "warn":
+			uptimeText = warnStyle.Render(uptimeText)
+		default:
+			uptimeText = subtleStyle.Render(uptimeText)
+		}
+		optionalInfoParts = append(optionalInfoParts, uptimeText)
 	}
 
 	headLeft := title + "  " + scoreText
@@ -232,6 +246,35 @@ func getScoreStyle(score int) lipgloss.Style {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	}
+}
+
+func renderProcessAlertBar(alerts []ProcessAlert, width int) string {
+	active := activeAlerts(alerts)
+	if len(active) == 0 {
+		return ""
+	}
+
+	focus := active[0]
+
+	text := fmt.Sprintf(
+		"ALERT %s at %.1f%% for %s (threshold %.1f%%)",
+		formatProcessLabel(ProcessInfo{PID: focus.PID, Name: focus.Name}),
+		focus.CPU,
+		focus.Window,
+		focus.Threshold,
+	)
+	if len(active) > 1 {
+		text += fmt.Sprintf(" · +%d more", len(active)-1)
+	}
+
+	return renderBanner(alertBarStyle, text, width)
+}
+
+func renderBanner(style lipgloss.Style, text string, width int) string {
+	if width > 0 {
+		style = style.MaxWidth(width)
+	}
+	return style.Render(text)
 }
 
 func renderCPUCard(cpu CPUStatus, thermal ThermalStatus) cardData {
@@ -346,7 +389,7 @@ func renderMemoryCard(mem MemoryStatus, cardWidth int) cardData {
 	return cardData{icon: iconMemory, title: "Memory", lines: lines}
 }
 
-func renderDiskCard(disks []DiskStatus, io DiskIOStatus) cardData {
+func renderDiskCard(disks []DiskStatus, io DiskIOStatus, trashSize uint64, trashApprox bool) cardData {
 	var lines []string
 	if len(disks) == 0 {
 		lines = append(lines, subtleStyle.Render("Collecting..."))
@@ -365,7 +408,16 @@ func renderDiskCard(disks []DiskStatus, io DiskIOStatus) cardData {
 		addGroup("EXTR", external)
 		if len(lines) == 0 {
 			lines = append(lines, subtleStyle.Render("No disks detected"))
+		} else if len(disks) == 1 {
+			lines = append(lines, formatDiskMetaLine(disks[0]))
 		}
+	}
+	if trashSize > 0 {
+		prefix := ""
+		if trashApprox {
+			prefix = "~"
+		}
+		lines = append(lines, fmt.Sprintf("%-6s %s%s", "Trash", prefix, humanBytesShort(trashSize)))
 	}
 	readBar := ioBar(io.ReadRate)
 	writeBar := ioBar(io.WriteRate)
@@ -398,8 +450,19 @@ func formatDiskLine(label string, d DiskStatus) string {
 	}
 	bar := progressBar(d.UsedPercent)
 	used := humanBytesShort(d.Used)
-	total := humanBytesShort(d.Total)
-	return fmt.Sprintf("%-6s %s  %5.1f%%, %s/%s", label, bar, d.UsedPercent, used, total)
+	free := uint64(0)
+	if d.Total > d.Used {
+		free = d.Total - d.Used
+	}
+	return fmt.Sprintf("%-6s %s  %s used, %s free", label, bar, used, humanBytesShort(free))
+}
+
+func formatDiskMetaLine(d DiskStatus) string {
+	parts := []string{humanBytesShort(d.Total)}
+	if d.Fstype != "" {
+		parts = append(parts, strings.ToUpper(d.Fstype))
+	}
+	return fmt.Sprintf("Total  %s", strings.Join(parts, " · "))
 }
 
 func ioBar(rate float64) string {
@@ -435,7 +498,7 @@ func buildCards(m MetricsSnapshot, width int) []cardData {
 	cards := []cardData{
 		renderCPUCard(m.CPU, m.Thermal),
 		renderMemoryCard(m.Memory, width),
-		renderDiskCard(m.Disks, m.DiskIO),
+		renderDiskCard(m.Disks, m.DiskIO, m.TrashSize, m.TrashApprox),
 		renderBatteryCard(m.Batteries, m.Thermal),
 		renderProcessCard(m.TopProcesses),
 		renderNetworkCard(m.Network, m.NetworkHistory, m.Proxy, width),
@@ -594,15 +657,34 @@ func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus) cardData {
 		lines = append(lines, statusStyle.Render(statusText+statusIcon))
 
 		healthParts := []string{}
-		if b.Health != "" {
+
+		// Battery health assessment label.
+		if b.CycleCount > 0 || b.Capacity > 0 {
+			label, severity := batteryHealthLabel(b.CycleCount, b.Capacity)
+			switch severity {
+			case "danger":
+				healthParts = append(healthParts, dangerStyle.Render(label))
+			case "warn":
+				healthParts = append(healthParts, warnStyle.Render(label))
+			default:
+				healthParts = append(healthParts, okStyle.Render(label))
+			}
+		} else if b.Health != "" {
 			healthParts = append(healthParts, b.Health)
 		}
+
 		if b.CycleCount > 0 {
-			healthParts = append(healthParts, fmt.Sprintf("%d cycles", b.CycleCount))
+			cycleText := fmt.Sprintf("%d cycles", b.CycleCount)
+			if b.CycleCount > batteryCycleDanger {
+				cycleText = dangerStyle.Render(cycleText)
+			} else if b.CycleCount > batteryCycleWarn {
+				cycleText = warnStyle.Render(cycleText)
+			}
+			healthParts = append(healthParts, cycleText)
 		}
 
-		if thermal.CPUTemp > 0 {
-			tempText := colorizeTemp(thermal.CPUTemp) + "°C" // Reuse common color logic
+		if thermal.BatteryTemp > 0 {
+			tempText := "Battery " + colorizeTemp(thermal.BatteryTemp) + "°C"
 			healthParts = append(healthParts, tempText)
 		}
 
