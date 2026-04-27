@@ -21,11 +21,66 @@ source "$SCRIPT_DIR/lib/optimize/maintenance.sh"
 source "$SCRIPT_DIR/lib/optimize/tasks.sh"
 source "$SCRIPT_DIR/lib/check/health_json.sh"
 source "$SCRIPT_DIR/lib/check/all.sh"
+source "$SCRIPT_DIR/lib/check/dev_environment.sh"
 source "$SCRIPT_DIR/lib/manage/whitelist.sh"
 
 print_header() {
     printf '\n'
     echo -e "${PURPLE_BOLD}Optimize and Check${NC}"
+}
+
+# Bash-native JSON parsing helpers (no jq dependency).
+# Extract a simple numeric value from JSON by key.
+json_get_value() {
+    local json="$1"
+    local key="$2"
+    local value
+    value=$(echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//')
+    echo "${value:-0}"
+}
+
+# Validate JSON has expected structure (basic check).
+json_validate() {
+    local json="$1"
+    # Check for required keys
+    [[ "$json" == *'"memory_used_gb"'* ]] &&
+        [[ "$json" == *'"optimizations"'* ]] &&
+        [[ "$json" == *'{'* ]] && [[ "$json" == *'}'* ]]
+}
+
+# Parse optimization items from JSON array.
+# Outputs pipe-delimited records: action|name|description|safe
+# Single awk pass instead of per-item grep+sed to avoid subprocess overhead.
+parse_optimization_items() {
+    local json="$1"
+    awk '
+    function extract(line, key,    pat, val, start, end) {
+        pat = "\"" key "\"[ \t]*:[ \t]*\""
+        if (match(line, pat)) {
+            start = RSTART + RLENGTH
+            val = substr(line, start)
+            # Find closing quote (skip escaped quotes)
+            end = 1
+            while (end <= length(val)) {
+                if (substr(val, end, 1) == "\"" && substr(val, end-1, 1) != "\\") break
+                end++
+            }
+            return substr(val, 1, end - 1)
+        }
+        return ""
+    }
+    /"optimizations".*\[/ { in_arr=1; next }
+    !in_arr { next }
+    /\]/ && !in_obj { exit }
+    /{/ { in_obj=1; action=""; name=""; desc=""; safe="" }
+    in_obj && /"action"/ { action = extract($0, "action") }
+    in_obj && /"name"/ { name = extract($0, "name") }
+    in_obj && /"description"/ { desc = extract($0, "description") }
+    in_obj && /"safe"/ {
+        val = $0; sub(/.*"safe"[[:space:]]*:[[:space:]]*/, "", val); sub(/[^a-z].*/, "", val); safe = val
+    }
+    /}/ { if (in_obj && action != "") print action "|" name "|" desc "|" safe; in_obj=0 }
+    ' <<< "$json"
 }
 
 run_system_checks() {
@@ -56,6 +111,8 @@ run_system_checks() {
     check_all_config
     echo ""
 
+    check_all_dev_environment
+
     show_suggestions
 
     if ask_for_updates; then
@@ -68,14 +125,13 @@ run_system_checks() {
 
 show_optimization_summary() {
     local safe_count="${OPTIMIZE_SAFE_COUNT:-0}"
-    local confirm_count="${OPTIMIZE_CONFIRM_COUNT:-0}"
-    if ((safe_count == 0 && confirm_count == 0)) && [[ -z "${AUTO_FIX_SUMMARY:-}" ]]; then
+    if ((safe_count == 0)) && [[ -z "${AUTO_FIX_SUMMARY:-}" ]]; then
         return
     fi
 
     local summary_title
     local -a summary_details=()
-    local total_applied=$((safe_count + confirm_count))
+    local total_applied=$safe_count
 
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
         summary_title="Dry Run Complete, No Changes Made"
@@ -139,12 +195,12 @@ show_optimization_summary() {
 show_system_health() {
     local health_json="$1"
 
-    local mem_used=$(echo "$health_json" | jq -r '.memory_used_gb // 0' 2> /dev/null || echo "0")
-    local mem_total=$(echo "$health_json" | jq -r '.memory_total_gb // 0' 2> /dev/null || echo "0")
-    local disk_used=$(echo "$health_json" | jq -r '.disk_used_gb // 0' 2> /dev/null || echo "0")
-    local disk_total=$(echo "$health_json" | jq -r '.disk_total_gb // 0' 2> /dev/null || echo "0")
-    local disk_percent=$(echo "$health_json" | jq -r '.disk_used_percent // 0' 2> /dev/null || echo "0")
-    local uptime=$(echo "$health_json" | jq -r '.uptime_days // 0' 2> /dev/null || echo "0")
+    local mem_used=$(json_get_value "$health_json" "memory_used_gb")
+    local mem_total=$(json_get_value "$health_json" "memory_total_gb")
+    local disk_used=$(json_get_value "$health_json" "disk_used_gb")
+    local disk_total=$(json_get_value "$health_json" "disk_total_gb")
+    local disk_percent=$(json_get_value "$health_json" "disk_used_percent")
+    local uptime=$(json_get_value "$health_json" "uptime_days")
 
     mem_used=${mem_used:-0}
     mem_total=${mem_total:-0}
@@ -155,11 +211,6 @@ show_system_health() {
 
     printf "${ICON_ADMIN} System  %.0f/%.0f GB RAM | %.0f/%.0f GB Disk | Uptime %.0fd\n" \
         "$mem_used" "$mem_total" "$disk_used" "$disk_total" "$uptime"
-}
-
-parse_optimizations() {
-    local health_json="$1"
-    echo "$health_json" | jq -c '.optimizations[]' 2> /dev/null
 }
 
 announce_action() {
@@ -251,11 +302,8 @@ collect_security_fix_actions() {
             SECURITY_FIXES+=("firewall|Enable macOS firewall")
         fi
     fi
-    if [[ "${GATEKEEPER_DISABLED:-}" == "true" ]]; then
-        if ! is_whitelisted "gatekeeper"; then
-            SECURITY_FIXES+=("gatekeeper|Enable Gatekeeper, app download protection")
-        fi
-    fi
+    # Gatekeeper state is intentionally user-managed. Optimize may report it,
+    # but it must not change the user's "Anywhere" preference.
     if touchid_supported && ! touchid_configured; then
         if ! is_whitelisted "check_touchid"; then
             SECURITY_FIXES+=("touchid|Enable Touch ID for sudo")
@@ -309,16 +357,6 @@ apply_firewall_fix() {
     return 1
 }
 
-apply_gatekeeper_fix() {
-    if sudo spctl --master-enable 2> /dev/null; then
-        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Gatekeeper enabled"
-        GATEKEEPER_DISABLED=false
-        return 0
-    fi
-    echo -e "  ${GRAY}${ICON_WARNING}${NC} Failed to enable Gatekeeper"
-    return 1
-}
-
 apply_touchid_fix() {
     if "$SCRIPT_DIR/bin/touchid.sh" enable; then
         return 0
@@ -338,9 +376,6 @@ perform_security_fixes() {
         case "$action" in
             firewall)
                 apply_firewall_fix && ((applied++))
-                ;;
-            gatekeeper)
-                apply_gatekeeper_fix && ((applied++))
                 ;;
             touchid)
                 apply_touchid_fix && ((applied++))
@@ -406,12 +441,6 @@ main() {
         echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No files will be modified\n"
     fi
 
-    if ! command -v jq > /dev/null 2>&1; then
-        echo -e "${YELLOW}${ICON_ERROR}${NC} Missing dependency: jq"
-        echo -e "${GRAY}Install with: ${GREEN}brew install jq${NC}"
-        exit 1
-    fi
-
     if ! command -v bc > /dev/null 2>&1; then
         echo -e "${YELLOW}${ICON_ERROR}${NC} Missing dependency: bc"
         echo -e "${GRAY}Install with: ${GREEN}brew install bc${NC}"
@@ -431,13 +460,13 @@ main() {
         exit 1
     fi
 
-    if ! echo "$health_json" | jq empty 2> /dev/null; then
+    if ! json_validate "$health_json"; then
         if [[ -t 1 ]]; then
             stop_inline_spinner
         fi
         echo ""
         log_error "Invalid system health data format"
-        echo -e "${GRAY}${ICON_REVIEW}${NC} Check if jq, awk, sysctl, and df commands are available"
+        echo -e "${GRAY}${ICON_REVIEW}${NC} Check if awk, sysctl, and df commands are available"
         exit 1
     fi
 
@@ -459,28 +488,14 @@ main() {
         fi
     fi
 
-    local -a safe_items=()
-    local -a confirm_items=()
+    local -a items=()
     local opts_file
     opts_file=$(mktemp_file)
-    parse_optimizations "$health_json" > "$opts_file"
+    parse_optimization_items "$health_json" > "$opts_file"
 
-    while IFS= read -r opt_json; do
-        [[ -z "$opt_json" ]] && continue
-
-        local name=$(echo "$opt_json" | jq -r '.name')
-        local desc=$(echo "$opt_json" | jq -r '.description')
-        local action=$(echo "$opt_json" | jq -r '.action')
-        local path=$(echo "$opt_json" | jq -r '.path // ""')
-        local safe=$(echo "$opt_json" | jq -r '.safe')
-
-        local item="${name}|${desc}|${action}|${path}"
-
-        if [[ "$safe" == "true" ]]; then
-            safe_items+=("$item")
-        else
-            confirm_items+=("$item")
-        fi
+    while IFS='|' read -r action name desc safe; do
+        [[ -z "$action" ]] && continue
+        items+=("${name}|${desc}|${action}|")
     done < "$opts_file"
 
     echo ""
@@ -489,29 +504,18 @@ main() {
     fi
 
     export FIRST_ACTION=true
-    if [[ ${#safe_items[@]} -gt 0 ]]; then
-        for item in "${safe_items[@]}"; do
-            IFS='|' read -r name desc action path <<< "$item"
-            announce_action "$name" "$desc" "safe"
-            execute_optimization "$action" "$path"
-        done
-    fi
+    for item in "${items[@]}"; do
+        IFS='|' read -r name desc action path <<< "$item"
+        announce_action "$name" "$desc" "safe"
+        execute_optimization "$action" "$path"
+    done
 
-    if [[ ${#confirm_items[@]} -gt 0 ]]; then
-        for item in "${confirm_items[@]}"; do
-            IFS='|' read -r name desc action path <<< "$item"
-            announce_action "$name" "$desc" "confirm"
-            execute_optimization "$action" "$path"
-        done
-    fi
-
-    local safe_count=${#safe_items[@]}
-    local confirm_count=${#confirm_items[@]}
+    local safe_count=${#items[@]}
 
     run_system_checks
 
     export OPTIMIZE_SAFE_COUNT=$safe_count
-    export OPTIMIZE_CONFIRM_COUNT=$confirm_count
+    export OPTIMIZE_CONFIRM_COUNT=0
 
     show_optimization_summary
 

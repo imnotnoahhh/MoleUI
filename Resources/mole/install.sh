@@ -19,6 +19,7 @@ start_line_spinner() {
         return
     }
     local chars="|/-\\"
+    # shellcheck disable=SC1003
     [[ -z "$chars" ]] && chars='|/-\\'
     local i=0
     (while true; do
@@ -302,6 +303,7 @@ write_install_channel_metadata() {
     local commit_hash="${2:-}"
     local metadata_file="$CONFIG_DIR/install_channel"
 
+    mkdir -p "$CONFIG_DIR" 2> /dev/null || return 1
     local tmp_file
     tmp_file=$(mktemp "${CONFIG_DIR}/install_channel.XXXXXX") || return 1
     {
@@ -587,6 +589,7 @@ install_files() {
         if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
             if needs_sudo; then
                 log_admin "Admin access required for /usr/local/bin"
+                sudo -v
             fi
 
             # Atomic update: copy to temporary name first, then move

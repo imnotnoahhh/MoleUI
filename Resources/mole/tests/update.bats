@@ -604,7 +604,7 @@ MOLE_TEST_MODE=1 MOLE_SKIP_MAIN=1 source "$PROJECT_ROOT/mole"
 
 brew() {
   if [[ "${1:-}" == "outdated" ]]; then
-    echo "tw93/tap/mole (1.29.0) < 1.30.0"
+    echo "tw93/tap/mole (1.29.0) < 1.31.0"
     return 0
   fi
   if [[ "${1:-}" == "info" ]]; then
@@ -619,7 +619,7 @@ get_homebrew_latest_version
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == "1.30.0" ]]
+    [[ "$output" == "1.31.0" ]]
 }
 
 @test "get_homebrew_latest_version parses brew info fallback with heading prefix" {

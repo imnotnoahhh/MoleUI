@@ -23,13 +23,32 @@ emit_fish_completions() {
     for entry in "${MOLE_COMMANDS[@]}"; do
         local name="${entry%%:*}"
         local desc="${entry#*:}"
-        printf 'complete -c %s -n "__fish_mole_no_subcommand" -a %s -d "%s"\n' "$cmd" "$name" "$desc"
+        printf 'complete -f -c %s -n "__fish_mole_no_subcommand" -a %s -d "%s"\n' "$cmd" "$name" "$desc"
     done
 
     printf '\n'
-    printf 'complete -c %s -n "not __fish_mole_no_subcommand" -a bash -d "generate bash completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
-    printf 'complete -c %s -n "not __fish_mole_no_subcommand" -a zsh -d "generate zsh completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
-    printf 'complete -c %s -n "not __fish_mole_no_subcommand" -a fish -d "generate fish completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
+    printf 'complete -f -c %s -n "not __fish_mole_no_subcommand" -a bash -d "generate bash completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
+    printf 'complete -f -c %s -n "not __fish_mole_no_subcommand" -a zsh -d "generate zsh completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
+    printf 'complete -f -c %s -n "not __fish_mole_no_subcommand" -a fish -d "generate fish completion" -n "__fish_see_subcommand_path completion"\n' "$cmd"
+}
+
+remove_stale_completion_entries() {
+    local config_file="$1"
+    local success_message="$2"
+
+    if [[ ! -f "$config_file" ]] || ! grep -Eq "(^# Mole shell completion$|(mole|mo)[[:space:]]+completion)" "$config_file" 2> /dev/null; then
+        return 1
+    fi
+
+    local original_mode=""
+    local temp_file
+    original_mode="$(stat -f '%Mp%Lp' "$config_file" 2> /dev/null || true)"
+    temp_file="$(mktemp)"
+    grep -Ev "(^# Mole shell completion$|(mole|mo)[[:space:]]+completion)" "$config_file" > "$temp_file" || true
+    mv "$temp_file" "$config_file"
+    [[ -n "$original_mode" ]] && chmod "$original_mode" "$config_file" 2> /dev/null || true
+    [[ -n "$success_message" ]] && echo -e "${GREEN}${ICON_SUCCESS}${NC} $success_message"
+    return 0
 }
 
 if [[ $# -gt 0 ]]; then
@@ -71,6 +90,75 @@ if [[ $# -eq 0 ]]; then
         completion_name="mo"
     fi
 
+    # Fish uses a separate install path: write to ~/.config/fish/completions/ so
+    # both `mole` and `mo` load completions independently on terminal startup.
+    if [[ "$current_shell" == "fish" ]]; then
+        fish_dir="${HOME}/.config/fish/completions"
+        mole_file="${fish_dir}/mole.fish"
+        mo_file="${fish_dir}/mo.fish"
+        config_fish="${HOME}/.config/fish/config.fish"
+
+        if [[ -z "$completion_name" ]]; then
+            # Clean up any stale config.fish entries even when mole is not in PATH
+            if [[ "${MOLE_DRY_RUN:-0}" != "1" ]]; then
+                remove_stale_completion_entries "$config_fish" "Removed stale completion entries from config.fish" || true
+            fi
+            log_error "mole not found in PATH, install Mole before enabling completion"
+            exit 1
+        fi
+
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            echo -e "${GRAY}${ICON_REVIEW} [DRY RUN] Would write Fish completions to:${NC}"
+            echo "  $mole_file"
+            echo "  $mo_file"
+            echo ""
+            echo -e "${GREEN}${ICON_SUCCESS}${NC} Dry run complete, no changes made"
+            exit 0
+        fi
+
+        # Remove stale config.fish source-based entries (previous install method)
+        if remove_stale_completion_entries "$config_fish" "Removed stale source-based entries from config.fish"; then
+            echo ""
+        fi
+
+        # Prompt only on first install; silently update if files exist
+        if [[ ! -f "$mole_file" ]]; then
+            echo ""
+            echo -e "${GRAY}Will write Fish completions to:${NC}"
+            echo "  $mole_file"
+            echo "  $mo_file"
+            echo ""
+            echo -ne "${PURPLE}${ICON_ARROW}${NC} Enable completion for ${GREEN}fish${NC}? ${GRAY}Enter confirm / Q cancel${NC}: "
+            IFS= read -r -s -n1 key || key=""
+            drain_pending_input
+            echo ""
+
+            case "$key" in
+                $'\e' | [Qq] | [Nn])
+                    echo -e "${YELLOW}Cancelled${NC}"
+                    exit 0
+                    ;;
+                "" | $'\n' | $'\r' | [Yy]) ;;
+                *)
+                    log_error "Invalid key"
+                    exit 1
+                    ;;
+            esac
+        fi
+
+        mkdir -p "$fish_dir"
+        "$completion_name" completion fish > "$mole_file"
+        # mo.fish sources mole.fish so Fish loads mo completions on `mo<Tab>`
+        printf '# Mole completions for mo (alias) -- auto-generated, do not edit\n' > "$mo_file"
+        printf 'source %s\n' "$mole_file" >> "$mo_file"
+
+        if [[ -f "$mole_file" ]]; then
+            echo -e "${GREEN}${ICON_SUCCESS}${NC} Fish completions written to $fish_dir"
+        fi
+        echo ""
+        exit 0
+    fi
+
     case "$current_shell" in
         bash)
             config_file="${HOME}/.bashrc"
@@ -82,11 +170,6 @@ if [[ $# -eq 0 ]]; then
             config_file="${HOME}/.zshrc"
             # shellcheck disable=SC2016
             completion_line='if output="$('"$completion_name"' completion zsh 2>/dev/null)"; then eval "$output"; fi'
-            ;;
-        fish)
-            config_file="${HOME}/.config/fish/config.fish"
-            # shellcheck disable=SC2016
-            completion_line='set -l output ('"$completion_name"' completion fish 2>/dev/null); and echo "$output" | source'
             ;;
         *)
             log_error "Unsupported shell: $current_shell"
