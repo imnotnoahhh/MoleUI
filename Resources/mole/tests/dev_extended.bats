@@ -99,6 +99,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 safe_clean() { echo "$2"; }
+clean_service_worker_cache() { :; }
 clean_dev_editors
 EOF
 
@@ -270,6 +271,189 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"/241.1"* ]]
     [[ "$output" != *"/241.2"* ]]
+}
+
+@test "clean_dev_ai_agents keeps newest version and removes older ones by mtime" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    local cursor_root="$HOME/.local/share/cursor-agent/versions"
+    local copilot_root="$HOME/.copilot/pkg/universal"
+    mkdir -p "$claude_root" "$cursor_root" "$copilot_root"
+    touch -t 202604170829 "$claude_root/2.1.112"
+    touch -t 202604180902 "$claude_root/2.1.113"
+    touch -t 202604181002 "$claude_root/2.1.114"
+    mkdir -p "$cursor_root/2026.04.08-old" "$cursor_root/2026.04.15-new"
+    touch -t 202604080000 "$cursor_root/2026.04.08-old"
+    touch -t 202604150000 "$cursor_root/2026.04.15-new"
+    mkdir -p "$copilot_root/1.0.5" "$copilot_root/1.0.32" "$copilot_root/1.0.34"
+    touch -t 202604010000 "$copilot_root/1.0.5"
+    touch -t 202604200000 "$copilot_root/1.0.32"
+    touch -t 202604250000 "$copilot_root/1.0.34"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1|$2"; }
+clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/2.1.112|Claude Code old version"* ]]
+    [[ "$output" == *"/2.1.113|Claude Code old version"* ]]
+    [[ "$output" != *"/2.1.114|"* ]]
+    [[ "$output" == *"/2026.04.08-old|Cursor Agent old version"* ]]
+    [[ "$output" != *"/2026.04.15-new|"* ]]
+    [[ "$output" == *"/1.0.5|GitHub Copilot CLI old version"* ]]
+    [[ "$output" == *"/1.0.32|GitHub Copilot CLI old version"* ]]
+    [[ "$output" != *"/1.0.34|"* ]]
+}
+
+@test "clean_dev_ai_agents protects the active version pointed at by ~/.local/bin/<agent>" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    local cursor_root="$HOME/.local/share/cursor-agent/versions"
+    local bin_dir="$HOME/.local/bin"
+    rm -rf "$claude_root" "$cursor_root" "$bin_dir"
+    mkdir -p "$claude_root" "$cursor_root" "$bin_dir"
+
+    mkdir -p "$claude_root/2.1.112" "$claude_root/2.1.113" "$claude_root/2.1.114"
+    touch -t 202604170000 "$claude_root/2.1.112"
+    touch -t 202604180000 "$claude_root/2.1.113"
+    touch -t 202604200000 "$claude_root/2.1.114"
+    ln -s "$claude_root/2.1.113" "$bin_dir/claude"
+
+    mkdir -p "$cursor_root/2026.04.01-old" "$cursor_root/2026.04.10-active" "$cursor_root/2026.04.20-newest"
+    touch -t 202604010000 "$cursor_root/2026.04.01-old"
+    touch -t 202604100000 "$cursor_root/2026.04.10-active"
+    touch -t 202604200000 "$cursor_root/2026.04.20-newest"
+    : > "$cursor_root/2026.04.10-active/cursor-agent"
+    ln -s "$cursor_root/2026.04.10-active/cursor-agent" "$bin_dir/cursor-agent"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1|$2"; }
+clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/2.1.112|Claude Code old version"* ]]
+    [[ "$output" != *"/2.1.113|"* ]]
+    [[ "$output" != *"/2.1.114|"* ]]
+    [[ "$output" == *"/2026.04.01-old|Cursor Agent old version"* ]]
+    [[ "$output" != *"/2026.04.10-active|"* ]]
+    [[ "$output" != *"/2026.04.20-newest|"* ]]
+}
+
+@test "clean_dev_ai_agents skips cleanup entirely when the active symlink is broken" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    local bin_dir="$HOME/.local/bin"
+    rm -rf "$claude_root" "$bin_dir"
+    mkdir -p "$claude_root" "$bin_dir"
+
+    mkdir -p "$claude_root/2.1.112" "$claude_root/2.1.113" "$claude_root/2.1.114"
+    touch -t 202604170000 "$claude_root/2.1.112"
+    touch -t 202604180000 "$claude_root/2.1.113"
+    touch -t 202604200000 "$claude_root/2.1.114"
+    ln -s "$claude_root/2.1.999-missing" "$bin_dir/claude"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1|$2"; }
+clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"|Claude Code old version"* ]]
+    [[ "$output" == *"Claude Code old version active symlink is broken"* ]]
+
+    rm -f "$bin_dir/claude"
+}
+
+@test "clean_dev_ai_agents respects MOLE_AI_AGENTS_KEEP and skips missing roots" {
+    local claude_root="$HOME/.local/share/claude/versions"
+    mkdir -p "$claude_root"
+    touch -t 202604170000 "$claude_root/2.1.100"
+    touch -t 202604180000 "$claude_root/2.1.101"
+    touch -t 202604190000 "$claude_root/2.1.102"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+safe_clean() { echo "$1"; }
+MOLE_AI_AGENTS_KEEP=2 clean_dev_ai_agents
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/2.1.100"* ]]
+    [[ "$output" != *"/2.1.101"* ]]
+    [[ "$output" != *"/2.1.102"* ]]
+}
+
+@test "clean_dev_jetbrains_logs only targets JetBrains logs" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { printf '%s|%s\n' "$1" "$2"; }
+clean_dev_jetbrains_logs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$HOME/Library/Logs/JetBrains/*|JetBrains IDE logs"* ]]
+    [[ "$output" != *"Library/Caches/JetBrains"* ]]
+}
+
+@test "clean_developer_tools includes JetBrains logs but not JetBrains cache sweep" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+stop_section_spinner() { :; }
+note_activity() { :; }
+safe_clean() { printf '%s|%s\n' "$1" "$2"; }
+clean_tool_cache() { :; }
+check_rust_toolchains() { :; }
+clean_dev_npm() { :; }
+clean_dev_python() { :; }
+clean_dev_go() { :; }
+clean_dev_mise() { :; }
+clean_dev_rust() { :; }
+clean_dev_docker() { :; }
+clean_dev_cloud() { :; }
+clean_dev_nix() { :; }
+clean_dev_shell() { :; }
+clean_dev_frontend() { :; }
+clean_project_caches() { :; }
+clean_dev_mobile() { :; }
+clean_dev_jvm() { :; }
+clean_dev_jetbrains_toolbox() { :; }
+clean_dev_ai_agents() { :; }
+clean_dev_other_langs() { :; }
+clean_dev_cicd() { :; }
+clean_dev_database() { :; }
+clean_dev_api_tools() { :; }
+clean_dev_network() { :; }
+clean_dev_misc() { :; }
+clean_dev_elixir() { :; }
+clean_dev_haskell() { :; }
+clean_dev_ocaml() { :; }
+clean_xcode_tools() { :; }
+clean_code_editors() { :; }
+clean_homebrew() { :; }
+clean_developer_tools
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$HOME/Library/Logs/JetBrains/*|JetBrains IDE logs"* ]]
+    [[ "$output" != *"Library/Caches/JetBrains"* ]]
 }
 
 @test "clean_xcode_simulator_runtime_volumes shows scan progress and skips sizing in-use volumes" {

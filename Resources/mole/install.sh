@@ -19,6 +19,7 @@ start_line_spinner() {
         return
     }
     local chars="|/-\\"
+    # shellcheck disable=SC1003
     [[ -z "$chars" ]] && chars='|/-\\'
     local i=0
     (while true; do
@@ -302,6 +303,7 @@ write_install_channel_metadata() {
     local commit_hash="${2:-}"
     local metadata_file="$CONFIG_DIR/install_channel"
 
+    mkdir -p "$CONFIG_DIR" 2> /dev/null || return 1
     local tmp_file
     tmp_file=$(mktemp "${CONFIG_DIR}/install_channel.XXXXXX") || return 1
     {
@@ -560,15 +562,35 @@ download_binary() {
         chmod +x "$target_path"
         xattr -c "$target_path" 2> /dev/null || true
         log_success "Downloaded ${binary_name} binary"
-    else
-        if [[ -t 1 ]]; then stop_line_spinner; fi
-        log_warning "Could not download ${binary_name} binary, v${version}, trying local build"
-        if build_binary_from_source "$binary_name" "$target_path"; then
+        return 0
+    fi
+    if [[ -t 1 ]]; then stop_line_spinner; fi
+
+    local fallback_tag
+    fallback_tag=$(get_latest_release_tag 2> /dev/null || true)
+    if [[ -n "$fallback_tag" && "$fallback_tag" != "V${version}" ]]; then
+        local fallback_url="https://github.com/tw93/mole/releases/download/${fallback_tag}/${binary_name}-darwin-${arch_suffix}"
+        if [[ -t 1 ]]; then
+            start_line_spinner "Retrying ${binary_name} from ${fallback_tag}..."
+        else
+            echo "Retrying ${binary_name} from ${fallback_tag}..."
+        fi
+        if curl -fsSL --connect-timeout 10 --max-time 60 -o "$target_path" "$fallback_url"; then
+            if [[ -t 1 ]]; then stop_line_spinner; fi
+            chmod +x "$target_path"
+            xattr -c "$target_path" 2> /dev/null || true
+            log_success "Downloaded ${binary_name} from ${fallback_tag} (v${version} not yet published)"
             return 0
         fi
-        log_error "Failed to install ${binary_name} binary"
-        return 1
+        if [[ -t 1 ]]; then stop_line_spinner; fi
     fi
+
+    log_warning "Could not download ${binary_name} binary, v${version}, trying local build"
+    if build_binary_from_source "$binary_name" "$target_path"; then
+        return 0
+    fi
+    log_error "Failed to install ${binary_name} binary"
+    return 1
 }
 
 # File installation (bin/lib/scripts + go helpers).
@@ -587,6 +609,7 @@ install_files() {
         if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
             if needs_sudo; then
                 log_admin "Admin access required for /usr/local/bin"
+                sudo -v
             fi
 
             # Atomic update: copy to temporary name first, then move
@@ -656,7 +679,9 @@ install_files() {
     fi
 
     if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
-        maybe_sudo sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"
+        # Use absolute /usr/bin/sed (always BSD on macOS) so PATH-shadowed
+        # GNU sed from Homebrew gnu-sed does not break the -i '' syntax.
+        maybe_sudo /usr/bin/sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"
     fi
 
     if ! download_binary "analyze"; then

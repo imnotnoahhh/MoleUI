@@ -223,6 +223,7 @@ read_key() {
         'q' | 'Q') echo "QUIT" ;;
         'R') echo "RETRY" ;;
         'm' | 'M') echo "MORE" ;;
+        'v' | 'V') echo "VERSION" ;;
         'u' | 'U') echo "UPDATE" ;;
         't' | 'T') echo "TOUCHID" ;;
         'j' | 'J') echo "DOWN" ;;
@@ -324,7 +325,8 @@ start_inline_spinner() {
 
     if [[ -t 1 ]]; then
         # Create unique stop flag file for this spinner instance
-        INLINE_SPINNER_STOP_FILE="${TMPDIR:-/tmp}/mole_spinner_$$_$RANDOM.stop"
+        ensure_mole_temp_root
+        INLINE_SPINNER_STOP_FILE="$MOLE_RESOLVED_TMPDIR/mole_spinner_$$_$RANDOM.stop"
 
         (
             local stop_file="$INLINE_SPINNER_STOP_FILE"
@@ -342,7 +344,7 @@ start_inline_spinner() {
                 # Output to stderr to avoid interfering with stdout
                 printf "\r${MOLE_SPINNER_PREFIX:-}${BLUE}%s${NC} %s" "$c" "$display_message" >&2 || break
                 i=$((i + 1))
-                sleep 0.05
+                /bin/sleep 0.05
             done
 
             # Clean up stop file before exiting
@@ -366,7 +368,7 @@ stop_inline_spinner() {
         # Wait briefly for cooperative exit
         local wait_count=0
         while kill -0 "$INLINE_SPINNER_PID" 2> /dev/null && [[ $wait_count -lt 5 ]]; do
-            sleep 0.05 2> /dev/null || true
+            /bin/sleep 0.05 2> /dev/null || true
             wait_count=$((wait_count + 1))
         done
 

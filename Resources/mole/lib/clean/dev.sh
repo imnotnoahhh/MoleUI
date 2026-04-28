@@ -2,10 +2,25 @@
 # Developer Tools Cleanup Module
 set -euo pipefail
 
-# Tool cache helper (respects DRY_RUN).
+# Tool cache helper (respects DRY_RUN and whitelist).
+# Args:
+#   $1 = description (display name)
+#   $2 = cache path to check against whitelist (empty string to skip check)
+#   $3+ = command to run
 clean_tool_cache() {
     local description="$1"
-    shift
+    local cache_path="$2"
+    shift 2
+
+    if [[ -n "$cache_path" ]] && is_path_whitelisted "$cache_path"; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} $description · would skip (whitelist)"
+        else
+            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} $description · skipped (whitelist)"
+        fi
+        return 0
+    fi
+
     if [[ "$DRY_RUN" != "true" ]]; then
         local command_succeeded=false
         if [[ -t 1 ]]; then
@@ -31,8 +46,6 @@ clean_dev_npm() {
     local npm_cache_path="$npm_default_cache"
 
     if command -v npm > /dev/null 2>&1; then
-        clean_tool_cache "npm cache" npm cache clean --force
-
         start_section_spinner "Checking npm cache path..."
         npm_cache_path=$(run_with_timeout 2 npm config get cache 2> /dev/null) || npm_cache_path=""
         stop_section_spinner
@@ -41,6 +54,7 @@ clean_dev_npm() {
             npm_cache_path="$npm_default_cache"
         fi
 
+        clean_tool_cache "npm cache" "$npm_cache_path" npm cache clean --force
         note_activity
     fi
 
@@ -75,11 +89,17 @@ clean_dev_npm() {
     local pnpm_default_store=~/Library/pnpm/store
     # Check if pnpm is actually usable (not just Corepack shim)
     if command -v pnpm > /dev/null 2>&1 && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm --version > /dev/null 2>&1; then
-        COREPACK_ENABLE_DOWNLOAD_PROMPT=0 clean_tool_cache "pnpm cache" pnpm store prune
         local pnpm_store_path
         start_section_spinner "Checking store path..."
         pnpm_store_path=$(COREPACK_ENABLE_DOWNLOAD_PROMPT=0 run_with_timeout 2 pnpm store path 2> /dev/null) || pnpm_store_path=""
         stop_section_spinner
+
+        local pnpm_cache_check="$pnpm_default_store"
+        if [[ -n "$pnpm_store_path" && "$pnpm_store_path" == /* ]]; then
+            pnpm_cache_check="$pnpm_store_path"
+        fi
+        COREPACK_ENABLE_DOWNLOAD_PROMPT=0 clean_tool_cache "pnpm cache" "$pnpm_cache_check" pnpm store prune
+
         if [[ -n "$pnpm_store_path" && "$pnpm_store_path" != "$pnpm_default_store" ]]; then
             safe_clean "$pnpm_default_store"/* "Orphaned pnpm store"
         fi
@@ -87,17 +107,84 @@ clean_dev_npm() {
         # pnpm not installed or not usable, just clean the default store directory
         safe_clean "$pnpm_default_store"/* "pnpm store"
     fi
+    local bun_default_cache="$HOME/.bun/install/cache"
+    local bun_cache_path="$bun_default_cache"
+    local bun_cache_cleaned=false
+    local bun_dry_run="${DRY_RUN:-false}"
+    if command -v bun > /dev/null 2>&1 && bun --version > /dev/null 2>&1; then
+        if [[ -t 1 ]]; then start_section_spinner "Checking bun cache path..."; fi
+        bun_cache_path=$(run_with_timeout 2 bun pm cache 2> /dev/null) || bun_cache_path=""
+        if [[ -t 1 ]]; then stop_section_spinner; fi
+
+        if [[ -z "$bun_cache_path" || "$bun_cache_path" != /* ]]; then
+            bun_cache_path="$bun_default_cache"
+        fi
+
+        local bun_protected=false
+        is_path_whitelisted "$bun_cache_path" && bun_protected=true
+
+        if [[ "$bun_protected" == "true" ]]; then
+            if [[ "$bun_dry_run" == "true" ]]; then
+                echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} bun cache · would skip (whitelist)"
+            else
+                echo -e "  ${GREEN}${ICON_SUCCESS}${NC} bun cache · skipped (whitelist)"
+            fi
+            bun_cache_cleaned=true
+        elif [[ "$bun_dry_run" != "true" ]]; then
+            if [[ -t 1 ]]; then
+                start_section_spinner "Cleaning bun cache..."
+            fi
+            if run_with_timeout 10 bun pm cache rm > /dev/null 2>&1; then
+                bun_cache_cleaned=true
+            fi
+            if [[ -t 1 ]]; then
+                stop_section_spinner
+            fi
+            if [[ "$bun_cache_cleaned" == "true" ]]; then
+                echo -e "  ${GREEN}${ICON_SUCCESS}${NC} bun cache"
+            fi
+        else
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} bun cache · would clean"
+            bun_cache_cleaned=true
+        fi
+
+        local bun_cache_path_normalized="${bun_cache_path%/}"
+        local bun_default_cache_normalized="${bun_default_cache%/}"
+        if [[ -d "$bun_cache_path_normalized" ]]; then
+            bun_cache_path_normalized=$(cd "$bun_cache_path_normalized" 2> /dev/null && pwd -P) || bun_cache_path_normalized="${bun_cache_path%/}"
+        fi
+        if [[ -d "$bun_default_cache_normalized" ]]; then
+            bun_default_cache_normalized=$(cd "$bun_default_cache_normalized" 2> /dev/null && pwd -P) || bun_default_cache_normalized="${bun_default_cache%/}"
+        fi
+
+        if [[ "$bun_cache_path_normalized" != "$bun_default_cache_normalized" ]]; then
+            safe_clean "$bun_default_cache"/* "Orphaned bun cache"
+        fi
+
+        # If bun pm cache rm fails, fall back to filesystem cleanup to avoid no-op.
+        if [[ "$bun_cache_cleaned" != "true" ]]; then
+            safe_clean "$bun_cache_path"/* "Bun cache"
+        fi
+    else
+        safe_clean "$bun_default_cache"/* "Bun cache"
+    fi
+
     note_activity
     safe_clean ~/.tnpm/_cacache/* "tnpm cache directory"
     safe_clean ~/.tnpm/_logs/* "tnpm logs"
     safe_clean ~/.yarn/cache/* "Yarn cache"
-    safe_clean ~/.bun/install/cache/* "Bun cache"
+    safe_clean ~/Library/Caches/Yarn/* "Yarn v1 cache"
 }
 # Python/pip ecosystem caches.
 clean_dev_python() {
     # Check pip3 is functional (not just macOS stub that triggers CLT install dialog)
     if command -v pip3 > /dev/null 2>&1 && pip3 --version > /dev/null 2>&1; then
-        clean_tool_cache "pip cache" bash -c 'pip3 cache purge > /dev/null 2>&1 || true'
+        local pip_cache_path
+        pip_cache_path=$(run_with_timeout 2 pip3 cache dir 2> /dev/null) || pip_cache_path=""
+        if [[ -z "$pip_cache_path" || "$pip_cache_path" != /* ]]; then
+            pip_cache_path="$HOME/Library/Caches/pip"
+        fi
+        clean_tool_cache "pip cache" "$pip_cache_path" bash -c 'pip3 cache purge > /dev/null 2>&1 || true'
         note_activity
     fi
     safe_clean ~/.pyenv/cache/* "pyenv cache"
@@ -136,15 +223,53 @@ clean_dev_go() {
     fi
 
     if [[ "$build_protected" != "true" && "$mod_protected" != "true" ]]; then
-        clean_tool_cache "Go cache" bash -c 'go clean -modcache > /dev/null 2>&1 || true; go clean -cache > /dev/null 2>&1 || true'
+        clean_tool_cache "Go cache" "" bash -c 'go clean -modcache > /dev/null 2>&1 || true; go clean -cache > /dev/null 2>&1 || true'
     elif [[ "$build_protected" == "true" ]]; then
-        clean_tool_cache "Go module cache" bash -c 'go clean -modcache > /dev/null 2>&1 || true'
+        clean_tool_cache "Go module cache" "" bash -c 'go clean -modcache > /dev/null 2>&1 || true'
         echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Go build cache · skipped (whitelist)"
     else
-        clean_tool_cache "Go build cache" bash -c 'go clean -cache > /dev/null 2>&1 || true'
+        clean_tool_cache "Go build cache" "" bash -c 'go clean -cache > /dev/null 2>&1 || true'
         echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Go module cache · skipped (whitelist)"
     fi
     note_activity
+}
+
+get_mise_cache_path() {
+    if [[ -n "${MISE_CACHE_DIR:-}" && "${MISE_CACHE_DIR}" == /* ]]; then
+        echo "$MISE_CACHE_DIR"
+        return 0
+    fi
+
+    if command -v mise > /dev/null 2>&1; then
+        local mise_cache_path
+        mise_cache_path=$(run_with_timeout 2 mise cache path 2> /dev/null || echo "")
+        if [[ -n "$mise_cache_path" && "$mise_cache_path" == /* ]]; then
+            echo "$mise_cache_path"
+            return 0
+        fi
+    fi
+
+    echo "$HOME/Library/Caches/mise"
+}
+
+clean_dev_mise() {
+    local mise_cache_path
+    mise_cache_path=$(get_mise_cache_path)
+
+    if command -v mise > /dev/null 2>&1; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            clean_tool_cache "mise cache" "$mise_cache_path" bash -c 'mise cache clear > /dev/null 2>&1 || true'
+            note_activity
+        elif is_path_whitelisted "$mise_cache_path"; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} mise cache · would skip (whitelist)"
+            note_activity
+        else
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} mise cache · would clean"
+            note_activity
+        fi
+    fi
+
+    safe_clean "$mise_cache_path"/* "mise cache"
 }
 # Rust/cargo caches.
 clean_dev_rust() {
@@ -190,22 +315,11 @@ check_rust_toolchains() {
 # Docker caches (guarded by daemon check).
 clean_dev_docker() {
     if command -v docker > /dev/null 2>&1; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            start_section_spinner "Checking Docker daemon..."
-            local docker_running=false
-            if run_with_timeout 3 docker info > /dev/null 2>&1; then
-                docker_running=true
-            fi
-            stop_section_spinner
-            if [[ "$docker_running" == "true" ]]; then
-                clean_tool_cache "Docker build cache" docker builder prune -af
-            else
-                debug_log "Docker daemon not running, skipping Docker cache cleanup"
-            fi
-        else
-            note_activity
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Docker build cache · would clean"
-        fi
+        note_activity
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Docker unused data · skipped by default"
+        echo -e "  ${GRAY}${ICON_REVIEW}${NC} ${GRAY}Review: docker system df${NC}"
+        echo -e "  ${GRAY}${ICON_REVIEW}${NC} ${GRAY}Prune:  docker system prune --filter until=720h${NC}"
+        debug_log "Docker daemon-managed cleanup skipped by default"
     fi
     safe_clean ~/.docker/buildx/cache/* "Docker BuildX cache"
 }
@@ -213,7 +327,9 @@ clean_dev_docker() {
 clean_dev_nix() {
     if command -v nix-collect-garbage > /dev/null 2>&1; then
         if [[ "$DRY_RUN" != "true" ]]; then
-            clean_tool_cache "Nix garbage collection" nix-collect-garbage --delete-older-than 30d
+            clean_tool_cache "Nix garbage collection" "/nix/store" nix-collect-garbage --delete-older-than 30d
+        elif is_path_whitelisted "/nix/store"; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Nix garbage collection · would skip (whitelist)"
         else
             echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Nix garbage collection · would clean"
         fi
@@ -399,7 +515,9 @@ clean_xcode_device_support() {
                 done
 
                 if [[ $removed_count -gt 0 ]]; then
-                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} ${display_name} · removed ${removed_count} old versions, ${stale_size_human}"
+                    local line_color
+                    line_color=$(cleanup_result_color_kb "$stale_size_kb")
+                    echo -e "  ${line_color}${ICON_SUCCESS}${NC} ${display_name} · removed ${removed_count} old versions, ${line_color}${stale_size_human}${NC}"
                     note_activity
                 fi
             fi
@@ -615,10 +733,12 @@ clean_xcode_simulator_runtime_volumes() {
     if [[ $removed_count -gt 0 ]]; then
         local removed_human
         removed_human=$(bytes_to_human "$((removed_size_kb * 1024))")
+        local line_color
+        line_color=$(cleanup_result_color_kb "$removed_size_kb")
         if [[ $skipped_protected -gt 0 ]]; then
-            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${removed_human}), skipped ${skipped_protected} protected"
+            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${line_color}${removed_human}${NC}), skipped ${skipped_protected} protected"
         else
-            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${removed_human})"
+            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode runtime volumes · removed ${removed_count} (${line_color}${removed_human}${NC})"
         fi
         note_activity
     else
@@ -646,9 +766,19 @@ clean_dev_mobile() {
         local -a unavailable_udids=()
         local unavailable_udid=""
 
-        # Check if simctl is accessible and working
+        # Check if simctl is accessible and working; timeout prevents hang when CLT-only.
         local simctl_available=true
-        if ! xcrun simctl list devices > /dev/null 2>&1; then
+        local simctl_probe_ok=false
+        if declare -F xcrun > /dev/null 2>&1; then
+            if xcrun simctl list devices > /dev/null 2>&1; then
+                simctl_probe_ok=true
+            fi
+        else
+            if run_with_timeout 2 xcrun simctl list devices > /dev/null 2>&1; then
+                simctl_probe_ok=true
+            fi
+        fi
+        if [[ "$simctl_probe_ok" != "true" ]]; then
             debug_log "simctl not accessible or CoreSimulator service not running"
             echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators · simctl not available"
             note_activity
@@ -704,10 +834,12 @@ clean_dev_mobile() {
                             removed_unavailable=0
                         fi
 
+                        local line_color
+                        line_color=$(cleanup_result_color_kb "$unavailable_size_kb")
                         if ((removed_unavailable > 0)); then
-                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${unavailable_size_human}"
+                            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${removed_unavailable}, ${line_color}${unavailable_size_human}${NC}"
                         else
-                            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${unavailable_size_human}"
+                            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · cleanup completed, ${line_color}${unavailable_size_human}${NC}"
                         fi
                     else
                         stop_section_spinner
@@ -753,7 +885,9 @@ clean_dev_mobile() {
 
                             if ((manually_removed > 0)); then
                                 if ((manual_failed == 0)); then
-                                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${manually_removed} (fallback), ${unavailable_size_human}"
+                                    local line_color
+                                    line_color=$(cleanup_result_color_kb "$unavailable_size_kb")
+                                    echo -e "  ${line_color}${ICON_SUCCESS}${NC} Xcode unavailable simulators · removed ${manually_removed} (fallback), ${line_color}${unavailable_size_human}${NC}"
                                 else
                                     echo -e "  ${YELLOW}${ICON_WARNING}${NC} Xcode unavailable simulators · partially cleaned ${manually_removed}/${#unavailable_udids[@]}, ${unavailable_size_human}"
                                 fi
@@ -786,6 +920,7 @@ clean_dev_mobile() {
     safe_clean ~/.android/cache/* "Android SDK cache"
     safe_clean ~/Library/Developer/Xcode/UserData/IB\ Support/* "Xcode Interface Builder cache"
     safe_clean ~/.cache/swift-package-manager/* "Swift package manager cache"
+    safe_clean ~/Library/Caches/org.swift.swiftpm/* "Swift package manager library cache"
     # Expo/React Native caches (preserve state.json which contains auth tokens).
     safe_clean ~/.expo/expo-go/* "Expo Go cache"
     safe_clean ~/.expo/android-apk-cache/* "Expo Android APK cache"
@@ -914,10 +1049,109 @@ clean_dev_jetbrains_toolbox() {
 
     _restore_whitelist
 }
+
+# JetBrains IDE logs are safe to rebuild, unlike some cache subtrees that can
+# invalidate IDE indexes and trigger expensive reindexing.
+clean_dev_jetbrains_logs() {
+    safe_clean ~/Library/Logs/JetBrains/* "JetBrains IDE logs"
+}
+
+# AI coding agents (Claude Code, Cursor Agent, etc.) auto-update but never
+# remove previous versions, so ~/.local/share/<agent>/versions accumulates
+# hundreds of MB per release. Keep the most recently modified N entries
+# plus the version pointed at by the active CLI symlink (mtime alone is
+# unreliable: Claude Code pre-downloads the next version before flipping
+# the symlink, so newest mtime is not always the active version).
+clean_dev_ai_agents() {
+    local keep_previous="${MOLE_AI_AGENTS_KEEP:-1}"
+    [[ "$keep_previous" =~ ^[0-9]+$ ]] || keep_previous=1
+
+    local -a agent_specs=(
+        "$HOME/.local/share/claude/versions|Claude Code old version|$HOME/.local/bin/claude"
+        "$HOME/.local/share/cursor-agent/versions|Cursor Agent old version|$HOME/.local/bin/cursor-agent"
+        "$HOME/.copilot/pkg/universal|GitHub Copilot CLI old version|"
+    )
+
+    local spec
+    for spec in "${agent_specs[@]}"; do
+        local versions_root="${spec%%|*}"
+        local rest="${spec#*|}"
+        local label="${rest%%|*}"
+        local active_symlink="${rest#*|}"
+        [[ "$active_symlink" == "$rest" ]] && active_symlink=""
+        [[ -d "$versions_root" ]] || continue
+
+        local active_path=""
+        if [[ -n "$active_symlink" && -L "$active_symlink" ]]; then
+            if [[ ! -e "$active_symlink" ]]; then
+                echo -e "  ${GRAY}${ICON_WARNING}${NC} $label active symlink is broken · skipping cleanup"
+                continue
+            fi
+            local target
+            target=$(readlink "$active_symlink" 2> /dev/null || true)
+            if [[ -n "$target" ]]; then
+                case "$target" in
+                    /*) ;;
+                    *) target="$(cd "$(dirname "$active_symlink")" 2> /dev/null && pwd -P)/$target" ;;
+                esac
+                local entry
+                for entry in "$versions_root"/*; do
+                    [[ -e "$entry" ]] || continue
+                    case "$target/" in
+                        "$entry"/*)
+                            active_path="$entry"
+                            break
+                            ;;
+                    esac
+                done
+            fi
+        fi
+
+        local -a entries=()
+        while IFS= read -r -d '' entry; do
+            local name
+            name=$(basename "$entry")
+            [[ "$name" == .* ]] && continue
+            [[ ! "$name" =~ ^[0-9] ]] && continue
+            entries+=("$entry")
+        done < <(command find "$versions_root" -mindepth 1 -maxdepth 1 \( -type f -o -type d \) -print0 2> /dev/null)
+
+        [[ ${#entries[@]} -le "$keep_previous" ]] && continue
+
+        local -a sorted=()
+        while IFS= read -r line; do
+            sorted+=("${line#* }")
+        done < <(
+            local entry
+            for entry in "${entries[@]}"; do
+                local mtime
+                mtime=$(stat -f%m "$entry" 2> /dev/null || echo "0")
+                printf '%s %s\n' "$mtime" "$entry"
+            done | sort -rn
+        )
+
+        local idx=0
+        local target
+        for target in "${sorted[@]}"; do
+            if [[ -n "$active_path" && "$target" == "$active_path" ]]; then
+                continue
+            fi
+            if [[ $idx -lt $keep_previous ]]; then
+                idx=$((idx + 1))
+                continue
+            fi
+            safe_clean "$target" "$label"
+            note_activity
+            idx=$((idx + 1))
+        done
+    done
+}
+
 # Other language tool caches.
 clean_dev_other_langs() {
     safe_clean ~/.bundle/cache/* "Ruby Bundler cache"
-    safe_clean ~/.composer/cache/* "PHP Composer cache"
+    safe_clean ~/.composer/cache/* "PHP Composer cache (legacy)"
+    safe_clean ~/Library/Caches/composer/* "PHP Composer cache"
     safe_clean ~/.nuget/packages/* "NuGet packages cache"
     # safe_clean ~/.pub-cache/* "Dart Pub cache"
     safe_clean ~/.cache/bazel/* "Bazel cache"
@@ -979,6 +1213,21 @@ clean_dev_misc() {
     safe_clean ~/Library/Application\ Support/Claude/GPUCache/* "Claude GPU cache"
     safe_clean ~/Library/Application\ Support/Claude/DawnGraphiteCache/* "Claude Dawn cache"
     safe_clean ~/Library/Application\ Support/Claude/DawnWebGPUCache/* "Claude WebGPU cache"
+    safe_clean ~/Library/Application\ Support/Claude/sentry/* "Claude sentry cache"
+    safe_clean ~/Library/Application\ Support/Claude/pending-uploads/* "Claude pending uploads"
+    # Qoder (VS Code fork, Electron)
+    safe_clean ~/Library/Application\ Support/Qoder/Cache/* "Qoder cache"
+    safe_clean ~/Library/Application\ Support/Qoder/CachedData/* "Qoder cached data"
+    safe_clean ~/Library/Application\ Support/Qoder/CachedExtensionVSIXs/* "Qoder extension cache"
+    safe_clean ~/Library/Application\ Support/Qoder/Code\ Cache/* "Qoder code cache"
+    safe_clean ~/Library/Application\ Support/Qoder/GPUCache/* "Qoder GPU cache"
+    safe_clean ~/Library/Application\ Support/Qoder/DawnGraphiteCache/* "Qoder Dawn cache"
+    safe_clean ~/Library/Application\ Support/Qoder/DawnWebGPUCache/* "Qoder WebGPU cache"
+    safe_clean ~/Library/Application\ Support/Qoder/logs/* "Qoder logs"
+    # Prisma ORM engine binaries cache
+    safe_clean ~/.cache/prisma/* "Prisma cache"
+    # OpenCode AI tool cache
+    safe_clean ~/.cache/opencode/* "OpenCode cache"
 }
 # Shell and VCS leftovers.
 clean_dev_shell() {
@@ -1024,7 +1273,23 @@ clean_dev_editors() {
     safe_clean ~/Library/Application\ Support/Code/DawnWebGPUCache/* "VS Code WebGPU cache"
     safe_clean ~/Library/Application\ Support/Code/GPUCache/* "VS Code GPU cache"
     safe_clean ~/Library/Application\ Support/Code/CachedExtensionVSIXs/* "VS Code extension cache"
+    clean_service_worker_cache "VS Code" "$HOME/Library/Application Support/Code/Service Worker/CacheStorage"
+    if ! pgrep -x "Code" > /dev/null 2>&1; then
+        safe_clean ~/Library/Application\ Support/Code/Service\ Worker/ScriptCache/* "VS Code Service Worker ScriptCache"
+    fi
     safe_clean ~/Library/Caches/Zed/* "Zed cache"
+    safe_clean ~/Library/Caches/copilot/* "GitHub Copilot cache"
+    safe_clean ~/.cache/vscode-ripgrep/* "VS Code ripgrep cache"
+    safe_clean ~/Library/Caches/Cursor/* "Cursor cache"
+    safe_clean ~/Library/Application\ Support/Cursor/CachedData/* "Cursor cached data"
+    safe_clean ~/Library/Application\ Support/Cursor/CachedExtensionVSIXs/* "Cursor extension cache"
+    safe_clean ~/Library/Application\ Support/Cursor/GPUCache/* "Cursor GPU cache"
+    safe_clean ~/Library/Application\ Support/Cursor/DawnGraphiteCache/* "Cursor Dawn cache"
+    safe_clean ~/Library/Application\ Support/Cursor/DawnWebGPUCache/* "Cursor WebGPU cache"
+    clean_service_worker_cache "Cursor" "$HOME/Library/Application Support/Cursor/Service Worker/CacheStorage"
+    if ! pgrep -x "Cursor" > /dev/null 2>&1; then
+        safe_clean ~/Library/Application\ Support/Cursor/Service\ Worker/ScriptCache/* "Cursor Service Worker ScriptCache"
+    fi
 }
 # Main developer tools cleanup sequence.
 clean_developer_tools() {
@@ -1035,6 +1300,7 @@ clean_developer_tools() {
     clean_dev_npm
     clean_dev_python
     clean_dev_go
+    clean_dev_mise
     clean_dev_rust
     check_rust_toolchains
     clean_dev_docker
@@ -1046,6 +1312,8 @@ clean_developer_tools() {
     clean_dev_mobile
     clean_dev_jvm
     clean_dev_jetbrains_toolbox
+    clean_dev_jetbrains_logs
+    clean_dev_ai_agents
     clean_dev_other_langs
     clean_dev_cicd
     clean_dev_database
