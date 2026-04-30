@@ -61,7 +61,7 @@ clean_homebrew() {
     local autoremove_exit=0
     if [[ "$skip_cleanup" == "false" ]]; then
         brew_tmp_file=$(create_temp_file)
-        run_with_timeout "$timeout_seconds" brew cleanup > "$brew_tmp_file" 2>&1 &
+        run_with_timeout "$timeout_seconds" brew cleanup --prune=30 > "$brew_tmp_file" 2>&1 &
         brew_pid=$!
     fi
     autoremove_tmp_file=$(create_temp_file)

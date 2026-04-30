@@ -150,7 +150,9 @@ perform_auto_fix() {
     if [[ -n "${TOUCHID_NOT_CONFIGURED:-}" && "${TOUCHID_NOT_CONFIGURED}" == "true" ]]; then
         echo -e "${BLUE}${ICON_ARROW}${NC} Configuring Touch ID for sudo..."
         local pam_file="/etc/pam.d/sudo"
-        if sudo bash -c "grep -q 'pam_tid.so' '$pam_file' 2>/dev/null || sed -i '' '2i\\
+        # Use absolute /usr/bin/sed (always BSD on macOS) so PATH-shadowed
+        # GNU sed from Homebrew gnu-sed does not break the -i '' syntax.
+        if sudo bash -c "grep -q 'pam_tid.so' '$pam_file' 2>/dev/null || /usr/bin/sed -i '' '2i\\
 auth       sufficient     pam_tid.so
 ' '$pam_file'" 2> /dev/null; then
             echo -e "${GREEN}✓${NC} Touch ID configured"

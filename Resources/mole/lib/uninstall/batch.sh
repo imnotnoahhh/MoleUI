@@ -11,12 +11,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Batch uninstall with a single confirmation.
 
-get_lsregister_path() {
-    echo "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-}
-
 is_uninstall_dry_run() {
     [[ "${MOLE_DRY_RUN:-0}" == "1" ]]
+}
+
+app_declares_local_network_usage() {
+    local app_path="$1"
+    local info_plist="$app_path/Contents/Info.plist"
+
+    [[ -f "$info_plist" ]] || return 1
+
+    if plutil -extract NSLocalNetworkUsageDescription raw "$info_plist" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    if plutil -extract NSBonjourServices xml1 -o - "$info_plist" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
 }
 
 # High-performance sensitive data detection (pure Bash, no subprocess)
@@ -102,6 +115,7 @@ stop_launch_services() {
     if [[ -d ~/Library/LaunchAgents ]]; then
         while IFS= read -r -d '' plist; do
             launchctl unload "$plist" 2> /dev/null || true
+            safe_remove "$plist" 2> /dev/null || true
         done < <(find ~/Library/LaunchAgents -maxdepth 1 -name "${bundle_id}*.plist" -print0 2> /dev/null)
     fi
 
@@ -109,11 +123,13 @@ stop_launch_services() {
         if [[ -d /Library/LaunchAgents ]]; then
             while IFS= read -r -d '' plist; do
                 sudo launchctl unload "$plist" 2> /dev/null || true
+                safe_sudo_remove "$plist" 2> /dev/null || true
             done < <(find /Library/LaunchAgents -maxdepth 1 -name "${bundle_id}*.plist" -print0 2> /dev/null)
         fi
         if [[ -d /Library/LaunchDaemons ]]; then
             while IFS= read -r -d '' plist; do
                 sudo launchctl unload "$plist" 2> /dev/null || true
+                safe_sudo_remove "$plist" 2> /dev/null || true
             done < <(find /Library/LaunchDaemons -maxdepth 1 -name "${bundle_id}*.plist" -print0 2> /dev/null)
         fi
     fi
@@ -186,35 +202,47 @@ remove_login_item() {
 
     # Remove from Login Items using index-based deletion (handles broken items)
     if [[ -n "$clean_name" ]]; then
-        # Escape double quotes and backslashes for AppleScript
-        local escaped_name="${clean_name//\\/\\\\}"
-        escaped_name="${escaped_name//\"/\\\"}"
+        # Skip AppleScript during tests to avoid permission dialogs
+        if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+            # Escape double quotes and backslashes for AppleScript
+            local escaped_name="${clean_name//\\/\\\\}"
+            escaped_name="${escaped_name//\"/\\\"}"
 
-        osascript <<- EOF > /dev/null 2>&1 || true
-			tell application "System Events"
-			    try
-			        set itemCount to count of login items
-			        -- Delete in reverse order to avoid index shifting
-			        repeat with i from itemCount to 1 by -1
-			            try
-			                set itemName to name of login item i
-			                if itemName is "$escaped_name" then
-			                    delete login item i
-			                end if
-			            end try
-			        end repeat
-			    end try
-			end tell
-		EOF
+            osascript <<- EOF > /dev/null 2>&1 || true
+				tell application "System Events"
+				    try
+				        set itemCount to count of login items
+				        -- Delete in reverse order to avoid index shifting
+				        repeat with i from itemCount to 1 by -1
+				            try
+				                set itemName to name of login item i
+				                if itemName is "$escaped_name" then
+				                    delete login item i
+				                end if
+				            end try
+				        end repeat
+				    end try
+				end tell
+			EOF
+        fi
     fi
 }
 
 # Remove files (handles symlinks, optional sudo).
 # Security: All paths pass validate_path_for_deletion() before any deletion.
+# Performance: when MOLE_DELETE_MODE=trash and the batch is sudo-free and
+# symlink-free, the eligible paths are sent to Trash in a single subprocess
+# (one `trash` exec or one Finder AppleScript round-trip). This collapses the
+# previous N-subprocess fan-out that caused the post-confirmation "frozen
+# terminal" reported during `mo uninstall` on apps with many leftovers.
 remove_file_list() {
     local file_list="$1"
     local use_sudo="${2:-false}"
     local count=0
+    local mode="${MOLE_DELETE_MODE:-permanent}"
+
+    local -a trash_batch=()
+    local -a fallback_paths=()
 
     while IFS= read -r file; do
         [[ -n "$file" && -e "$file" ]] || continue
@@ -223,21 +251,49 @@ remove_file_list() {
             continue
         fi
 
-        if [[ -L "$file" ]]; then
-            safe_remove_symlink "$file" "$use_sudo" && ((++count)) || true
+        if [[ "$use_sudo" == "true" ]] && is_uninstall_dry_run; then
+            debug_log "[DRY RUN] Would sudo remove: $file"
+            ((++count))
+            continue
+        fi
+
+        # Symlinks and sudo-required paths stay on the per-file mole_delete
+        # path: safe_remove_symlink semantics differ from Trash, and AppleScript
+        # cannot run reliably as root for the batch fallback.
+        if [[ "$mode" == "trash" && "$use_sudo" != "true" && ! -L "$file" ]] &&
+            ! is_uninstall_dry_run; then
+            trash_batch+=("$file")
         else
-            if [[ "$use_sudo" == "true" ]]; then
-                if is_uninstall_dry_run; then
-                    debug_log "[DRY RUN] Would sudo remove: $file"
-                    ((++count))
-                else
-                    safe_sudo_remove "$file" && ((++count)) || true
-                fi
-            else
-                safe_remove "$file" true && ((++count)) || true
-            fi
+            fallback_paths+=("$file")
         fi
     done <<< "$file_list"
+
+    if [[ ${#trash_batch[@]} -gt 0 ]]; then
+        if _mole_move_to_trash_batch "${trash_batch[@]}"; then
+            local _bp _bsize
+            for _bp in "${trash_batch[@]}"; do
+                _bsize="unknown"
+                _mole_delete_log "trash" "$_bsize" "ok" "$_bp"
+                log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "TRASHED" "$_bp" "batch"
+            done
+            count=$((count + ${#trash_batch[@]}))
+        else
+            # Batch failed wholesale: route each path through mole_delete so
+            # the per-file fallback (Trash retry, then permanent rm) runs and
+            # forensic logging stays intact.
+            fallback_paths+=("${trash_batch[@]}")
+        fi
+    fi
+
+    if [[ ${#fallback_paths[@]} -gt 0 ]]; then
+        local fb
+        for fb in "${fallback_paths[@]}"; do
+            # mole_delete routes through Trash when MOLE_DELETE_MODE=trash
+            # (uninstall default), falls back to the underlying safe_* helpers
+            # in permanent mode or when Trash is unavailable. See #723.
+            mole_delete "$fb" "$use_sudo" && ((++count)) || true
+        done
+    fi
 
     echo "$count"
 }
@@ -282,6 +338,7 @@ batch_uninstall_applications() {
     # Pre-scan: running apps, sudo needs, size.
     local -a running_apps=()
     local -a sudo_apps=()
+    local -a brew_cask_apps=()
     local total_estimated_size=0
     local -a app_details=()
 
@@ -317,6 +374,10 @@ batch_uninstall_applications() {
                 cask_name="$detected_cask"
                 is_brew_cask="true"
             fi
+        fi
+
+        if [[ "$is_brew_cask" == "true" ]]; then
+            brew_cask_apps+=("$app_name")
         fi
 
         # Check if sudo is needed
@@ -363,6 +424,11 @@ batch_uninstall_applications() {
             has_sensitive_data="true"
         fi
 
+        local has_local_network_usage="false"
+        if app_declares_local_network_usage "$app_path"; then
+            has_local_network_usage="true"
+        fi
+
         # Store details for later use (base64 keeps lists on one line).
         local encoded_files
         encoded_files=$(printf '%s' "$related_files" | base64 | tr -d '\n' || echo "")
@@ -370,7 +436,7 @@ batch_uninstall_applications() {
         encoded_system_files=$(printf '%s' "$system_files" | base64 | tr -d '\n' || echo "")
         local encoded_diag_system
         encoded_diag_system=$(printf '%s' "$diag_system" | base64 | tr -d '\n' || echo "")
-        app_details+=("$app_name|$app_path|$bundle_id|$total_kb|$encoded_files|$encoded_system_files|$has_sensitive_data|$needs_sudo|$is_brew_cask|$cask_name|$encoded_diag_system")
+        app_details+=("$app_name|$app_path|$bundle_id|$total_kb|$encoded_files|$encoded_system_files|$has_sensitive_data|$needs_sudo|$is_brew_cask|$cask_name|$encoded_diag_system|$has_local_network_usage")
     done
     if [[ -t 1 ]]; then stop_inline_spinner; fi
 
@@ -380,10 +446,7 @@ batch_uninstall_applications() {
 
     # Warn if brew cask apps are present.
     local has_brew_cask=false
-    for detail in "${app_details[@]}"; do
-        IFS='|' read -r _ _ _ _ _ _ _ _ is_brew_cask_flag _ <<< "$detail"
-        [[ "$is_brew_cask_flag" == "true" ]] && has_brew_cask=true
-    done
+    [[ ${#brew_cask_apps[@]} -gt 0 ]] && has_brew_cask=true
 
     if [[ "$has_brew_cask" == "true" ]]; then
         echo -e "${GRAY}${ICON_WARNING} Homebrew apps will be fully cleaned, --zap removes configs and data${NC}"
@@ -392,7 +455,7 @@ batch_uninstall_applications() {
     echo ""
 
     for detail in "${app_details[@]}"; do
-        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo_flag is_brew_cask cask_name encoded_diag_system <<< "$detail"
+        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo_flag is_brew_cask cask_name encoded_diag_system has_local_network_usage <<< "$detail"
         local app_size_display=$(bytes_to_human "$((total_kb * 1024))")
 
         local brew_tag=""
@@ -464,11 +527,19 @@ batch_uninstall_applications() {
     # that user explicitly chose to uninstall. System-critical components remain protected.
     export MOLE_UNINSTALL_MODE=1
 
-    # Request sudo if needed for non-Homebrew removal operations.
-    # Note: Homebrew resets sudo timestamp at process startup, so pre-auth would
-    # cause duplicate password prompts in cask-only flows.
-    if [[ ${#sudo_apps[@]} -gt 0 && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
-        if ! ensure_sudo_session "Admin required for system apps: ${sudo_apps[*]}"; then
+    # Establish sudo once before uninstalling apps that need admin access.
+    # Homebrew cask removal can prompt via sudo during uninstall hooks, which
+    # does not work reliably under Mole's timed non-interactive execution path.
+    if [[ "${MOLE_DRY_RUN:-0}" != "1" ]] &&
+        { [[ ${#sudo_apps[@]} -gt 0 ]] || [[ ${#brew_cask_apps[@]} -gt 0 ]]; }; then
+        local admin_prompt="Admin required to uninstall selected apps"
+        if [[ ${#sudo_apps[@]} -gt 0 && ${#brew_cask_apps[@]} -eq 0 ]]; then
+            admin_prompt="Admin required for system apps: ${sudo_apps[*]}"
+        elif [[ ${#brew_cask_apps[@]} -gt 0 && ${#sudo_apps[@]} -eq 0 ]]; then
+            admin_prompt="Admin required for Homebrew casks: ${brew_cask_apps[*]}"
+        fi
+
+        if ! ensure_sudo_session "$admin_prompt"; then
             echo ""
             log_error "Admin access denied"
             _restore_uninstall_traps
@@ -481,10 +552,12 @@ batch_uninstall_applications() {
     local brew_apps_removed=0 # Track successful brew uninstalls for silent autoremove
     local -a failed_items=()
     local -a success_items=()
+    local -a local_network_warning_apps=()
+    local -a system_extension_warning_apps=()
     local current_index=0
     for detail in "${app_details[@]}"; do
         current_index=$((current_index + 1))
-        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo is_brew_cask cask_name encoded_diag_system <<< "$detail"
+        IFS='|' read -r app_name app_path bundle_id total_kb encoded_files encoded_system_files has_sensitive_data needs_sudo is_brew_cask cask_name encoded_diag_system has_local_network_usage <<< "$detail"
         local related_files=$(decode_file_list "$encoded_files" "$app_name")
         local system_files=$(decode_file_list "$encoded_system_files" "$app_name")
         local diag_system=$(decode_file_list "$encoded_diag_system" "$app_name")
@@ -516,9 +589,20 @@ batch_uninstall_applications() {
             reason="still running"
         fi
 
-        # Remove the application only if not running.
-        # Stop spinner before any removal attempt (avoids mixed output on errors)
-        [[ -t 1 ]] && stop_inline_spinner
+        # Keep the spinner alive through the heavy work. For large apps the
+        # main bundle delete alone can take many seconds; for apps with
+        # 50-200 leftover files the per-file Trash moves add even more. The
+        # message is updated so the user sees which phase is running rather
+        # than a single static spinner.
+        if [[ -t 1 && -z "$reason" ]]; then
+            local _phase_size
+            _phase_size=$(bytes_to_human "$((total_kb * 1024))")
+            local _phase_prefix=""
+            if [[ ${#app_details[@]} -gt 1 ]]; then
+                _phase_prefix="[$current_index/${#app_details[@]}] "
+            fi
+            start_inline_spinner "${_phase_prefix}Removing ${app_name} (${_phase_size})..."
+        fi
 
         local used_brew_successfully=false
         if [[ -z "$reason" ]]; then
@@ -527,15 +611,29 @@ batch_uninstall_applications() {
                 if brew_uninstall_cask "$cask_name" "$app_path"; then
                     used_brew_successfully=true
                 else
-                    # Fallback to manual removal if brew fails
-                    if [[ "$needs_sudo" == true ]]; then
-                        if ! safe_sudo_remove "$app_path"; then
-                            reason="brew failed, manual removal failed"
+                    # Only fall back to manual app removal when Homebrew no longer
+                    # tracks the cask. Otherwise we would recreate the mismatch
+                    # where brew still reports the app as installed after Mole
+                    # removes the bundle manually.
+                    local cask_state=2
+                    if command -v is_brew_cask_installed > /dev/null 2>&1; then
+                        if is_brew_cask_installed "$cask_name"; then
+                            cask_state=0
+                        else
+                            cask_state=$?
                         fi
+                    fi
+
+                    if [[ $cask_state -eq 1 ]]; then
+                        if ! mole_delete "$app_path" "$needs_sudo"; then
+                            reason="brew cleanup incomplete, manual removal failed"
+                        fi
+                    elif [[ $cask_state -eq 0 ]]; then
+                        reason="brew uninstall failed, package still installed"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     else
-                        if ! safe_remove "$app_path" true; then
-                            reason="brew failed, manual removal failed"
-                        fi
+                        reason="brew uninstall failed, package state unknown"
+                        suggestion="Run brew uninstall --cask --zap $cask_name"
                     fi
                 fi
             elif [[ "$needs_sudo" == true ]]; then
@@ -554,24 +652,24 @@ batch_uninstall_applications() {
                                 reason="protected system symlink, cannot remove"
                                 ;;
                             *)
-                                if ! safe_remove_symlink "$app_path" "true"; then
+                                if ! mole_delete "$app_path" "true"; then
                                     reason="failed to remove symlink"
                                 fi
                                 ;;
                         esac
                     else
-                        if ! safe_remove_symlink "$app_path" "true"; then
+                        if ! mole_delete "$app_path" "true"; then
                             reason="failed to remove symlink"
                         fi
                     fi
                 else
                     if is_uninstall_dry_run; then
-                        if ! safe_remove "$app_path" true; then
+                        if ! mole_delete "$app_path" "false"; then
                             reason="dry-run path validation failed"
                         fi
                     else
                         local ret=0
-                        safe_sudo_remove "$app_path" || ret=$?
+                        mole_delete "$app_path" "true" || ret=$?
                         if [[ $ret -ne 0 ]]; then
                             local diagnosis
                             diagnosis=$(diagnose_removal_failure "$ret" "$app_name")
@@ -580,7 +678,7 @@ batch_uninstall_applications() {
                     fi
                 fi
             else
-                if ! safe_remove "$app_path" true; then
+                if ! mole_delete "$app_path" "false"; then
                     if [[ ! -w "$(dirname "$app_path")" ]]; then
                         reason="parent directory not writable"
                     else
@@ -592,8 +690,44 @@ batch_uninstall_applications() {
 
         # Remove related files if app removal succeeded.
         if [[ -z "$reason" ]]; then
+            if [[ -t 1 ]]; then
+                local _phase_prefix=""
+                if [[ ${#app_details[@]} -gt 1 ]]; then
+                    _phase_prefix="[$current_index/${#app_details[@]}] "
+                fi
+                start_inline_spinner "${_phase_prefix}Cleaning files for ${app_name}..."
+            fi
             remove_file_list "$related_files" "false" > /dev/null
 
+            # Identify leftovers (silent rm failures, e.g. container directories
+            # macOS protects via com.apple.provenance xattr). Compute their
+            # total size in a single du invocation rather than walking each
+            # path; the source paths that DID move to Trash are already gone
+            # and would just produce stderr noise we discard.
+            local leftover_kb=0
+            local -a leftover_paths=()
+            while IFS= read -r _lf; do
+                [[ -n "$_lf" && -e "$_lf" ]] || continue
+                # Skip macOS-managed container stubs: containermanagerd protects
+                # these directories via com.apple.provenance xattr; rm -rf always
+                # fails on them by design. User data is already gone at this point.
+                if [[ "$_lf" == */Library/Containers/* && -f "$_lf/.com.apple.containermanagerd.metadata.plist" ]]; then
+                    continue
+                fi
+                leftover_paths+=("$_lf")
+            done <<< "$related_files"
+
+            if [[ ${#leftover_paths[@]} -gt 0 ]]; then
+                local _du_total
+                _du_total=$(command du -skcP "${leftover_paths[@]}" 2> /dev/null | awk 'END {print $1}')
+                if [[ "$_du_total" =~ ^[0-9]+$ ]]; then
+                    leftover_kb=$_du_total
+                fi
+            fi
+
+            if [[ -t 1 ]]; then
+                start_inline_spinner "${_phase_prefix}Cleaning system files for ${app_name}..."
+            fi
             if [[ "$used_brew_successfully" == "true" ]]; then
                 remove_file_list "$diag_system" "true" > /dev/null
             else
@@ -621,13 +755,17 @@ batch_uninstall_applications() {
                 if [[ -d "$HOME/Library/Preferences/ByHost" ]]; then
                     if [[ "$bundle_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
                         while IFS= read -r -d '' plist_file; do
-                            safe_remove "$plist_file" true > /dev/null || true
+                            mole_delete "$plist_file" "true" || true
                         done < <(command find "$HOME/Library/Preferences/ByHost" -maxdepth 1 -type f -name "${bundle_id}.*.plist" -print0 2> /dev/null || true)
                     else
                         debug_log "Skipping ByHost cleanup, invalid bundle id: $bundle_id"
                     fi
                 fi
             fi
+
+            # All per-app side effects done; tear the spinner down before
+            # any echo so the success line does not collide with the spinner.
+            [[ -t 1 ]] && stop_inline_spinner
 
             # Show success
             if [[ -t 1 ]]; then
@@ -638,13 +776,35 @@ batch_uninstall_applications() {
                 fi
             fi
 
+            # Warn about files that could not be removed and exclude them from freed total.
+            if [[ ${#leftover_paths[@]} -gt 0 ]]; then
+                for _lpath in "${leftover_paths[@]}"; do
+                    echo -e "  ${YELLOW}${ICON_WARNING}${NC} Could not remove: ${_lpath/$HOME/~}"
+                done
+                total_kb=$((total_kb - leftover_kb))
+                ((total_kb < 0)) && total_kb=0
+            fi
+
             total_size_freed=$((total_size_freed + total_kb))
             success_count=$((success_count + 1))
             [[ "$used_brew_successfully" == "true" ]] && brew_apps_removed=$((brew_apps_removed + 1))
             files_cleaned=$((files_cleaned + 1))
             total_items=$((total_items + 1))
             success_items+=("$app_path")
+            if [[ "$has_local_network_usage" == "true" ]]; then
+                local_network_warning_apps+=("$app_name")
+            fi
+
+            # Check for orphaned system extensions (camera, network, endpoint security, etc.)
+            if [[ -n "$bundle_id" && "$bundle_id" != "unknown" && "$bundle_id" =~ ^[A-Za-z0-9._-]+$ && -d /Library/SystemExtensions ]]; then
+                if command find /Library/SystemExtensions -maxdepth 3 -name "*.systemextension" -path "*${bundle_id}*" -print -quit 2> /dev/null | grep -q .; then
+                    system_extension_warning_apps+=("$app_name")
+                fi
+            fi
         else
+            # Stop spinner before printing the failure line so the error
+            # message is not painted over by the spinner's next tick.
+            [[ -t 1 ]] && stop_inline_spinner
             if [[ -t 1 ]]; then
                 if [[ ${#app_details[@]} -gt 1 ]]; then
                     echo -e "${ICON_ERROR} [$current_index/${#app_details[@]}] ${app_name} ${GRAY}, $reason${NC}"
@@ -759,6 +919,31 @@ batch_uninstall_applications() {
     if [[ $success_count -eq 0 && $failed_count -eq 0 ]]; then
         summary_status="info"
         summary_details+=("No applications were uninstalled.")
+    fi
+
+    if [[ ${#local_network_warning_apps[@]} -gt 0 ]]; then
+        local local_network_list=""
+        local idx
+        for ((idx = 0; idx < ${#local_network_warning_apps[@]}; idx++)); do
+            [[ $idx -gt 0 ]] && local_network_list+=", "
+            local_network_list+="${local_network_warning_apps[idx]}"
+        done
+
+        summary_details+=("${ICON_REVIEW} Local Network permissions on macOS 15+ can outlive app removal: ${YELLOW}${local_network_list}${NC}")
+        summary_details+=("${GRAY}${ICON_SUBLIST}${NC} Mole does not reset ${GRAY}/Volumes/Data/Library/Preferences/com.apple.networkextension*.plist${NC}")
+        summary_details+=("${GRAY}${ICON_SUBLIST}${NC} If stale or duplicate entries remain, clear them manually in Recovery mode because the reset is global${NC}")
+    fi
+
+    if [[ ${#system_extension_warning_apps[@]} -gt 0 ]]; then
+        local ext_list=""
+        local idx
+        for ((idx = 0; idx < ${#system_extension_warning_apps[@]}; idx++)); do
+            [[ $idx -gt 0 ]] && ext_list+=", "
+            ext_list+="${system_extension_warning_apps[idx]}"
+        done
+
+        summary_details+=("${ICON_REVIEW} System extensions may remain after removal: ${YELLOW}${ext_list}${NC}")
+        summary_details+=("${GRAY}${ICON_SUBLIST}${NC} Check ${GRAY}System Settings > General > Login Items & Extensions${NC} to remove leftover extensions")
     fi
 
     local title="Uninstall complete"

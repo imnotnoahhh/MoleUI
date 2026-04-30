@@ -292,7 +292,7 @@ show_menu() {
         echo ""
 
         case "$key" in
-            $'\e') # ESC
+            $'\e' | q | Q) # ESC or Q
                 return 0
                 ;;
             "" | $'\n' | $'\r')   # Enter
@@ -310,7 +310,7 @@ show_menu() {
         drain_pending_input # Clean up any escape sequence remnants
 
         case "$key" in
-            $'\e') # ESC
+            $'\e' | q | Q) # ESC or Q
                 return 0
                 ;;
             "" | $'\n' | $'\r')   # Enter

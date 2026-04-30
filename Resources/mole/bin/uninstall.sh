@@ -36,7 +36,8 @@ readonly MOLE_UNINSTALL_META_CACHE_FILE="$MOLE_UNINSTALL_META_CACHE_DIR/uninstal
 readonly MOLE_UNINSTALL_META_CACHE_LOCK="${MOLE_UNINSTALL_META_CACHE_FILE}.lock"
 readonly MOLE_UNINSTALL_META_REFRESH_TTL=604800 # 7 days
 readonly MOLE_UNINSTALL_SCAN_SPINNER_DELAY_SEC="0.25"
-readonly MOLE_UNINSTALL_INLINE_METADATA_LIMIT=8
+readonly MOLE_UNINSTALL_INLINE_METADATA_LIMIT=50
+readonly MOLE_UNINSTALL_EPOCH_FLOOR=978307200
 readonly MOLE_UNINSTALL_INLINE_MDLS_TIMEOUT_SEC="0.08"
 
 uninstall_relative_time_from_epoch() {
@@ -44,6 +45,11 @@ uninstall_relative_time_from_epoch() {
     local now_epoch="${2:-0}"
 
     if [[ ! "$value_epoch" =~ ^[0-9]+$ || $value_epoch -le 0 ]]; then
+        echo "Unknown"
+        return 0
+    fi
+
+    if [[ $value_epoch -lt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
         echo "Unknown"
         return 0
     fi
@@ -135,6 +141,16 @@ uninstall_resolve_display_name() {
     if [[ "$display_name" == /* ]]; then
         display_name="$app_name"
     fi
+
+    # Keep versioned bundle names when metadata collapses distinct installs.
+    if [[ -n "$display_name" && "$app_name" == "$display_name"* && "$app_name" != "$display_name" ]]; then
+        local suffix
+        suffix="${app_name#"$display_name"}"
+        if [[ "$suffix" == *[0-9]* ]]; then
+            display_name="$app_name"
+        fi
+    fi
+
     display_name="${display_name%.app}"
     display_name="${display_name//|/-}"
     display_name="${display_name//[$'\t\r\n']/}"
@@ -176,6 +192,31 @@ uninstall_release_metadata_lock() {
     [[ -d "$lock_dir" ]] && rmdir "$lock_dir" 2> /dev/null || true
 }
 
+# Atomically replace the metadata cache file, healing stale root-owned copies.
+# stdin is closed so BSD mv/cp never blocks prompting on a non-writable target.
+uninstall_persist_cache_file() {
+    local src="$1"
+    local dst="$2"
+
+    [[ -s "$src" ]] || {
+        rm -f "$src" 2> /dev/null || true
+        return 0
+    }
+
+    # Heal stale file the user cannot write to (e.g. root-owned from a prior
+    # sudo run). The parent dir is user-owned, so rm succeeds regardless.
+    if [[ -e "$dst" && ! -w "$dst" ]]; then
+        rm -f "$dst" 2> /dev/null || true
+    fi
+
+    # shellcheck disable=SC2217 # BSD mv/cp read stdin when prompting; close it to avoid hang.
+    mv -f "$src" "$dst" < /dev/null 2> /dev/null || {
+        # shellcheck disable=SC2217
+        cp -f "$src" "$dst" < /dev/null 2> /dev/null || true
+        rm -f "$src" 2> /dev/null || true
+    }
+}
+
 uninstall_collect_inline_metadata() {
     local app_path="$1"
     local app_mtime="${2:-0}"
@@ -192,9 +233,13 @@ uninstall_collect_inline_metadata() {
         last_used_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$metadata_date" "+%s" 2> /dev/null || echo "0")
     fi
 
+    if [[ "$last_used_epoch" =~ ^[0-9]+$ && $last_used_epoch -lt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
+        last_used_epoch=0
+    fi
+
     # Fallback to app mtime so first scan does not show "...".
     if [[ ! "$last_used_epoch" =~ ^[0-9]+$ || $last_used_epoch -le 0 ]]; then
-        if [[ "$app_mtime" =~ ^[0-9]+$ && $app_mtime -gt 0 ]]; then
+        if [[ "$app_mtime" =~ ^[0-9]+$ && $app_mtime -gt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
             last_used_epoch="$app_mtime"
         else
             last_used_epoch=0
@@ -263,7 +308,7 @@ start_uninstall_metadata_refresh() {
                     last_used_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S %z" "$metadata_date" "+%s" 2> /dev/null || echo "0")
                 fi
 
-                if [[ ! "$last_used_epoch" =~ ^[0-9]+$ || $last_used_epoch -le 0 ]]; then
+                if [[ ! "$last_used_epoch" =~ ^[0-9]+$ || $last_used_epoch -le 0 || $last_used_epoch -lt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
                     last_used_epoch=0
                 fi
 
@@ -322,10 +367,7 @@ start_uninstall_metadata_refresh() {
             }
         ' "$updates_file" "$MOLE_UNINSTALL_META_CACHE_FILE" > "$merged_file"
 
-        mv "$merged_file" "$MOLE_UNINSTALL_META_CACHE_FILE" 2> /dev/null || {
-            cp "$merged_file" "$MOLE_UNINSTALL_META_CACHE_FILE" 2> /dev/null || true
-            rm -f "$merged_file"
-        }
+        uninstall_persist_cache_file "$merged_file" "$MOLE_UNINSTALL_META_CACHE_FILE"
 
         uninstall_release_metadata_lock "$MOLE_UNINSTALL_META_CACHE_LOCK"
         rm -f "$updates_file"
@@ -463,18 +505,44 @@ scan_applications() {
         shopt -u nullglob
     fi
 
+    # Scan for pkg-installed apps in non-standard locations.
+    local pkg_app_path
+    while IFS= read -r pkg_app_path; do
+        [[ -n "$pkg_app_path" ]] || continue
+
+        local already_scanned=false
+        for app_dir in "${app_dirs[@]}"; do
+            if [[ "$pkg_app_path" == "$app_dir"/*.app ]]; then
+                already_scanned=true
+                break
+            fi
+        done
+        [[ "$already_scanned" == true ]] && continue
+
+        local app_name="${pkg_app_path##*/}"
+        app_name="${app_name%.app}"
+
+        local app_mtime
+        app_mtime=$(get_file_mtime "$pkg_app_path")
+
+        local cached_identity cached_bundle_id cached_display_name
+        cached_identity=$(lookup_cached_identity "$pkg_app_path" "$app_mtime")
+        IFS='|' read -r cached_bundle_id cached_display_name <<< "$cached_identity"
+
+        app_data_tuples+=("${pkg_app_path}|${app_name}|${app_mtime}|${cached_bundle_id}|${cached_display_name}")
+    done < <(pkg_receipt_nonstandard_app_paths)
+
     for app_dir in "${app_dirs[@]}"; do
         if [[ ! -d "$app_dir" ]]; then continue; fi
 
         while IFS= read -r -d '' app_path; do
             if [[ ! -e "$app_path" ]]; then continue; fi
 
-            local app_name
-            app_name=$(basename "$app_path" .app)
+            local app_name="${app_path##*/}"
+            app_name="${app_name%.app}"
 
             # Skip nested apps inside another .app bundle.
-            local parent_dir
-            parent_dir=$(dirname "$app_path")
+            local parent_dir="${app_path%/*}"
             if [[ "$parent_dir" == *".app" || "$parent_dir" == *".app/"* ]]; then
                 continue
             fi
@@ -485,9 +553,10 @@ scan_applications() {
                 if [[ -n "$link_target" ]]; then
                     local resolved_target="$link_target"
                     if [[ "$link_target" != /* ]]; then
-                        local link_dir
-                        link_dir=$(dirname "$app_path")
-                        resolved_target=$(cd "$link_dir" 2> /dev/null && cd "$(dirname "$link_target")" 2> /dev/null && pwd)/$(basename "$link_target") 2> /dev/null || echo ""
+                        local link_dir="${app_path%/*}"
+                        local _link_parent="${link_target%/*}"
+                        [[ "$_link_parent" == "$link_target" ]] && _link_parent="."
+                        resolved_target=$(cd "$link_dir" 2> /dev/null && cd "$_link_parent" 2> /dev/null && pwd)/"${link_target##*/}" 2> /dev/null || echo ""
                     fi
                     case "$resolved_target" in
                         /System/* | /usr/bin/* | /usr/lib/* | /bin/* | /sbin/* | /private/etc/*)
@@ -545,6 +614,15 @@ scan_applications() {
 
         if should_protect_from_uninstall "$bundle_id"; then
             return 0
+        fi
+
+        local plist="$app_path/Contents/Info.plist"
+        if [[ -f "$plist" ]]; then
+            local bg_only
+            bg_only=$(defaults read "$plist" LSBackgroundOnly 2> /dev/null || echo "")
+            if [[ "$bg_only" == "1" || "$bg_only" == "YES" || "$bg_only" == "true" ]]; then
+                return 0
+            fi
         fi
 
         local display_name="${cached_display_name:-}"
@@ -636,6 +714,8 @@ scan_applications() {
     local current_epoch
     current_epoch=$(get_epoch_seconds)
     local inline_metadata_count=0
+    local inline_metadata_effective_limit=$MOLE_UNINSTALL_INLINE_METADATA_LIMIT
+    [[ $cache_source_is_temp == true ]] && inline_metadata_effective_limit=99999
     local metadata_total=0
     metadata_total=$(wc -l < "$merged_file" 2> /dev/null || echo "0")
     [[ "$metadata_total" =~ ^[0-9]+$ ]] || metadata_total=0
@@ -661,15 +741,18 @@ scan_applications() {
         fi
 
         local final_size_kb=0
-        local final_size="N/A"
+        local final_size="--"
         if [[ "$cached_size_kb" =~ ^[0-9]+$ && $cached_size_kb -gt 0 ]]; then
             final_size_kb="$cached_size_kb"
             final_size=$(bytes_to_human "$((cached_size_kb * 1024))")
         fi
 
+        if [[ "$final_epoch" =~ ^[0-9]+$ && $final_epoch -lt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
+            final_epoch=0
+        fi
         # Fallback to app mtime to avoid unknown "last used" on first scan.
         if [[ ! "$final_epoch" =~ ^[0-9]+$ || $final_epoch -le 0 ]]; then
-            if [[ "$app_mtime" =~ ^[0-9]+$ && $app_mtime -gt 0 ]]; then
+            if [[ "$app_mtime" =~ ^[0-9]+$ && $app_mtime -gt $MOLE_UNINSTALL_EPOCH_FLOOR ]]; then
                 final_epoch="$app_mtime"
             fi
         fi
@@ -696,7 +779,7 @@ scan_applications() {
         fi
 
         if [[ $needs_refresh == true ]]; then
-            if [[ $inline_metadata_count -lt $MOLE_UNINSTALL_INLINE_METADATA_LIMIT ]]; then
+            if [[ $inline_metadata_count -lt $inline_metadata_effective_limit ]]; then
                 local inline_metadata inline_size_kb inline_epoch inline_updated_epoch
                 inline_metadata=$(uninstall_collect_inline_metadata "$app_path" "${app_mtime:-0}" "$current_epoch")
                 IFS='|' read -r inline_size_kb inline_epoch inline_updated_epoch <<< "$inline_metadata"
@@ -729,10 +812,7 @@ scan_applications() {
     update_scan_status "Updating cache..." "0" "0"
     if [[ -s "$cache_snapshot_file" ]]; then
         if uninstall_acquire_metadata_lock "$MOLE_UNINSTALL_META_CACHE_LOCK"; then
-            mv "$cache_snapshot_file" "$MOLE_UNINSTALL_META_CACHE_FILE" 2> /dev/null || {
-                cp "$cache_snapshot_file" "$MOLE_UNINSTALL_META_CACHE_FILE" 2> /dev/null || true
-                rm -f "$cache_snapshot_file"
-            }
+            uninstall_persist_cache_file "$cache_snapshot_file" "$MOLE_UNINSTALL_META_CACHE_FILE"
             uninstall_release_metadata_lock "$MOLE_UNINSTALL_META_CACHE_LOCK"
         fi
     fi
@@ -808,12 +888,226 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+# Match app names from scan data against user-provided search terms.
+# Performs case-insensitive substring matching on app display names.
+# Returns matched entries from apps_data in selected_apps.
+match_apps_by_name() {
+    local -a search_terms=("$@")
+    selected_apps=()
+    local -a matched_indices=()
+
+    for search_term in "${search_terms[@]}"; do
+        local search_lower
+        search_lower=$(echo "$search_term" | tr '[:upper:]' '[:lower:]')
+        # Escape glob characters to prevent pattern injection
+        search_lower=${search_lower//\\/\\\\}
+        search_lower=${search_lower//\*/\\*}
+        search_lower=${search_lower//\?/\\?}
+        search_lower=${search_lower//\[/\\[}
+        local found=false
+        local idx=0
+        for app_data in "${apps_data[@]}"; do
+            IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$app_data"
+            local name_lower
+            name_lower=$(echo "$app_name" | tr '[:upper:]' '[:lower:]')
+            # Also try matching against the .app directory base name
+            local dir_name
+            dir_name=$(basename "$app_path" .app)
+            local dir_lower
+            dir_lower=$(echo "$dir_name" | tr '[:upper:]' '[:lower:]')
+
+            if [[ "$name_lower" == "$search_lower" || "$dir_lower" == "$search_lower" ]]; then
+                # Exact match - prefer this
+                local already=false
+                local mi
+                for mi in "${matched_indices[@]+"${matched_indices[@]}"}"; do
+                    [[ -z "$mi" ]] && continue
+                    [[ "$mi" == "$idx" ]] && already=true && break
+                done
+                if [[ "$already" == "false" ]]; then
+                    selected_apps+=("$app_data")
+                    matched_indices+=("$idx")
+                fi
+                found=true
+                break
+            fi
+            idx=$((idx + 1))
+        done
+
+        # If no exact match, try substring match
+        if [[ "$found" == "false" ]]; then
+            idx=0
+            for app_data in "${apps_data[@]}"; do
+                IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$app_data"
+                local name_lower
+                name_lower=$(echo "$app_name" | tr '[:upper:]' '[:lower:]')
+                local dir_name
+                dir_name=$(basename "$app_path" .app)
+                local dir_lower
+                dir_lower=$(echo "$dir_name" | tr '[:upper:]' '[:lower:]')
+
+                if [[ "$name_lower" == *"$search_lower"* || "$dir_lower" == *"$search_lower"* ]]; then
+                    local already=false
+                    local mi
+                    for mi in "${matched_indices[@]+"${matched_indices[@]}"}"; do
+                        [[ -z "$mi" ]] && continue
+                        [[ "$mi" == "$idx" ]] && already=true && break
+                    done
+                    if [[ "$already" == "false" ]]; then
+                        selected_apps+=("$app_data")
+                        matched_indices+=("$idx")
+                    fi
+                    found=true
+                fi
+                idx=$((idx + 1))
+            done
+        fi
+
+        if [[ "$found" == "false" ]]; then
+            echo -e "${YELLOW}Warning:${NC} No application found matching '$search_term'"
+        fi
+    done
+}
+
+# Escape a value for embedding in a single-line JSON string. Only handles
+# the chars that would break a one-line value: backslash, quote, and C0
+# whitespace. Bundle IDs / display names never contain control bytes worth
+# preserving in this output.
+uninstall_list_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/ }"
+    s="${s//$'\r'/ }"
+    s="${s//$'\n'/ }"
+    printf '%s' "$s"
+}
+
+# Read-only listing: surface each installed app's display name, bundle id,
+# the exact name `mo uninstall` accepts, and human-readable size. Reuses the
+# existing scanner so the output stays in lockstep with what the destructive
+# path sees.
+uninstall_list_apps() {
+    local apps_file=""
+    if ! apps_file=$(scan_applications); then
+        return 1
+    fi
+    if [[ ! -f "$apps_file" ]]; then
+        return 1
+    fi
+    if ! load_applications "$apps_file"; then
+        rm -f "$apps_file"
+        return 1
+    fi
+    rm -f "$apps_file"
+
+    # Auto-switch to JSON when stdout is piped, matching `mo status`.
+    local format="text"
+    if [[ ! -t 1 ]]; then
+        format="json"
+    fi
+
+    if [[ "$format" == "json" ]]; then
+        printf '['
+        local first=1
+        local app_data
+        for app_data in "${apps_data[@]+"${apps_data[@]}"}"; do
+            IFS='|' read -r _ app_path app_name bundle_id size _ _ <<< "$app_data"
+            local cask=""
+            if is_homebrew_available; then
+                cask=$(get_brew_cask_name "$app_path" 2> /dev/null || true)
+            fi
+            local uninstall_name="${cask:-$app_name}"
+            local source_label="App"
+            [[ -n "$cask" ]] && source_label="Homebrew"
+            local size_display
+            size_display=$(uninstall_normalize_size_display "$size")
+            if [[ $first -eq 1 ]]; then
+                first=0
+                printf '\n'
+            else
+                printf ',\n'
+            fi
+            printf '  {"name": "%s", "bundle_id": "%s", "source": "%s", "uninstall_name": "%s", "path": "%s", "size": "%s"}' \
+                "$(uninstall_list_json_escape "$app_name")" \
+                "$(uninstall_list_json_escape "$bundle_id")" \
+                "$source_label" \
+                "$(uninstall_list_json_escape "$uninstall_name")" \
+                "$(uninstall_list_json_escape "$app_path")" \
+                "$(uninstall_list_json_escape "$size_display")"
+        done
+        if [[ $first -eq 0 ]]; then
+            printf '\n'
+        fi
+        printf ']\n'
+        return 0
+    fi
+
+    local total=${#apps_data[@]}
+    if [[ $total -eq 0 ]]; then
+        echo "No applications found."
+        return 0
+    fi
+
+    printf '\n'
+    printf '%-36s %-30s %-30s %8s\n' 'NAME' 'BUNDLE ID' 'UNINSTALL NAME' 'SIZE'
+    printf -- '-%.0s' $(seq 1 108)
+    printf '\n'
+
+    local app_data
+    for app_data in "${apps_data[@]+"${apps_data[@]}"}"; do
+        IFS='|' read -r _ app_path app_name bundle_id size _ _ <<< "$app_data"
+        local cask=""
+        if is_homebrew_available; then
+            cask=$(get_brew_cask_name "$app_path" 2> /dev/null || true)
+        fi
+        local uninstall_name="${cask:-$app_name}"
+        local size_display
+        size_display=$(uninstall_normalize_size_display "$size")
+
+        # Truncate by display columns, then adjust printf width for CJK.
+        # printf counts bytes (LC_ALL=C), but CJK chars are 3 bytes yet only
+        # 2 display columns wide, so we pad with the extra bytes to land on
+        # the correct visual column.
+        local name_trunc name_display_w name_byte_count name_printf_w
+        name_trunc=$(truncate_by_display_width "$app_name" 34)
+        name_display_w=$(get_display_width "$name_trunc")
+
+        # Get byte count in C locale for printf
+        local old_lc="${LC_ALL:-}"
+        export LC_ALL=C
+        name_byte_count=${#name_trunc}
+        if [[ -n "$old_lc" ]]; then
+            export LC_ALL="$old_lc"
+        else
+            unset LC_ALL
+        fi
+
+        name_printf_w=$((36 + name_byte_count - name_display_w))
+
+        printf "%-*s %-30s %-30s %8s\n" \
+            "$name_printf_w" "$name_trunc" \
+            "${bundle_id:0:28}" \
+            "${uninstall_name:0:28}" \
+            "$size_display"
+    done
+
+    printf '\n%d application(s)  |  Remove with: mo uninstall <UNINSTALL NAME>\n\n' "$total"
+    return 0
+}
+
 main() {
     # Set current command for operation logging
     export MOLE_CURRENT_COMMAND="uninstall"
     log_operation_session_start "uninstall"
 
-    # Global flags
+    # Default to Trash routing so an accidental uninstall is recoverable.
+    # The caller can opt back into rm -rf with --permanent. See #723.
+    export MOLE_DELETE_MODE="${MOLE_DELETE_MODE:-trash}"
+
+    # Parse flags and collect app name arguments
+    local -a app_name_args=()
+    local list_mode=0
     for arg in "$@"; do
         case "$arg" in
             "--help" | "-h")
@@ -825,6 +1119,12 @@ main() {
                 ;;
             "--dry-run" | "-n")
                 export MOLE_DRY_RUN=1
+                ;;
+            "--permanent")
+                export MOLE_DELETE_MODE="permanent"
+                ;;
+            "--list")
+                list_mode=1
                 ;;
             "--whitelist")
                 echo "Unknown uninstall option: $arg"
@@ -838,17 +1138,76 @@ main() {
                 exit 1
                 ;;
             *)
-                echo "Unknown uninstall argument: $arg"
-                echo "Use 'mo uninstall --help' for supported options."
-                exit 1
+                app_name_args+=("$arg")
                 ;;
         esac
     done
+
+    # --list short-circuits before any destructive code. Read-only path:
+    # scan, resolve uninstall names, print table or JSON, exit 0.
+    if [[ $list_mode -eq 1 ]]; then
+        uninstall_list_apps
+        return $?
+    fi
 
     hide_cursor
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
         echo -e "${YELLOW}${ICON_DRY_RUN} DRY RUN MODE${NC}, No app files or settings will be modified"
         printf '\n'
+    fi
+
+    # Direct uninstall by app name
+    if [[ ${#app_name_args[@]} -gt 0 ]]; then
+        local apps_file=""
+        if ! apps_file=$(scan_applications); then
+            show_cursor
+            return 1
+        fi
+        if [[ ! -f "$apps_file" ]]; then
+            show_cursor
+            return 1
+        fi
+        if ! load_applications "$apps_file"; then
+            rm -f "$apps_file"
+            show_cursor
+            return 1
+        fi
+
+        match_apps_by_name "${app_name_args[@]}"
+        rm -f "$apps_file"
+
+        if [[ ${#selected_apps[@]} -eq 0 ]]; then
+            show_cursor
+            echo "No matching applications found."
+            return 1
+        fi
+
+        show_cursor
+        clear_screen
+        local selection_count=${#selected_apps[@]}
+        echo -e "${BLUE}${ICON_CONFIRM}${NC} Matched ${selection_count} app(s):"
+        local index=1
+        for selected_app in "${selected_apps[@]}"; do
+            IFS='|' read -r _ app_path app_name _ size last_used _ <<< "$selected_app"
+            local size_display
+            size_display=$(uninstall_normalize_size_display "$size")
+            local last_display
+            last_display=$(uninstall_normalize_last_used_display "$last_used")
+            printf "%d. %s  %s  |  Last: %s\n" "$index" "$app_name" "$size_display" "$last_display"
+            ((index++))
+        done
+
+        printf '\n'
+        printf "Proceed with uninstallation? [y/N] "
+        local confirm
+        read -r confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Aborted."
+            return 0
+        fi
+
+        batch_uninstall_applications
+        return 0
     fi
 
     local first_scan=true
@@ -873,6 +1232,11 @@ main() {
             rm -f "$apps_file"
             return 1
         fi
+
+        # Keystrokes typed during the scan/load phase must not leak into the
+        # selector. A queued Enter would confirm whichever app is highlighted
+        # first and drop the user straight into the destructive path. See #726.
+        drain_pending_input
 
         set +e
         select_apps_for_uninstall
@@ -962,9 +1326,19 @@ main() {
             IFS='|' read -r name_cell size_cell last_cell <<< "$row"
             local name_display_width
             name_display_width=$(get_display_width "$name_cell")
-            local name_char_count=${#name_cell}
+
+            # Get byte count for printf width calculation
+            local old_lc="${LC_ALL:-}"
+            export LC_ALL=C
+            local name_byte_count=${#name_cell}
+            if [[ -n "$old_lc" ]]; then
+                export LC_ALL="$old_lc"
+            else
+                unset LC_ALL
+            fi
+
             local padding_needed=$((max_name_display_width - name_display_width))
-            local printf_name_width=$((name_char_count + padding_needed))
+            local printf_name_width=$((name_byte_count + padding_needed))
 
             printf "%d. %-*s  %*s  |  Last: %s\n" "$index" "$printf_name_width" "$name_cell" "$max_size_width" "$size_cell" "$last_cell"
             ((index++))
@@ -974,22 +1348,21 @@ main() {
 
         rm -f "$apps_file"
 
-        local prompt_timeout="${MOLE_UNINSTALL_RETURN_PROMPT_TIMEOUT_SEC:-3}"
-        if [[ ! "$prompt_timeout" =~ ^[0-9]+$ ]] || [[ "$prompt_timeout" -lt 1 ]]; then
-            prompt_timeout=3
-        fi
-
-        echo -e "${GRAY}Press Enter to return to the app list, press any other key or wait ${prompt_timeout}s to exit.${NC}"
-        local key
-        local read_ok=false
-        if IFS= read -r -s -n1 -t "$prompt_timeout" key; then
-            read_ok=true
-        else
-            key=""
-        fi
+        local _countdown=5
+        local _key=""
+        local _pressed=false
+        while [[ $_countdown -gt 0 ]]; do
+            printf "\r${GRAY}Press Enter to return to the app list, press q to exit (%d)${NC} " "$_countdown"
+            if IFS= read -r -s -n1 -t 1 _key; then
+                _pressed=true
+                break
+            fi
+            ((_countdown--))
+        done
+        printf "\n"
         drain_pending_input
 
-        if [[ "$read_ok" == "true" && -z "$key" ]]; then
+        if [[ "$_pressed" == "true" && -z "$_key" ]]; then
             :
         else
             show_cursor
