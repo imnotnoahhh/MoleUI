@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -36,13 +38,36 @@ func snapshotFromModel(m model) historyEntry {
 		EntryOffset:   m.offset,
 		LargeSelected: m.largeSelected,
 		LargeOffset:   m.largeOffset,
+		NeedsRefresh:  m.viewNeedsRefresh,
 		IsOverview:    m.isOverview,
 	}
 }
 
-func cacheSnapshot(m model) historyEntry {
-	entry := snapshotFromModel(m)
-	entry.Dirty = false
+func filterNonEmptyEntries(entries []dirEntry) []dirEntry {
+	filtered := make([]dirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Size > 0 {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func historyEntryFromScanResult(path string, result scanResult, previous historyEntry, needsRefresh bool) historyEntry {
+	entry := historyEntry{
+		Path:          path,
+		Entries:       slices.Clone(result.Entries),
+		LargeFiles:    slices.Clone(result.LargeFiles),
+		TotalSize:     result.TotalSize,
+		TotalFiles:    result.TotalFiles,
+		Selected:      previous.Selected,
+		EntryOffset:   previous.EntryOffset,
+		LargeSelected: previous.LargeSelected,
+		LargeOffset:   previous.LargeOffset,
+		NeedsRefresh:  needsRefresh,
+		Dirty:         false,
+		IsOverview:    previous.IsOverview,
+	}
 	return entry
 }
 
@@ -253,6 +278,10 @@ func loadStaleCacheFromDisk(path string) (*cacheEntry, error) {
 }
 
 func saveCacheToDisk(path string, result scanResult) error {
+	return saveCacheToDiskWithOptions(path, result, false)
+}
+
+func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh bool) error {
 	cachePath, err := getCachePath(path)
 	if err != nil {
 		return err
@@ -264,12 +293,13 @@ func saveCacheToDisk(path string, result scanResult) error {
 	}
 
 	entry := cacheEntry{
-		Entries:    result.Entries,
-		LargeFiles: result.LargeFiles,
-		TotalSize:  result.TotalSize,
-		TotalFiles: result.TotalFiles,
-		ModTime:    info.ModTime(),
-		ScanTime:   time.Now(),
+		Entries:      result.Entries,
+		LargeFiles:   result.LargeFiles,
+		TotalSize:    result.TotalSize,
+		TotalFiles:   result.TotalFiles,
+		ModTime:      info.ModTime(),
+		ScanTime:     time.Now(),
+		NeedsRefresh: needsRefresh,
 	}
 
 	file, err := os.Create(cachePath)
@@ -311,6 +341,22 @@ func invalidateCache(path string) {
 		_ = os.Remove(cachePath)
 	}
 	removeOverviewSnapshot(path)
+}
+
+// invalidateCacheTree invalidates the cache for path and all its direct
+// child directories so that a rescan does not reuse stale subdirectory
+// sizes. See #812.
+func invalidateCacheTree(path string) {
+	invalidateCache(path)
+	children, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		if child.IsDir() {
+			invalidateCache(filepath.Join(path, child.Name()))
+		}
+	}
 }
 
 func removeOverviewSnapshot(path string) {

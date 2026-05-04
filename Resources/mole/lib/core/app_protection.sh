@@ -56,6 +56,11 @@ readonly SYSTEM_CRITICAL_BUNDLES_FAST=(
     "GlobalPreferences"
     ".GlobalPreferences"
     "org.pqrs.Karabiner*"
+    # CUPS printing subsystem ships with macOS; there is no parent .app to
+    # anchor it, so org.cups.* prefs always look "orphaned" to bundle-ID
+    # matching. Deleting them wipes the default printer and recent-printer
+    # list, which users see as lost saved printers. See #731.
+    "org.cups.*"
 )
 
 # Detailed list for uninstall protection
@@ -290,6 +295,8 @@ readonly DATA_PROTECTED_BUNDLES=(
     "clash.*"
     "Clash.*"
     "clash_*"
+    "*clash-verge*"
+    "*Clash-Verge*"
     "clashverge*"
     "ClashVerge*"
     "com.nssurge.surge-mac"
@@ -323,6 +330,12 @@ readonly DATA_PROTECTED_BUNDLES=(
     "com.zerotier.*"
     "*1dot1dot1dot1*" # Cloudflare WARP
     "*cloudflare*warp*"
+    "org.amnezia.*"
+    "*amnezia*"
+    "*Amnezia*"
+    "com.wireguard.*"
+    "*wireguard*"
+    "*WireGuard*"
 
     # Commercial VPNs
     "*nordvpn*"
@@ -518,6 +531,14 @@ readonly DATA_PROTECTED_BUNDLES=(
     "com.shirtpocket.*"
     "homebrew.mxcl.*"
 
+    # Remote Desktop / Remote Access
+    "org.chromium.chromoting*"
+    "com.google.chrome_remote_desktop*"
+    "com.teamviewer.*"
+    "com.realvnc.*"
+    "com.logmein.*"
+    "com.anydesk.*"
+
     # Screenshot & Recording
     "com.cleanshot.*"
     "com.xnipapp.xnip"
@@ -550,11 +571,20 @@ readonly DATA_PROTECTED_BUNDLES=(
     "Firefox"
     "org.mozilla.*"
 
+    # Scientific & Professional Software
+    "com.sas.*"
+    "com.mathworks.*"
+    "com.ibm.spss.*"
+    "com.wolfram.*"
+    "com.stata.*"
+    "org.rstudio.*"
+    "com.tableausoftware.*"
+
     # License & App Stores
     "com.paddle.Paddle*"
     "com.setapp.DesktopClient"
     "com.devmate.*"
-    "org.sparkle-project.Sparkle"
+    "org.sparkle-project.Sparkle*"
 )
 
 # Centralized check for critical system components (case-insensitive)
@@ -663,6 +693,12 @@ should_protect_data() {
         com.apple.* | loginwindow | dock | systempreferences | finder | safari)
             return 0
             ;;
+        # CUPS is an OS-provided subsystem with no user-facing app; without this
+        # guard `~/Library/Preferences/org.cups.PrintingPrefs.plist` (which holds
+        # the default printer and recent printers) looks orphaned. See #731.
+        org.cups.*)
+            return 0
+            ;;
         backgroundtaskmanagement* | keychain* | security* | bluetooth* | wifi* | network* | tcc)
             return 0
             ;;
@@ -694,7 +730,7 @@ should_protect_data() {
         com.nssurge.* | com.v2ray.* | com.clash.* | ClashX* | Surge* | Shadowrocket* | Quantumult*)
             return 0
             ;;
-        clash-* | Clash-* | *-clash | *-Clash | clash.* | Clash.* | clash_* | clashverge* | ClashVerge*)
+        clash-* | Clash-* | *-clash | *-Clash | clash.* | Clash.* | clash_* | *clash-verge* | *Clash-Verge* | clashverge* | ClashVerge*)
             return 0
             ;;
         com.docker.* | com.getpostman.* | com.insomnia.*)
@@ -733,25 +769,20 @@ should_protect_path() {
     local path="$1"
     [[ -z "$path" ]] && return 1
 
-    local path_lower
-    path_lower=$(echo "$path" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    local _container_cache_path=false
 
-    # 1. Keyword-based matching for system components
-    # Protect System Settings, Preferences, Control Center, and related XPC services
-    # Also protect "Settings" (used in macOS Sequoia) and savedState files
-    if [[ "$path_lower" =~ systemsettings || "$path_lower" =~ systempreferences || "$path_lower" =~ controlcenter ]]; then
-        return 0
-    fi
-
-    # Additional check for com.apple.Settings (macOS Sequoia System Settings)
-    if [[ "$path_lower" =~ com\.apple\.settings ]]; then
-        return 0
-    fi
-
-    # Protect Notes cache (search index issues)
-    if [[ "$path_lower" =~ com\.apple\.notes ]]; then
-        return 0
-    fi
+    # 1. Keyword-based matching for system components (case-insensitive via character classes)
+    case "$path" in
+        *[Ss]ystem[Ss]ettings* | *[Ss]ystem[Pp]references* | *[Cc]ontrol[Cc]enter*)
+            return 0
+            ;;
+        *com.apple.[Ss]ettings* | *com.apple.[Ss]ETTINGS*)
+            return 0
+            ;;
+        *com.apple.[Nn]otes* | *com.apple.[Nn]OTES*)
+            return 0
+            ;;
+    esac
 
     # 2. Protect caches critical for system UI rendering
     # These caches are essential for modern macOS (Sonoma/Sequoia) system UI rendering
@@ -782,8 +813,12 @@ should_protect_path() {
     # Matches: .../Library/Group Containers/group.id/...
     if [[ "$path" =~ /Library/Containers/([^/]+) ]] || [[ "$path" =~ /Library/Group\ Containers/([^/]+) ]]; then
         local bundle_id="${BASH_REMATCH[1]}"
-        # In uninstall mode, only system components are protected; skip data protection
-        if [[ "${MOLE_UNINSTALL_MODE:-0}" != "1" ]] && should_protect_data "$bundle_id"; then
+        # Cache and tmp directories inside containers are regenerable by definition.
+        # safe_clean calls explicitly target these; let them through instead of
+        # blocking on the blanket com.apple.* match in should_protect_data.
+        if [[ "$path" == */Data/Library/Caches/* || "$path" == */Data/tmp/* ]]; then
+            _container_cache_path=true
+        elif [[ "${MOLE_UNINSTALL_MODE:-0}" != "1" ]] && should_protect_data "$bundle_id"; then
             return 0
         fi
     fi
@@ -800,48 +835,63 @@ should_protect_path() {
         */Library/Preferences/com.apple.dock.plist | */Library/Preferences/com.apple.finder.plist)
             return 0
             ;;
+        # Protect Mole's own runtime logs so cleanup cannot delete its active log targets.
+        */Library/Logs/mole | */Library/Logs/mole/ | */Library/Logs/mole/*)
+            return 0
+            ;;
         # Bluetooth and WiFi configurations
         */ByHost/com.apple.bluetooth.* | */ByHost/com.apple.wifi.*)
+            return 0
+            ;;
+        # NetworkExtension stores VPN tunnel state and provider preferences.
+        */Library/Preferences/com.apple.networkextension*.plist | /Volumes/Data/Library/Preferences/com.apple.networkextension*.plist)
             return 0
             ;;
         # iCloud Drive - protect user's cloud synced data
         */Library/Mobile\ Documents* | */Mobile\ Documents*)
             return 0
             ;;
+        # CoreAudio and audio subsystem caches (issue #553)
+        # Cleaning these can cause audio output loss on Intel Macs
+        *com.apple.coreaudio* | *com.apple.audio.* | *coreaudiod*)
+            return 0
+            ;;
     esac
 
     # 6. Match full path against protected patterns
     # This catches things like /Users/tw93/Library/Caches/Claude when pattern is *Claude*
-    # In uninstall mode, only check system-critical bundles (user explicitly chose to uninstall)
-    if [[ "${MOLE_UNINSTALL_MODE:-0}" == "1" ]]; then
-        # Uninstall mode: first check if it's an uninstallable Apple app
-        for pattern in "${APPLE_UNINSTALLABLE_APPS[@]}"; do
-            if bundle_matches_pattern "$path" "$pattern"; then
-                return 1 # Can be uninstalled
-            fi
-        done
-        # Then check system-critical components
-        for pattern in "${SYSTEM_CRITICAL_BUNDLES[@]}"; do
-            if bundle_matches_pattern "$path" "$pattern"; then
-                return 0
-            fi
-        done
-    else
-        # Normal mode (cleanup): protect both system-critical and data-protected bundles
-        for pattern in "${SYSTEM_CRITICAL_BUNDLES[@]}" "${DATA_PROTECTED_BUNDLES[@]}"; do
-            if bundle_matches_pattern "$path" "$pattern"; then
-                return 0
-            fi
-        done
-    fi
+    # Skip for container cache/tmp paths: bundle ID was already checked in step 3,
+    # and critical containers are caught by steps 1/4/5.
+    if [[ "$_container_cache_path" != "true" ]]; then
+        if [[ "${MOLE_UNINSTALL_MODE:-0}" == "1" ]]; then
+            # Uninstall mode: first check if it's an uninstallable Apple app
+            for pattern in "${APPLE_UNINSTALLABLE_APPS[@]}"; do
+                if bundle_matches_pattern "$path" "$pattern"; then
+                    return 1 # Can be uninstalled
+                fi
+            done
+            # Then check system-critical components
+            for pattern in "${SYSTEM_CRITICAL_BUNDLES[@]}"; do
+                if bundle_matches_pattern "$path" "$pattern"; then
+                    return 0
+                fi
+            done
+        else
+            # Normal mode (cleanup): protect both system-critical and data-protected bundles
+            for pattern in "${SYSTEM_CRITICAL_BUNDLES[@]}" "${DATA_PROTECTED_BUNDLES[@]}"; do
+                if bundle_matches_pattern "$path" "$pattern"; then
+                    return 0
+                fi
+            done
+        fi
 
-    # 7. Check if the filename itself matches any protected patterns
-    # Skip in uninstall mode - user explicitly chose to remove this app
-    if [[ "${MOLE_UNINSTALL_MODE:-0}" != "1" ]]; then
-        local filename
-        filename=$(basename "$path")
-        if should_protect_data "$filename"; then
-            return 0
+        # 7. Check if the filename itself matches any protected patterns
+        # Skip in uninstall mode - user explicitly chose to remove this app
+        if [[ "${MOLE_UNINSTALL_MODE:-0}" != "1" ]]; then
+            local filename="${path##*/}"
+            if should_protect_data "$filename"; then
+                return 0
+            fi
         fi
     fi
 
@@ -855,8 +905,20 @@ is_path_whitelisted() {
     local target_path="$1"
     [[ -z "$target_path" ]] && return 1
 
-    # Normalize path (remove trailing slash)
+    # Normalize path (remove trailing slash, collapse consecutive slashes).
+    # Callers sometimes concat a glob expansion that already ends in `/`
+    # with a sub-path that begins with `/`, producing `.../Default//Service
+    # Worker/...`. Without collapsing, those never match a whitelist entry
+    # written with single separators. See #724.
+    #
+    # Note: on bash 3.2 (macOS default), `${var//\/\//\/}` leaves a literal
+    # backslash in the replacement. Indirect variables sidestep that.
+    local _slash_single="/"
+    local _slash_double="//"
     local normalized_target="${target_path%/}"
+    while [[ "$normalized_target" == *"$_slash_double"* ]]; do
+        normalized_target="${normalized_target//$_slash_double/$_slash_single}"
+    done
 
     # Empty whitelist means nothing is protected
     [[ ${#WHITELIST_PATTERNS[@]} -eq 0 ]] && return 1
@@ -864,6 +926,9 @@ is_path_whitelisted() {
     for pattern in "${WHITELIST_PATTERNS[@]}"; do
         # Pattern is already expanded/normalized in bin/clean.sh
         local check_pattern="${pattern%/}"
+        while [[ "$check_pattern" == *"$_slash_double"* ]]; do
+            check_pattern="${check_pattern//$_slash_double/$_slash_single}"
+        done
         local has_glob="false"
         case "$check_pattern" in
             *\** | *\?* | *\[*)
@@ -943,8 +1008,8 @@ find_app_files() {
         "$HOME/Library/WebKit/$bundle_id"
         "$HOME/Library/WebKit/com.apple.WebKit.WebContent/$bundle_id"
         "$HOME/Library/HTTPStorages/$bundle_id"
+        "$HOME/Library/HTTPStorages/$bundle_id.binarycookies"
         "$HOME/Library/Cookies/$bundle_id.binarycookies"
-        "$HOME/Library/LaunchAgents/$bundle_id.plist"
         "$HOME/Library/Application Scripts/$bundle_id"
         "$HOME/Library/Services/$app_name.workflow"
         "$HOME/Library/QuickLook/$app_name.qlgenerator"
@@ -967,6 +1032,10 @@ find_app_files() {
         "$HOME/.local/share/$app_name"
         "$HOME/.$app_name"
         "$HOME/.$app_name"rc
+        "$HOME/Library/SyncedPreferences/$bundle_id.plist"
+        "$HOME/Library/Address Book Plug-Ins/$app_name.bundle"
+        "$HOME/Library/Accessibility/$app_name.bundle"
+        "$HOME/Library/Mail/Bundles/$app_name.mailbundle"
     )
 
     # Add all naming variants to cover inconsistent app directory naming
@@ -1037,9 +1106,19 @@ find_app_files() {
     # Handle Preferences and ByHost variants (only if bundle_id is valid)
     if [[ -n "$bundle_id" && "$bundle_id" != "unknown" && ${#bundle_id} -gt 3 ]]; then
         [[ -f ~/Library/Preferences/"$bundle_id".plist ]] && files_to_clean+=("$HOME/Library/Preferences/$bundle_id.plist")
+        [[ -d ~/Library/Preferences/"$bundle_id" ]] && files_to_clean+=("$HOME/Library/Preferences/$bundle_id")
         [[ -d ~/Library/Preferences/ByHost ]] && while IFS= read -r -d '' pref; do
             files_to_clean+=("$pref")
         done < <(command find ~/Library/Preferences/ByHost -maxdepth 1 \( -name "$bundle_id*.plist" \) -print0 2> /dev/null)
+
+        # User LaunchAgents: wildcard scan for helper plists (e.g., com.example.app.helper.plist)
+        [[ -d ~/Library/LaunchAgents ]] && while IFS= read -r -d '' plist; do
+            files_to_clean+=("$plist")
+        done < <(command find ~/Library/LaunchAgents -maxdepth 1 \( -name "${bundle_id}.plist" -o -name "${bundle_id}.*.plist" \) -print0 2> /dev/null)
+
+        # NSURLSession download caches
+        local nsurlsession_dl="$HOME/Library/Caches/com.apple.nsurlsessiond/Downloads/$bundle_id"
+        [[ -d "$nsurlsession_dl" ]] && files_to_clean+=("$nsurlsession_dl")
 
         # Group Containers (special handling)
         if [[ -d ~/Library/Group\ Containers ]]; then
@@ -1047,6 +1126,38 @@ find_app_files() {
                 files_to_clean+=("$container")
             done < <(command find ~/Library/Group\ Containers -maxdepth 1 \( -name "*$bundle_id*" \) -print0 2> /dev/null)
         fi
+
+        # App extensions often use bundle-id-derived directories rather than the
+        # main bundle id exactly, for example share extensions or file providers.
+        local -a derived_bundle_roots=(
+            "$HOME/Library/Application Scripts"
+            "$HOME/Library/Containers"
+            "$HOME/Library/Application Support/FileProvider"
+        )
+        local derived_root=""
+        local derived_path=""
+        local existing_path=""
+        local already_added=false
+        for derived_root in "${derived_bundle_roots[@]}"; do
+            [[ -d "$derived_root" ]] || continue
+            while IFS= read -r -d '' derived_path; do
+                already_added=false
+                for existing_path in "${files_to_clean[@]}"; do
+                    if [[ "$existing_path" == "$derived_path" ]]; then
+                        already_added=true
+                        break
+                    fi
+                done
+                [[ "$already_added" == "true" ]] || files_to_clean+=("$derived_path")
+            done < <(command find "$derived_root" -maxdepth 1 -type d -name "*$bundle_id*" -print0 2> /dev/null)
+        done
+    fi
+
+    # Shared file lists (.sfl4 - recent documents etc.)
+    if [[ -n "$bundle_id" && "$bundle_id" != "unknown" ]] && [[ -d "$HOME/Library/Application Support/com.apple.sharedfilelist" ]]; then
+        while IFS= read -r -d '' sfl4_file; do
+            files_to_clean+=("$sfl4_file")
+        done < <(command find "$HOME/Library/Application Support/com.apple.sharedfilelist" -maxdepth 2 -name "${bundle_id}.sfl4" -print0 2> /dev/null)
     fi
 
     # Launch Agents by name (special handling)
@@ -1187,7 +1298,7 @@ get_diagnostic_report_paths_for_app() {
             *) continue ;;
         esac
         case "$base" in
-            *.ips | *.crash | *.spin) ;;
+            *.ips | *.crash | *.spin | *.diag) ;;
             *) continue ;;
         esac
         printf '%s\n' "$f"
@@ -1233,6 +1344,10 @@ find_app_system_files() {
         "/Library/Screen Savers/$app_name.saver"
         "/Library/Caches/$bundle_id"
         "/Library/Caches/$app_name"
+        "/Library/Extensions/$app_name.kext"
+        "/Library/StartupItems/$app_name"
+        "/Library/Logs/$app_name"
+        "/Library/Logs/$bundle_id"
     )
 
     # Add all naming variants for apps with spaces in name
@@ -1263,6 +1378,21 @@ find_app_system_files() {
 
         system_files+=("$p")
     done
+
+    # System LaunchAgents/LaunchDaemons often use bundle-id-derived helper
+    # labels (for example "<bundle>.ProxyConfigHelper.plist"), so scan for
+    # validated reverse-DNS bundle-id prefixes before falling back to app name.
+    # The two -name patterns are anchored at the dot boundary so that, e.g.,
+    # bundle "com.foo" matches "com.foo.plist" and "com.foo.helper.plist" but
+    # NOT "com.foobar.plist" from an unrelated vendor.
+    if [[ -n "$bundle_id" && "$bundle_id" != "unknown" &&
+        "$bundle_id" =~ ^[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)+$ ]]; then
+        for base in /Library/LaunchAgents /Library/LaunchDaemons; do
+            [[ -d "$base" ]] && while IFS= read -r -d '' plist; do
+                system_files+=("$plist")
+            done < <(command find "$base" -maxdepth 1 \( -name "${bundle_id}.plist" -o -name "${bundle_id}.*.plist" \) -print0 2> /dev/null)
+        done
+    fi
 
     # System LaunchAgents/LaunchDaemons by name
     if [[ ${#app_name} -gt 3 ]]; then

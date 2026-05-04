@@ -17,8 +17,8 @@ format_app_display() {
     fi
 
     # Format size
-    local size_str="N/A"
-    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" ]] && size_str="$size"
+    local size_str="--"
+    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" && "$size" != "N/A" && "$size" != "--" ]] && size_str="$size"
 
     # Calculate available width for app name based on terminal width
     # Accept pre-calculated max_name_width (5th param) to avoid recalculation in loops
@@ -58,10 +58,19 @@ format_app_display() {
     current_display_width=$(get_display_width "$truncated_name")
 
     # Calculate padding needed
-    # Formula: char_count + (available_width - display_width) = padding to add
-    local char_count=${#truncated_name}
+    # printf counts bytes (in LC_ALL=C), not display width or char count.
+    # Get byte count for printf width calculation.
+    local old_lc="${LC_ALL:-}"
+    export LC_ALL=C
+    local byte_count=${#truncated_name}
+    if [[ -n "$old_lc" ]]; then
+        export LC_ALL="$old_lc"
+    else
+        unset LC_ALL
+    fi
+
     local padding_needed=$((available_width - current_display_width))
-    local printf_width=$((char_count + padding_needed))
+    local printf_width=$((byte_count + padding_needed))
 
     # Use dynamic column width with corrected padding
     printf "%-*s %9s | %s" "$printf_width" "$truncated_name" "$size_str" "$compact_last_used"

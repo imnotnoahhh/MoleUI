@@ -186,3 +186,16 @@ setup() {
     ")
     [[ "$result" == "1" ]]
 }
+
+@test "run_with_timeout: shell fallback preserves caller INT trap" {
+    result=$(bash -c "
+        set -euo pipefail
+        source '$PROJECT_ROOT/lib/core/timeout.sh'
+        MO_TIMEOUT_BIN=''
+        MO_TIMEOUT_PERL_BIN=''
+        trap 'echo caller-trap' INT
+        run_with_timeout 2 true
+        trap -p INT
+    ")
+    [[ "$result" == *"caller-trap"* ]]
+}

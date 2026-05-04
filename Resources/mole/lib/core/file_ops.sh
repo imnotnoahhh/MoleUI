@@ -92,7 +92,10 @@ validate_path_for_deletion() {
         # Validate resolved target against protected paths
         if [[ -n "$resolved_target" ]]; then
             case "$resolved_target" in
-                /System/* | /usr/bin/* | /usr/lib/* | /bin/* | /sbin/* | /private/etc/*)
+                / | /System | /System/* | /bin | /bin/* | /sbin | /sbin/* | \
+                    /usr | /usr/bin | /usr/bin/* | /usr/lib | /usr/lib/* | \
+                    /etc | /etc/* | /private/etc | /private/etc/* | \
+                    /Library/Extensions | /Library/Extensions/*)
                     log_error "Symlink points to protected system path: $path -> $resolved_target"
                     return 1
                     ;;
@@ -183,6 +186,7 @@ validate_path_for_deletion() {
 safe_remove() {
     local path="$1"
     local silent="${2:-false}"
+    local precomputed_size_kb="${3:-}"
 
     # Validate path
     if ! validate_path_for_deletion "$path"; then
@@ -231,15 +235,18 @@ safe_remove() {
 
     debug_log "Removing: $path"
 
-    # Calculate size before deletion for logging
+    # Calculate size before deletion for logging.
+    # Accept pre-computed size to skip redundant I/O when the caller already measured.
     local size_kb=0
     local size_human=""
     if oplog_enabled; then
-        if [[ -e "$path" ]]; then
+        if [[ -n "$precomputed_size_kb" && "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
+            size_kb="$precomputed_size_kb"
+        elif [[ -e "$path" ]]; then
             size_kb=$(get_path_size_kb "$path" 2> /dev/null || echo "0")
-            if [[ "$size_kb" =~ ^[0-9]+$ ]] && [[ "$size_kb" -gt 0 ]]; then
-                size_human=$(bytes_to_human "$((size_kb * 1024))" 2> /dev/null || echo "${size_kb}KB")
-            fi
+        fi
+        if [[ "$size_kb" =~ ^[0-9]+$ ]] && [[ "$size_kb" -gt 0 ]]; then
+            size_human=$(bytes_to_human "$((size_kb * 1024))" 2> /dev/null || echo "${size_kb}KB")
         fi
     fi
 
@@ -309,7 +316,11 @@ safe_sudo_remove() {
     local path="$1"
 
     if ! validate_path_for_deletion "$path"; then
-        log_error "Path validation failed for sudo remove: $path"
+        if declare -f should_protect_path > /dev/null 2>&1 && should_protect_path "$path"; then
+            debug_log "Skipped sudo remove for protected path: $path"
+        else
+            log_error "Path validation failed for sudo remove: $path"
+        fi
         return 1
     fi
 
@@ -400,6 +411,234 @@ safe_sudo_remove() {
 }
 
 # ============================================================================
+# Unified deletion helper (Trash + permanent routing with forensic log)
+# ============================================================================
+
+# Route a deletion through either macOS Trash or permanent rm, while logging
+# every call for forensic review. Designed for destructive paths where undo
+# matters (e.g. uninstall). Not used by cache-clean paths.
+#
+# Usage: mole_delete <path> [needs_sudo=false]
+#
+# Environment:
+#   MOLE_DELETE_MODE      "permanent" (default) or "trash"
+#   MOLE_DRY_RUN=1        Log intent, do not delete
+#   MOLE_TEST_TRASH_DIR   Test-only override; Trash moves go here via `mv`
+#                         instead of Finder/trash CLI. Required for bats.
+#   MOLE_DELETE_LOG       Override the log file path (default:
+#                         ~/Library/Logs/mole/deletions.log)
+#
+# Returns 0 on success, 1 on failure. Always appends a tab-separated line to
+# the deletions log: <iso_ts>\t<mode>\t<size_kb>\t<status>\t<path>.
+# size_kb is "unknown" when du could not measure the path (permission denied,
+# disappeared mid-call); never silently coerced to 0KB so post-hoc forensics
+# can tell measured-zero from measurement-failure.
+mole_delete() {
+    local path="$1"
+    local needs_sudo="${2:-false}"
+    local mode="${MOLE_DELETE_MODE:-permanent}"
+
+    [[ -z "$path" ]] && return 1
+
+    # Nothing to do if path does not exist (but a broken symlink still counts).
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
+        return 0
+    fi
+
+    # Validation is delegated to the underlying safe_* helpers (which call
+    # validate_path_for_deletion). Trash routing only applies to paths the
+    # user could legitimately restore from, so we short-circuit invalid paths
+    # up front to avoid a no-op Trash move followed by a validation failure.
+    # The rejection itself is recorded in the forensic log so audit trails
+    # can distinguish refused-by-policy from never-attempted.
+    if [[ ! -L "$path" ]] && ! validate_path_for_deletion "$path"; then
+        _mole_delete_log "$mode" "0" "rejected" "$path"
+        return 1
+    fi
+
+    # Capture size before the delete so the log line is still useful when the
+    # path is gone afterwards. Use "unknown" (not 0) on failure so the log
+    # never lies about a multi-GB delete by recording it as 0KB.
+    local size_kb="unknown"
+    if [[ -e "$path" ]]; then
+        local raw_size=""
+        local du_rc=0
+        if [[ "$needs_sudo" == "true" ]]; then
+            raw_size=$(sudo du -skP "$path" 2> /dev/null | awk '{print $1; exit}')
+            du_rc=${PIPESTATUS[0]}
+        else
+            raw_size=$(get_path_size_kb "$path" 2> /dev/null) || du_rc=$?
+        fi
+        if [[ "$du_rc" -eq 0 && "$raw_size" =~ ^[0-9]+$ ]]; then
+            size_kb="$raw_size"
+        fi
+    fi
+
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        debug_log "[DRY RUN] Would delete ($mode): $path"
+        _mole_delete_log "$mode" "$size_kb" "dry-run" "$path"
+        return 0
+    fi
+
+    # Trash mode: attempt Trash move first, fall through to permanent removal
+    # on failure so destructive operations never get silently skipped.
+    if [[ "$mode" == "trash" ]]; then
+        if _mole_move_to_trash "$path" "$needs_sudo"; then
+            _mole_delete_log "trash" "$size_kb" "ok" "$path"
+            log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "TRASHED" "$path" "${size_kb}KB"
+            return 0
+        fi
+        # User explicitly chose Trash for recoverability. Surface the fallback
+        # to permanent rm once per session so they know an "undo" isn't there.
+        if [[ -z "${_MOLE_TRASH_FALLBACK_WARNED:-}" ]]; then
+            _MOLE_TRASH_FALLBACK_WARNED=1
+            export _MOLE_TRASH_FALLBACK_WARNED
+            printf 'Warning: Trash unavailable, removing permanently. Subsequent files this session also bypass Trash.\n' >&2
+        fi
+        debug_log "Trash move failed, falling back to permanent delete: $path"
+    fi
+
+    # Permanent path. Delegate to the existing safe_* helpers so path
+    # validation, sudo handling, and existing log_operation calls remain
+    # unchanged for callers that have always gone through rm -rf.
+    local rc=0
+    if [[ -L "$path" ]]; then
+        safe_remove_symlink "$path" "$needs_sudo" || rc=$?
+    elif [[ "$needs_sudo" == "true" ]]; then
+        safe_sudo_remove "$path" || rc=$?
+    else
+        safe_remove "$path" "true" || rc=$?
+    fi
+
+    local status_label="ok"
+    [[ $rc -ne 0 ]] && status_label="error"
+    # Mark the trash-mode fallback so forensics can tell why rm was used.
+    if [[ "$mode" == "trash" && "$status_label" == "ok" ]]; then
+        status_label="trash-fallback-rm"
+    fi
+    _mole_delete_log "$mode" "$size_kb" "$status_label" "$path"
+    return "$rc"
+}
+
+# Move a path to the macOS Trash. Test harnesses set MOLE_TEST_TRASH_DIR to
+# redirect the move to a tmpdir, avoiding any Finder/osascript interaction.
+_mole_move_to_trash() {
+    local path="$1"
+    local needs_sudo="${2:-false}"
+
+    if [[ -n "${MOLE_TEST_TRASH_DIR:-}" ]]; then
+        mkdir -p "$MOLE_TEST_TRASH_DIR" 2> /dev/null || return 1
+        local dest="$MOLE_TEST_TRASH_DIR/$(basename "$path").$$.$(date +%s 2> /dev/null || echo 0)"
+        mv "$path" "$dest" 2> /dev/null
+        return $?
+    fi
+
+    # Blocked in test mode so uninstall tests never hit Finder/AppleScript.
+    if [[ "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+        return 1
+    fi
+
+    # Prefer the `trash` CLI (Homebrew formula) when available, it's faster
+    # and does not need Finder running. Fall back to AppleScript, which
+    # ships with macOS but prompts for auth on root-owned targets.
+    if command -v trash > /dev/null 2>&1; then
+        if [[ "$needs_sudo" == "true" ]]; then
+            sudo trash "$path" > /dev/null 2>&1 && return 0
+        else
+            trash "$path" > /dev/null 2>&1 && return 0
+        fi
+    fi
+
+    # AppleScript fallback. Pass the path via argv so special chars (quotes,
+    # backslashes) cannot break out of the quoted string.
+    osascript - "$path" > /dev/null 2>&1 << 'APPLESCRIPT'
+on run argv
+    set p to POSIX file (item 1 of argv)
+    tell application "Finder"
+        delete p
+    end tell
+end run
+APPLESCRIPT
+}
+
+# Batched Trash move for non-sudo, non-symlink paths. Removes the per-file
+# subprocess fan-out that made AppleScript-fallback uninstalls feel frozen
+# (100 files * ~1s each). Returns 0 only when the entire batch landed in the
+# Trash; callers must fall back to the per-file path on non-zero so nothing
+# is silently skipped.
+_mole_move_to_trash_batch() {
+    local -a paths=("$@")
+    [[ ${#paths[@]} -eq 0 ]] && return 0
+
+    if [[ -n "${MOLE_TEST_TRASH_DIR:-}" ]]; then
+        mkdir -p "$MOLE_TEST_TRASH_DIR" 2> /dev/null || return 1
+        local ts
+        ts=$(date +%s 2> /dev/null || echo 0)
+        local p dest
+        for p in "${paths[@]}"; do
+            dest="$MOLE_TEST_TRASH_DIR/$(basename "$p").$$.${ts}.$RANDOM"
+            mv "$p" "$dest" 2> /dev/null || return 1
+        done
+        return 0
+    fi
+
+    if [[ "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+        return 1
+    fi
+
+    if command -v trash > /dev/null 2>&1; then
+        trash "${paths[@]}" > /dev/null 2>&1 && return 0
+    fi
+
+    # AppleScript fallback: build one POSIX-file list and tell Finder once.
+    osascript - "${paths[@]}" > /dev/null 2>&1 << 'APPLESCRIPT'
+on run argv
+    set posixList to {}
+    repeat with a in argv
+        set end of posixList to POSIX file (a as text)
+    end repeat
+    tell application "Finder" to delete posixList
+end run
+APPLESCRIPT
+}
+
+_mole_delete_log() {
+    local mode="$1"
+    local size_kb="$2"
+    local status="$3"
+    local target="$4"
+
+    local log_file="${MOLE_DELETE_LOG:-$HOME/Library/Logs/mole/deletions.log}"
+    local log_dir
+    log_dir=$(dirname "$log_file")
+
+    # Surface log-write failures once per session. The deletions log is the
+    # only audit trail for Trash-routed removals; silently no-oping when the
+    # log dir is unwritable (root-owned from prior sudo, ENOSPC, read-only
+    # volume) defeats the design.
+    if ! mkdir -p "$log_dir" 2> /dev/null; then
+        _mole_warn_log_broken "create directory: $log_dir"
+        return 0
+    fi
+
+    local ts
+    ts=$(date '+%Y-%m-%dT%H:%M:%S%z' 2> /dev/null || echo "unknown")
+
+    if ! printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$ts" "$mode" "$size_kb" "$status" "$target" \
+        >> "$log_file" 2> /dev/null; then
+        _mole_warn_log_broken "write to: $log_file"
+    fi
+}
+
+_mole_warn_log_broken() {
+    [[ -n "${_MOLE_DELETE_LOG_WARNED:-}" ]] && return 0
+    _MOLE_DELETE_LOG_WARNED=1
+    export _MOLE_DELETE_LOG_WARNED
+    printf 'Warning: deletions audit log unavailable (%s). Forensic trail incomplete this session.\n' "$1" >&2
+}
+
+# ============================================================================
 # Safe Find and Delete Operations
 # ============================================================================
 
@@ -434,13 +673,19 @@ safe_find_delete() {
         find_args+=("-mtime" "+$age_days")
     fi
 
-    # Iterate results to respect should_protect_path
+    # Iterate results to respect both system protection and user whitelist.
+    # Per-caller whitelist gates were missed in past releases (see #710, #724,
+    # #738, #744, #757); enforcing here makes the protection structural so
+    # new clean_* functions get whitelist enforcement for free.
     while IFS= read -r -d '' match; do
         if should_protect_path "$match"; then
             continue
         fi
+        if declare -f is_path_whitelisted > /dev/null && is_path_whitelisted "$match"; then
+            continue
+        fi
         safe_remove "$match" true || true
-    done < <(command find "$base_dir" "${find_args[@]}" -print0 2> /dev/null || true)
+    done < <(command find "$base_dir" "${find_args[@]}" -print0 2> /dev/null < /dev/null || true)
 
     return 0
 }
@@ -481,9 +726,13 @@ safe_sudo_find_delete() {
         find_args+=("-mtime" "+$age_days")
     fi
 
-    # Iterate results to respect should_protect_path
+    # Iterate results to respect both system protection and user whitelist.
+    # See safe_find_delete for rationale (#757).
     while IFS= read -r -d '' match; do
         if should_protect_path "$match"; then
+            continue
+        fi
+        if declare -f is_path_whitelisted > /dev/null && is_path_whitelisted "$match"; then
             continue
         fi
         safe_sudo_remove "$match" || true

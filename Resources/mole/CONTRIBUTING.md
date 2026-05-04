@@ -8,6 +8,9 @@ brew install shfmt shellcheck bats-core golangci-lint
 
 # Install goimports for better Go formatting
 go install golang.org/x/tools/cmd/goimports@latest
+
+# Install pre-commit hook (runs format/lint checks on every commit)
+git config core.hooksPath .githooks
 ```
 
 ## Development
