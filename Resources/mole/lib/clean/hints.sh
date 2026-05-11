@@ -55,6 +55,90 @@ hint_get_path_size_kb_with_timeout() {
 }
 
 # shellcheck disable=SC2329
+hint_extract_launch_agent_program_path() {
+    local plist="$1"
+    local program=""
+
+    if ! program=$(plutil -extract ProgramArguments.0 raw "$plist" 2> /dev/null); then
+        program=""
+    fi
+    if [[ -z "$program" ]]; then
+        if ! program=$(plutil -extract Program raw "$plist" 2> /dev/null); then
+            program=""
+        fi
+    fi
+
+    printf '%s\n' "$program"
+}
+
+# shellcheck disable=SC2329
+hint_launch_agent_has_mach_services() {
+    local plist="$1"
+    plutil -extract MachServices raw "$plist" > /dev/null 2>&1
+}
+
+# shellcheck disable=SC2329
+hint_extract_launch_agent_associated_bundle() {
+    local plist="$1"
+    local associated=""
+
+    if ! associated=$(plutil -extract AssociatedBundleIdentifiers.0 raw "$plist" 2> /dev/null); then
+        associated=""
+    fi
+    if [[ -z "$associated" ]] || [[ "$associated" == "1" ]]; then
+        if ! associated=$(plutil -extract AssociatedBundleIdentifiers raw "$plist" 2> /dev/null); then
+            associated=""
+        fi
+        if [[ "$associated" == "{"* ]] || [[ "$associated" == "["* ]]; then
+            associated=""
+        fi
+    fi
+
+    printf '%s\n' "$associated"
+}
+
+# shellcheck disable=SC2329
+hint_is_app_scoped_launch_target() {
+    local program="$1"
+
+    case "$program" in
+        /Applications/Setapp/*.app/* | \
+            /Applications/*.app/* | \
+            "$HOME"/Applications/*.app/* | \
+            /Library/Input\ Methods/*.app/* | \
+            /Library/PrivilegedHelperTools/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# shellcheck disable=SC2329
+hint_is_system_binary() {
+    local program="$1"
+
+    case "$program" in
+        /bin/* | /sbin/* | /usr/bin/* | /usr/sbin/* | /usr/libexec/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# shellcheck disable=SC2329
+hint_launch_agent_bundle_exists() {
+    local bundle_id="$1"
+
+    [[ -z "$bundle_id" ]] && return 1
+
+    # Delegate to the shared resolver so Spotlight misses (e.g. KeePassXC
+    # installed via Homebrew) fall back to a direct /Applications scan. See #732.
+    bundle_has_installed_app "$bundle_id"
+}
+
+# shellcheck disable=SC2329
 record_project_artifact_hint() {
     local path="$1"
 
@@ -350,4 +434,203 @@ show_project_artifact_hint_notice() {
         echo -e "  ${GRAY}${ICON_SUBLIST}${NC} Examples: ${GRAY}${example_text}${NC}"
     fi
     echo -e "  ${GRAY}${ICON_REVIEW}${NC} Review: mo purge"
+}
+
+# shellcheck disable=SC2329
+show_user_launch_agent_hint_notice() {
+    local launch_agents_dir="$HOME/Library/LaunchAgents"
+    [[ -d "$launch_agents_dir" ]] || return 0
+
+    local max_hits=3
+    local -a labels=()
+    local -a reasons=()
+    local -a targets=()
+    local plist
+
+    while IFS= read -r -d '' plist; do
+        local filename
+        filename=$(basename "$plist")
+        [[ "$filename" == com.apple.* ]] && continue
+
+        local reason=""
+        local target=""
+        local program=""
+        local associated=""
+
+        program=$(hint_extract_launch_agent_program_path "$plist")
+        if [[ -z "$program" ]] && hint_launch_agent_has_mach_services "$plist"; then
+            continue
+        fi
+        if [[ -n "$program" ]] && hint_is_system_binary "$program"; then
+            continue
+        fi
+        if [[ -n "$program" ]] && hint_is_app_scoped_launch_target "$program" && [[ ! -e "$program" ]]; then
+            reason="Missing app/helper target"
+            target="${program/#$HOME/~}"
+        else
+            associated=$(hint_extract_launch_agent_associated_bundle "$plist")
+            if [[ -n "$associated" ]] && ! hint_launch_agent_bundle_exists "$associated"; then
+                reason="Associated app not found"
+                target="$associated"
+            fi
+        fi
+
+        if [[ -n "$reason" ]]; then
+            labels+=("$filename")
+            reasons+=("$reason")
+            targets+=("$target")
+            if [[ ${#labels[@]} -ge $max_hits ]]; then
+                break
+            fi
+        fi
+    done < <(find "$launch_agents_dir" -maxdepth 1 -name "*.plist" -print0 2> /dev/null)
+
+    [[ ${#labels[@]} -eq 0 ]] && return 0
+
+    note_activity
+
+    local i
+    for i in "${!labels[@]}"; do
+        echo -e "  ${GREEN}${ICON_LIST}${NC} Potential stale login item: ${labels[$i]}"
+        echo -e "  ${GRAY}${ICON_SUBLIST}${NC} ${reasons[$i]}: ${GRAY}${targets[$i]}${NC}"
+    done
+    echo -e "  ${GRAY}${ICON_REVIEW}${NC} Review: open ~/Library/LaunchAgents and remove only items you recognize"
+}
+
+readonly ORPHAN_DOTDIR_KNOWN_SAFE=(
+    # Shell
+    ".bash_history" ".bash_profile" ".bash_sessions" ".bashrc"
+    ".zshrc" ".zsh_history" ".zsh_sessions" ".zprofile" ".zshenv" ".zlogout" ".zcompdump"
+    ".profile" ".inputrc" ".hushlogin"
+    ".oh-my-zsh" ".zinit" ".zplug" ".antigen" ".p10k.zsh"
+    ".config" ".local" ".cache"
+    # Security
+    ".ssh" ".gnupg" ".gpg" ".pass""word-store"
+    # Git
+    ".gitconfig" ".gitignore_global" ".git-credentials" ".gitattributes_global"
+    # Language tools (Mole handles their caches separately)
+    ".pyenv" ".rbenv" ".nvm" ".nodenv" ".goenv" ".jenv"
+    ".rustup" ".cargo" ".ghcup" ".stack" ".cabal"
+    ".sdkman" ".jabba" ".asdf" ".mise" ".rtx" ".volta" ".fnm"
+    ".deno" ".bun"
+    # Package managers
+    ".npm" ".yarn" ".pnpm" ".bundle" ".gem"
+    ".composer" ".nuget" ".pub-cache"
+    ".m2" ".gradle" ".sbt" ".ivy2" ".lein"
+    ".hex" ".mix" ".opam" ".cpan" ".cpanm"
+    ".conda" ".virtualenvs" ".pipx"
+    # Cloud / devops
+    ".docker" ".kube" ".minikube" ".helm"
+    ".aws" ".azure" ".terraform" ".vagrant"
+    # Editors / IDEs
+    ".vim" ".vimrc" ".viminfo" ".emacs" ".emacs.d" ".doom.d" ".nano" ".nanorc"
+    ".vscode" ".cursor" ".atom"
+    # AI tools
+    ".claude" ".copilot" ".ollama"
+    # macOS system
+    ".Trash" ".Trashes" ".CFUserTextEncoding" ".DS_Store" ".cups" ".dropbox"
+    # Mobile / native dev
+    ".android" ".cocoapods" ".fastlane" ".expo" ".react-native" ".swiftpm"
+    # Terminal / misc
+    ".tmux" ".screen" ".wget-hsts" ".curlrc" ".netrc" ".wgetrc"
+    ".putty"
+    ".lesshst" ".python_history" ".node_repl_history"
+    ".irb_history" ".pry_history"
+    ".jupyter" ".ipython" ".matplotlib" ".keras" ".torch"
+    ".psql_history" ".mysql_history" ".sqlite_history" ".rediscli_history" ".mongo" ".dbshell"
+    # Homebrew / VCS
+    ".homebrew" ".hg" ".hgrc" ".svn" ".bazaar"
+    # Fly.io / Gemini (Tang uses these)
+    ".fly" ".gemini"
+)
+
+# Detect ~/.<dir> directories that may belong to uninstalled CLI tools.
+# shellcheck disable=SC2329
+show_orphan_dotdir_hint_notice() {
+    local max_hits=5
+    local age_days="${MOLE_DOTDIR_ORPHAN_AGE_DAYS:-60}"
+    local now
+    now=$(date +%s)
+
+    local -a labels=()
+    local -a details=()
+
+    while IFS= read -r dotdir; do
+        [[ -d "$dotdir" ]] || continue
+        local basename
+        basename=$(basename "$dotdir")
+
+        local is_safe=false
+        local safe_name
+        for safe_name in "${ORPHAN_DOTDIR_KNOWN_SAFE[@]}"; do
+            if [[ "$basename" == "$safe_name" ]]; then
+                is_safe=true
+                break
+            fi
+        done
+        [[ "$is_safe" == "true" ]] && continue
+
+        if declare -f is_path_whitelisted > /dev/null && is_path_whitelisted "$dotdir"; then
+            continue
+        fi
+
+        local mtime
+        mtime=$(get_file_mtime "$dotdir" 2> /dev/null) || continue
+        local age_d=$(((now - mtime) / 86400))
+        [[ $age_d -lt $age_days ]] && continue
+
+        local name="${basename#.}"
+        local -a candidates=("$name")
+        local dehyphen="${name//-/_}"
+        [[ "$dehyphen" != "$name" ]] && candidates+=("$dehyphen")
+        local stripped="${name//-/}"
+        [[ "$stripped" != "$name" && "$stripped" != "$dehyphen" ]] && candidates+=("$stripped")
+        local no_suffix="${name%-cli}"
+        [[ "$no_suffix" != "$name" ]] && candidates+=("$no_suffix")
+        no_suffix="${name%-temp}"
+        [[ "$no_suffix" != "$name" ]] && candidates+=("$no_suffix")
+        no_suffix="${name%-data}"
+        [[ "$no_suffix" != "$name" ]] && candidates+=("$no_suffix")
+
+        local has_binary=false
+        local c
+        for c in "${candidates[@]}"; do
+            if command -v "$c" > /dev/null 2>&1; then
+                has_binary=true
+                break
+            fi
+        done
+        [[ "$has_binary" == "true" ]] && continue
+
+        if [[ -d "$HOME/Library/LaunchAgents" ]]; then
+            if run_with_timeout 2 grep -rlq "$basename" "$HOME/Library/LaunchAgents/" 2> /dev/null; then
+                continue
+            fi
+        fi
+
+        local size_human=""
+        local size_kb
+        if size_kb=$(hint_get_path_size_kb_with_timeout "$dotdir" 0.8); then
+            size_human=" ($(bytes_to_human $((size_kb * 1024))))"
+        fi
+
+        # shellcheck disable=SC2088
+        labels+=("~/${basename}${size_human}")
+        details+=("No matching binary in PATH, last modified ${age_d} days ago")
+
+        if [[ ${#labels[@]} -ge $max_hits ]]; then
+            break
+        fi
+    done < <(run_with_timeout 3 find "$HOME" -maxdepth 1 -mindepth 1 -type d -name '.*' 2> /dev/null | LC_ALL=C sort)
+
+    [[ ${#labels[@]} -eq 0 ]] && return 0
+
+    note_activity
+
+    local i
+    for i in "${!labels[@]}"; do
+        echo -e "  ${GREEN}${ICON_LIST}${NC} Potential orphan dotfile: ${labels[$i]}"
+        echo -e "  ${GRAY}${ICON_SUBLIST}${NC} ${details[$i]}"
+    done
+    echo -e "  ${GRAY}${ICON_REVIEW}${NC} Review manually before removing any ~/.<dir> directory"
 }

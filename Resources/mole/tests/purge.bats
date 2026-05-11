@@ -109,6 +109,39 @@ setup() {
 	[[ "$result" == "ALLOWED" ]]
 }
 
+@test "compact_purge_scan_path keeps the tail of long purge paths visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_SKIP_MAIN=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/purge.sh"
+compact_purge_scan_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "compact_purge_menu_path keeps the project tail visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+compact_purge_menu_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "format_purge_target_path rewrites home with tilde" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+format_purge_target_path "$HOME/www/app/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == \~/www/app/node_modules ]]
+}
+
 @test "filter_nested_artifacts: removes nested node_modules" {
 	mkdir -p "$HOME/www/project/node_modules/package/node_modules"
 
@@ -347,14 +380,28 @@ EOF
 }
 
 @test "confirm_purge_cleanup accepts Enter" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 drain_pending_input() { :; }
 confirm_purge_cleanup 2 1024 0 <<< ''
 EOF
 
-    [ "$status" -eq 0 ]
+	[ "$status" -eq 0 ]
+}
+
+@test "confirm_purge_cleanup shows selected paths" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+drain_pending_input() { :; }
+confirm_purge_cleanup 2 1024 0 "~/www/app/node_modules" "~/www/app/dist" <<< ''
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Selected paths:"* ]]
+	[[ "$output" == *"~/www/app/node_modules"* ]]
+	[[ "$output" == *"~/www/app/dist"* ]]
 }
 
 @test "confirm_purge_cleanup cancels on ESC" {
@@ -569,6 +616,100 @@ EOF
 	rm -f "$scan_output"
 
 	[[ "$result" == "FOUND" ]]
+}
+
+@test "scan_purge_targets: includes valid CACHEDIR.TAG directories in find mode" {
+	mkdir -p "$HOME/www/python-app/.custom-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$HOME/www/python-app/.custom-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/.custom-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "FOUND" ]]
+}
+
+@test "scan_purge_targets: ignores invalid CACHEDIR.TAG signatures" {
+	mkdir -p "$HOME/www/python-app/.custom-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: invalid\n' > "$HOME/www/python-app/.custom-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/.custom-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "NOT_FOUND" ]]
+}
+
+@test "scan_purge_targets: keeps CACHEDIR.TAG under Library out of purge scans" {
+	mkdir -p "$HOME/www/python-app/Library/fontconfig-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$HOME/www/python-app/Library/fontconfig-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/Library/fontconfig-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "NOT_FOUND" ]]
+}
+
+@test "scan_purge_targets: trusts empty fd result without falling back to find" {
+	mkdir -p "$HOME/.config/mole" "$HOME/www/empty-project"
+	printf '%s\n' "$HOME/www" > "$HOME/.config/mole/purge_paths"
+
+	local mock_bin="$HOME/mock-bin"
+	mkdir -p "$mock_bin"
+	cat > "$mock_bin/fd" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$mock_bin/fd"
+	cat > "$mock_bin/find" <<'EOF'
+#!/bin/bash
+echo find-called >> "$HOME/find-called"
+exit 0
+EOF
+	chmod +x "$mock_bin/find"
+
+	local scan_output
+	scan_output="$(mktemp)"
+
+	run env HOME="$HOME" PATH="$mock_bin:$PATH" bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+scan_purge_targets "$HOME/www" "$scan_output"
+[[ ! -e "$HOME/find-called" ]]
+[[ -f "$scan_output" ]]
+[[ ! -s "$scan_output" ]]
+EOF
+
+	rm -f "$scan_output"
+	[ "$status" -eq 0 ]
 }
 
 @test "is_recently_modified: detects recent projects" {
@@ -906,4 +1047,144 @@ EOF
 
 	rm -f "$scan_output"
 	[[ "$result" == "SKIPPED" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Regression tests: sort-order consistency in clean_project_artifacts
+#
+# Bug: after sorting artifacts by size (descending), item_display_paths was
+# not included in the reorder, so PURGE_CATEGORY_FULL_PATHS_ARRAY ended up
+# in the original discovery order (alphabetical) while every other parallel
+# array (menu_options, item_paths, item_sizes, …) was in size order.
+# Effect: the "Full path" footer showed the wrong project for the highlighted
+# item, and the confirmation dialog listed paths that did not match the
+# selection. See https://github.com/tw93/Mole/issues/647
+#
+# These tests run clean_project_artifacts under a pseudo-terminal (so the
+# interactive code path is taken and select_purge_categories is called).
+# The function is overridden to capture PURGE_CATEGORY_FULL_PATHS_ARRAY and
+# PURGE_CATEGORY_SIZES without performing any actual deletion.
+# ---------------------------------------------------------------------------
+
+# Run a bash script file under a pseudo-terminal so that [[ -t 0 ]] is true
+# inside the script. Required to exercise the interactive branch of
+# clean_project_artifacts, which only calls select_purge_categories when
+# stdin is a tty.
+_run_in_pty() {
+	local script_file="$1"
+	script -q /dev/null bash --noprofile --norc "$script_file" 2>/dev/null
+}
+
+@test "sort: PURGE_CATEGORY_FULL_PATHS_ARRAY[0] is the largest artifact after size-descending sort" {
+	# alpha = small (~5 KB), beta = large (~200 KB).
+	# Alphabetical discovery order puts alpha first; size order puts beta first.
+	# After the sort, PURGE_CATEGORY_FULL_PATHS_ARRAY[0] must be beta's path.
+	mkdir -p "$HOME/www/alpha/node_modules"
+	mkdir -p "$HOME/www/beta/node_modules"
+	echo '{}' > "$HOME/www/alpha/package.json"
+	echo '{}' > "$HOME/www/beta/package.json"
+	dd if=/dev/zero of="$HOME/www/alpha/node_modules/data" bs=1024 count=5   2>/dev/null
+	dd if=/dev/zero of="$HOME/www/beta/node_modules/data"  bs=1024 count=200 2>/dev/null
+
+	local capture_file script_file
+	capture_file=$(mktemp "$HOME/sort_capture.XXXXXX")
+	script_file=$(mktemp  "$HOME/sort_script.XXXXXX.sh")
+
+	cat > "$script_file" << SCRIPT
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.cache/mole"
+export XDG_CACHE_HOME="$HOME/.cache"
+export TERM="dumb"
+PURGE_SEARCH_PATHS=("$HOME/www")
+
+# Override the interactive selector: dump the full-path array to the capture
+# file then cancel (return 1) so nothing is deleted.
+select_purge_categories() {
+	printf '%s\n' "\${PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}" > "$capture_file"
+	PURGE_SELECTION_RESULT=""
+	return 1
+}
+
+clean_project_artifacts 2>/dev/null || true
+SCRIPT
+
+	_run_in_pty "$script_file"
+	rm -f "$script_file"
+
+	if [[ ! -s "$capture_file" ]]; then
+		rm -f "$capture_file"
+		fail "capture file is empty – select_purge_categories was never called (stdin was not a tty?)"
+	fi
+
+	local first_path
+	first_path=$(head -1 "$capture_file")
+	rm -f "$capture_file"
+
+	# With the bug item_display_paths is not sorted, so alpha (alphabetically
+	# first) appears at index 0 → [[ ... == *beta* ]] fails.
+	# After the fix beta (largest) is at index 0 → test passes.
+	[[ "$first_path" == *"beta"* ]]
+}
+
+@test "sort: PURGE_CATEGORY_FULL_PATHS_ARRAY and PURGE_CATEGORY_SIZES indices are consistent" {
+	mkdir -p "$HOME/www/alpha/node_modules"
+	mkdir -p "$HOME/www/beta/node_modules"
+	echo '{}' > "$HOME/www/alpha/package.json"
+	echo '{}' > "$HOME/www/beta/package.json"
+	dd if=/dev/zero of="$HOME/www/alpha/node_modules/data" bs=1024 count=5   2>/dev/null
+	dd if=/dev/zero of="$HOME/www/beta/node_modules/data"  bs=1024 count=200 2>/dev/null
+
+	local capture_file script_file
+	capture_file=$(mktemp "$HOME/sort_capture.XXXXXX")
+	script_file=$(mktemp  "$HOME/sort_script.XXXXXX.sh")
+
+	cat > "$script_file" << SCRIPT
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.cache/mole"
+export XDG_CACHE_HOME="$HOME/.cache"
+export TERM="dumb"
+PURGE_SEARCH_PATHS=("$HOME/www")
+
+select_purge_categories() {
+	echo "SIZES=\${PURGE_CATEGORY_SIZES:-}" > "$capture_file"
+	local i=0
+	for p in "\${PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}"; do
+		echo "PATH[\$i]=\$p" >> "$capture_file"
+		i=\$((i + 1))
+	done
+	PURGE_SELECTION_RESULT=""
+	return 1
+}
+
+clean_project_artifacts 2>/dev/null || true
+SCRIPT
+
+	_run_in_pty "$script_file"
+	rm -f "$script_file"
+
+	if [[ ! -s "$capture_file" ]]; then
+		rm -f "$capture_file"
+		fail "capture file is empty – select_purge_categories was never called (stdin was not a tty?)"
+	fi
+
+	local sizes_csv
+	sizes_csv=$(grep '^SIZES=' "$capture_file" | cut -d= -f2-)
+	IFS=',' read -r -a sizes <<< "$sizes_csv"
+
+	local path0 path1
+	path0=$(grep '^PATH\[0\]=' "$capture_file" | head -1 | cut -d= -f2-)
+	path1=$(grep '^PATH\[1\]=' "$capture_file" | head -1 | cut -d= -f2-)
+	rm -f "$capture_file"
+
+	# PURGE_CATEGORY_SIZES must be sorted descending (largest first).
+	[ "${sizes[0]}" -gt "${sizes[1]}" ]
+
+	# Index 0 → largest artifact → beta's path.
+	# With the bug path0 = alpha (discovery order) → [[ ... == *beta* ]] fails.
+	[[ "$path0" == *"beta"* ]]
+
+	# Index 1 → smaller artifact → alpha's path.
+	[[ "$path1" == *"alpha"* ]]
 }
