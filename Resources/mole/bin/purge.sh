@@ -21,7 +21,13 @@ source "$SCRIPT_DIR/../lib/clean/project.sh"
 # Configuration
 CURRENT_SECTION=""
 
-# Section management
+# IMPORTANT: This file overrides start_section / end_section / note_activity
+# from lib/core/base.sh by virtue of being sourced after it. The purge variant
+# uses a blue ━━━ box header, has no fallback "Nothing to ..." message, and
+# writes every note_activity call straight to EXPORT_LIST_FILE (purge always
+# wants the export list, not just under DRY_RUN). See the cross-reference in
+# lib/core/base.sh and the clean variant in bin/clean.sh before changing any
+# of these three.
 start_section() {
     local section_name="$1"
     CURRENT_SECTION="$section_name"
@@ -33,11 +39,57 @@ end_section() {
     CURRENT_SECTION=""
 }
 
-# Note activity for export list
 note_activity() {
     if [[ -n "$CURRENT_SECTION" ]]; then
         printf '%s\n' "$CURRENT_SECTION" >> "$EXPORT_LIST_FILE"
     fi
+}
+
+# Keep the most specific tail of a long purge path visible on the live scan line.
+compact_purge_scan_path() {
+    local path="$1"
+    local max_path_len="${2:-0}"
+
+    if ! [[ "$max_path_len" =~ ^[0-9]+$ ]] || [[ "$max_path_len" -lt 4 ]]; then
+        max_path_len=4
+    fi
+
+    if [[ ${#path} -le $max_path_len ]]; then
+        echo "$path"
+        return
+    fi
+
+    local suffix_len=$((max_path_len - 3))
+    local suffix="${path: -$suffix_len}"
+    local path_tail=""
+    local remainder="$path"
+
+    while [[ "$remainder" == */* ]]; do
+        local segment="/${remainder##*/}"
+        remainder="${remainder%/*}"
+
+        if [[ -z "$path_tail" ]]; then
+            if [[ ${#segment} -le $suffix_len ]]; then
+                path_tail="$segment"
+            else
+                break
+            fi
+            continue
+        fi
+
+        if [[ $((${#segment} + ${#path_tail})) -le $suffix_len ]]; then
+            path_tail="${segment}${path_tail}"
+        else
+            break
+        fi
+    done
+
+    if [[ -n "$path_tail" ]]; then
+        echo "...${path_tail}"
+        return
+    fi
+
+    echo "...$suffix"
 }
 
 # Main purge function
@@ -127,24 +179,13 @@ perform_purge() {
             # Set up trap to exit cleanly (erase the spinner line via /dev/tty)
             trap 'printf "\r\033[2K" >/dev/tty 2>/dev/null; exit 0' INT TERM
 
-            # Truncate path to guaranteed fit
-            truncate_path() {
-                local path="$1"
-                if [[ ${#path} -le $max_path_len ]]; then
-                    echo "$path"
-                    return
-                fi
-                local side_len=$(((max_path_len - 3) / 2))
-                echo "${path:0:$side_len}...${path: -$side_len}"
-            }
-
             while [[ -f "$stats_dir/purge_scanning" ]]; do
                 local current_path
                 current_path=$(cat "$stats_dir/purge_scanning" 2> /dev/null || echo "")
 
                 if [[ -n "$current_path" ]]; then
                     local display_path="${current_path/#$HOME/~}"
-                    display_path=$(truncate_path "$display_path")
+                    display_path=$(compact_purge_scan_path "$display_path" "$max_path_len")
                     last_path="$display_path"
                 fi
 
@@ -290,5 +331,13 @@ main() {
     perform_purge
     show_cursor
 }
+
+if [[ "${MOLE_SKIP_MAIN:-0}" == "1" ]]; then
+    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+        return 0
+    else
+        exit 0
+    fi
+fi
 
 main "$@"

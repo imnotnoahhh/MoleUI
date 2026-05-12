@@ -3,10 +3,11 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/tw93/mole/internal/units"
 )
 
 var (
@@ -17,7 +18,12 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#A5D6A7"))
 	lineStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#404040"))
 
-	primaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	primaryStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#BD93F9"))
+	alertBarStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2B1200")).
+			Background(lipgloss.Color("#FFD75F")).
+			Bold(true).
+			Padding(0, 1)
 )
 
 const (
@@ -172,7 +178,16 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		optionalInfoParts = append(optionalInfoParts, m.Hardware.OSVersion)
 	}
 	if !compactHeader && m.Uptime != "" {
-		optionalInfoParts = append(optionalInfoParts, subtleStyle.Render("up "+m.Uptime))
+		uptimeText := "up " + m.Uptime
+		switch uptimeSeverity(m.UptimeSeconds) {
+		case "danger":
+			uptimeText = dangerStyle.Render(uptimeText + " ↻")
+		case "warn":
+			uptimeText = warnStyle.Render(uptimeText)
+		default:
+			uptimeText = subtleStyle.Render(uptimeText)
+		}
+		optionalInfoParts = append(optionalInfoParts, uptimeText)
 	}
 
 	headLeft := title + "  " + scoreText
@@ -232,6 +247,35 @@ func getScoreStyle(score int) lipgloss.Style {
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	}
+}
+
+func renderProcessAlertBar(alerts []ProcessAlert, width int) string {
+	active := activeAlerts(alerts)
+	if len(active) == 0 {
+		return ""
+	}
+
+	focus := active[0]
+
+	text := fmt.Sprintf(
+		"ALERT %s at %.1f%% for %s (threshold %.1f%%)",
+		formatProcessLabel(ProcessInfo{PID: focus.PID, Name: focus.Name}),
+		focus.CPU,
+		focus.Window,
+		focus.Threshold,
+	)
+	if len(active) > 1 {
+		text += fmt.Sprintf(" · +%d more", len(active)-1)
+	}
+
+	return renderBanner(alertBarStyle, text, width)
+}
+
+func renderBanner(style lipgloss.Style, text string, width int) string {
+	if width > 0 {
+		style = style.MaxWidth(width)
+	}
+	return style.Render(text)
 }
 
 func renderCPUCard(cpu CPUStatus, thermal ThermalStatus) cardData {
@@ -346,7 +390,7 @@ func renderMemoryCard(mem MemoryStatus, cardWidth int) cardData {
 	return cardData{icon: iconMemory, title: "Memory", lines: lines}
 }
 
-func renderDiskCard(disks []DiskStatus, io DiskIOStatus) cardData {
+func renderDiskCard(disks []DiskStatus, io DiskIOStatus, trashSize uint64, trashApprox bool) cardData {
 	var lines []string
 	if len(disks) == 0 {
 		lines = append(lines, subtleStyle.Render("Collecting..."))
@@ -365,7 +409,16 @@ func renderDiskCard(disks []DiskStatus, io DiskIOStatus) cardData {
 		addGroup("EXTR", external)
 		if len(lines) == 0 {
 			lines = append(lines, subtleStyle.Render("No disks detected"))
+		} else if len(disks) == 1 {
+			lines = append(lines, formatDiskMetaLine(disks[0]))
 		}
+	}
+	if trashSize > 0 {
+		prefix := ""
+		if trashApprox {
+			prefix = "~"
+		}
+		lines = append(lines, fmt.Sprintf("%-6s %s%s", "Trash", prefix, humanBytesShort(trashSize)))
 	}
 	readBar := ioBar(io.ReadRate)
 	writeBar := ioBar(io.WriteRate)
@@ -398,8 +451,19 @@ func formatDiskLine(label string, d DiskStatus) string {
 	}
 	bar := progressBar(d.UsedPercent)
 	used := humanBytesShort(d.Used)
-	total := humanBytesShort(d.Total)
-	return fmt.Sprintf("%-6s %s  %5.1f%%, %s/%s", label, bar, d.UsedPercent, used, total)
+	free := uint64(0)
+	if d.Total > d.Used {
+		free = d.Total - d.Used
+	}
+	return fmt.Sprintf("%-6s %s  %s used, %s free", label, bar, used, humanBytesShort(free))
+}
+
+func formatDiskMetaLine(d DiskStatus) string {
+	parts := []string{humanBytesShort(d.Total)}
+	if d.Fstype != "" {
+		parts = append(parts, strings.ToUpper(d.Fstype))
+	}
+	return fmt.Sprintf("Total  %s", strings.Join(parts, " · "))
 }
 
 func ioBar(rate float64) string {
@@ -435,7 +499,7 @@ func buildCards(m MetricsSnapshot, width int) []cardData {
 	cards := []cardData{
 		renderCPUCard(m.CPU, m.Thermal),
 		renderMemoryCard(m.Memory, width),
-		renderDiskCard(m.Disks, m.DiskIO),
+		renderDiskCard(m.Disks, m.DiskIO, m.TrashSize, m.TrashApprox),
 		renderBatteryCard(m.Batteries, m.Thermal),
 		renderProcessCard(m.TopProcesses),
 		renderNetworkCard(m.Network, m.NetworkHistory, m.Proxy, width),
@@ -565,44 +629,58 @@ func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus) cardData {
 			lines = append(lines, fmt.Sprintf("Health %s  %s", batteryProgressBar(float64(b.Capacity)), capacityText))
 		}
 
-		statusIcon := ""
+		if thermal.AdapterPower > 0 && isPoweredByAC(statusLower) {
+			lines = append(lines, fmt.Sprintf("%-6s %s  %6s",
+				"Input",
+				okStyle.Render(plainProgressBar(100)),
+				fmt.Sprintf("%.0fW max", thermal.AdapterPower),
+			))
+		}
+
 		statusStyle := subtleStyle
-		if statusLower == "charging" || statusLower == "charged" {
-			statusIcon = " ⚡"
+		if isPoweredByAC(statusLower) {
 			statusStyle = okStyle
 		} else if b.Percent < 20 {
 			statusStyle = dangerStyle
 		}
-		statusText := b.Status
-		if len(statusText) > 0 {
-			statusText = strings.ToUpper(statusText[:1]) + strings.ToLower(statusText[1:])
-		}
+		statusText := formatBatteryStatus(b.Status)
 		if b.TimeLeft != "" {
 			statusText += " · " + b.TimeLeft
 		}
-		// Add power info.
-		if statusLower == "charging" || statusLower == "charged" {
-			if thermal.SystemPower > 0 {
-				statusText += fmt.Sprintf(" · %.0fW", thermal.SystemPower)
-			} else if thermal.AdapterPower > 0 {
-				statusText += fmt.Sprintf(" · %.0fW Adapter", thermal.AdapterPower)
-			}
-		} else if thermal.BatteryPower > 0 {
-			// Only show battery power when discharging (positive value)
-			statusText += fmt.Sprintf(" · %.0fW", thermal.BatteryPower)
+		if thermal.AdapterPower > 0 && isPoweredByAC(statusLower) {
+			statusText += fmt.Sprintf(" · %.0fW adapter", thermal.AdapterPower)
 		}
-		lines = append(lines, statusStyle.Render(statusText+statusIcon))
+		lines = append(lines, statusStyle.Render(statusText))
 
 		healthParts := []string{}
-		if b.Health != "" {
+
+		// Battery health assessment label.
+		if b.CycleCount > 0 || b.Capacity > 0 {
+			label, severity := batteryHealthLabel(b.CycleCount, b.Capacity)
+			switch severity {
+			case "danger":
+				healthParts = append(healthParts, dangerStyle.Render(label))
+			case "warn":
+				healthParts = append(healthParts, warnStyle.Render(label))
+			default:
+				healthParts = append(healthParts, okStyle.Render(label))
+			}
+		} else if b.Health != "" {
 			healthParts = append(healthParts, b.Health)
 		}
+
 		if b.CycleCount > 0 {
-			healthParts = append(healthParts, fmt.Sprintf("%d cycles", b.CycleCount))
+			cycleText := fmt.Sprintf("%d cycles", b.CycleCount)
+			if b.CycleCount > batteryCycleDanger {
+				cycleText = dangerStyle.Render(cycleText)
+			} else if b.CycleCount > batteryCycleWarn {
+				cycleText = warnStyle.Render(cycleText)
+			}
+			healthParts = append(healthParts, cycleText)
 		}
 
-		if thermal.CPUTemp > 0 {
-			tempText := colorizeTemp(thermal.CPUTemp) + "°C" // Reuse common color logic
+		if thermal.BatteryTemp > 0 {
+			tempText := "Battery " + colorizeTemp(thermal.BatteryTemp) + "°C"
 			healthParts = append(healthParts, tempText)
 		}
 
@@ -616,6 +694,32 @@ func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus) cardData {
 	}
 
 	return cardData{icon: iconBattery, title: "Power", lines: lines}
+}
+
+func isPoweredByAC(statusLower string) bool {
+	return statusLower == "charging" ||
+		statusLower == "charged" ||
+		statusLower == "ac" ||
+		strings.Contains(statusLower, "ac attached")
+}
+
+func formatBatteryStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return "Unknown"
+	}
+	lower := strings.ToLower(status)
+	switch lower {
+	case "ac":
+		return "AC"
+	case "charged":
+		return "Charged"
+	case "charging":
+		return "Charging"
+	case "discharging":
+		return "Discharging"
+	}
+	return strings.ToUpper(status[:1]) + strings.ToLower(status[1:])
 }
 
 func renderCard(data cardData, width int, height int) string {
@@ -651,6 +755,10 @@ func wrapToWidth(text string, width int) []string {
 }
 
 func progressBar(percent float64) string {
+	return colorizePercent(percent, plainProgressBar(percent))
+}
+
+func plainProgressBar(percent float64) string {
 	total := 16
 	if percent < 0 {
 		percent = 0
@@ -668,7 +776,7 @@ func progressBar(percent float64) string {
 			builder.WriteString("░")
 		}
 	}
-	return colorizePercent(percent, builder.String())
+	return builder.String()
 }
 
 func batteryProgressBar(percent float64) string {
@@ -739,48 +847,15 @@ func formatRate(mb float64) string {
 }
 
 func humanBytes(v uint64) string {
-	switch {
-	case v > 1<<40:
-		return fmt.Sprintf("%.1f TB", float64(v)/(1<<40))
-	case v > 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(v)/(1<<30))
-	case v > 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(v)/(1<<20))
-	case v > 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(v)/(1<<10))
-	default:
-		return strconv.FormatUint(v, 10) + " B"
-	}
+	return units.BytesBin(v)
 }
 
 func humanBytesShort(v uint64) string {
-	switch {
-	case v >= 1<<40:
-		return fmt.Sprintf("%.0fT", float64(v)/(1<<40))
-	case v >= 1<<30:
-		return fmt.Sprintf("%.0fG", float64(v)/(1<<30))
-	case v >= 1<<20:
-		return fmt.Sprintf("%.0fM", float64(v)/(1<<20))
-	case v >= 1<<10:
-		return fmt.Sprintf("%.0fK", float64(v)/(1<<10))
-	default:
-		return strconv.FormatUint(v, 10)
-	}
+	return units.BytesBinShort(v)
 }
 
 func humanBytesCompact(v uint64) string {
-	switch {
-	case v >= 1<<40:
-		return fmt.Sprintf("%.1fT", float64(v)/(1<<40))
-	case v >= 1<<30:
-		return fmt.Sprintf("%.1fG", float64(v)/(1<<30))
-	case v >= 1<<20:
-		return fmt.Sprintf("%.1fM", float64(v)/(1<<20))
-	case v >= 1<<10:
-		return fmt.Sprintf("%.1fK", float64(v)/(1<<10))
-	default:
-		return strconv.FormatUint(v, 10)
-	}
+	return units.BytesBinCompact(v)
 }
 
 func shorten(s string, maxLen int) string {

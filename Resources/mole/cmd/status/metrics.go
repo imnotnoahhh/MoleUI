@@ -61,24 +61,29 @@ type MetricsSnapshot struct {
 	Host           string       `json:"host"`
 	Platform       string       `json:"platform"`
 	Uptime         string       `json:"uptime"`
+	UptimeSeconds  uint64       `json:"uptime_seconds"`
 	Procs          uint64       `json:"procs"`
 	Hardware       HardwareInfo `json:"hardware"`
 	HealthScore    int          `json:"health_score"`     // 0-100 system health score
 	HealthScoreMsg string       `json:"health_score_msg"` // Brief explanation
 
-	CPU            CPUStatus         `json:"cpu"`
-	GPU            []GPUStatus       `json:"gpu"`
-	Memory         MemoryStatus      `json:"memory"`
-	Disks          []DiskStatus      `json:"disks"`
-	DiskIO         DiskIOStatus      `json:"disk_io"`
-	Network        []NetworkStatus   `json:"network"`
-	NetworkHistory NetworkHistory    `json:"network_history"`
-	Proxy          ProxyStatus       `json:"proxy"`
-	Batteries      []BatteryStatus   `json:"batteries"`
-	Thermal        ThermalStatus     `json:"thermal"`
-	Sensors        []SensorReading   `json:"sensors"`
-	Bluetooth      []BluetoothDevice `json:"bluetooth"`
-	TopProcesses   []ProcessInfo     `json:"top_processes"`
+	CPU            CPUStatus          `json:"cpu"`
+	GPU            []GPUStatus        `json:"gpu"`
+	Memory         MemoryStatus       `json:"memory"`
+	Disks          []DiskStatus       `json:"disks"`
+	TrashSize      uint64             `json:"trash_size"`
+	TrashApprox    bool               `json:"trash_approx"`
+	DiskIO         DiskIOStatus       `json:"disk_io"`
+	Network        []NetworkStatus    `json:"network"`
+	NetworkHistory NetworkHistory     `json:"network_history"`
+	Proxy          ProxyStatus        `json:"proxy"`
+	Batteries      []BatteryStatus    `json:"batteries"`
+	Thermal        ThermalStatus      `json:"thermal"`
+	Sensors        []SensorReading    `json:"sensors"`
+	Bluetooth      []BluetoothDevice  `json:"bluetooth"`
+	TopProcesses   []ProcessInfo      `json:"top_processes"`
+	ProcessWatch   ProcessWatchConfig `json:"process_watch"`
+	ProcessAlerts  []ProcessAlert     `json:"process_alerts"`
 }
 
 type HardwareInfo struct {
@@ -96,9 +101,12 @@ type DiskIOStatus struct {
 }
 
 type ProcessInfo struct {
-	Name   string  `json:"name"`
-	CPU    float64 `json:"cpu"`
-	Memory float64 `json:"memory"`
+	PID     int     `json:"pid"`
+	PPID    int     `json:"ppid"`
+	Name    string  `json:"name"`
+	Command string  `json:"command"`
+	CPU     float64 `json:"cpu"`
+	Memory  float64 `json:"memory"`
 }
 
 type CPUStatus struct {
@@ -176,6 +184,7 @@ type BatteryStatus struct {
 type ThermalStatus struct {
 	CPUTemp      float64 `json:"cpu_temp"`
 	GPUTemp      float64 `json:"gpu_temp"`
+	BatteryTemp  float64 `json:"battery_temp"` // Battery temperature in Celsius when exposed by AppleSmartBattery
 	FanSpeed     int     `json:"fan_speed"`
 	FanCount     int     `json:"fan_count"`
 	SystemPower  float64 `json:"system_power"`  // System power consumption in Watts
@@ -207,22 +216,35 @@ type Collector struct {
 	lastBT   []BluetoothDevice
 
 	// Fast metrics (1s).
-	prevNet      map[string]net.IOCountersStat
-	lastNetAt    time.Time
-	rxHistoryBuf *RingBuffer
-	txHistoryBuf *RingBuffer
-	lastGPUAt    time.Time
-	cachedGPU    []GPUStatus
-	prevDiskIO   disk.IOCountersStat
-	lastDiskAt   time.Time
+	prevNet        map[string]net.IOCountersStat
+	lastNetAt      time.Time
+	rxHistoryBuf   *RingBuffer
+	txHistoryBuf   *RingBuffer
+	lastNetIPAt    time.Time
+	cachedNetIPs   map[string]string
+	lastGPUAt      time.Time
+	cachedGPU      []GPUStatus
+	lastGPUUsageAt time.Time
+	cachedGPUUsage float64
+	prevDiskIO     disk.IOCountersStat
+	lastDiskAt     time.Time
+
+	watchMu        sync.Mutex
+	processWatch   ProcessWatchConfig
+	processWatcher *ProcessWatcher
 }
 
-func NewCollector() *Collector {
-	return &Collector{
-		prevNet:      make(map[string]net.IOCountersStat),
-		rxHistoryBuf: NewRingBuffer(NetworkHistorySize),
-		txHistoryBuf: NewRingBuffer(NetworkHistorySize),
+func NewCollector(options ProcessWatchOptions) *Collector {
+	c := &Collector{
+		prevNet:        make(map[string]net.IOCountersStat),
+		rxHistoryBuf:   NewRingBuffer(NetworkHistorySize),
+		txHistoryBuf:   NewRingBuffer(NetworkHistorySize),
+		cachedNetIPs:   make(map[string]string),
+		processWatch:   options.SnapshotConfig(),
+		processWatcher: NewProcessWatcher(options),
 	}
+	c.primeNetworkCounters(time.Now())
+	return c
 }
 
 func (c *Collector) Collect() (MetricsSnapshot, error) {
@@ -250,14 +272,12 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 		sensorStats  []SensorReading
 		gpuStats     []GPUStatus
 		btStats      []BluetoothDevice
-		topProcs     []ProcessInfo
+		allProcs     []ProcessInfo
 	)
 
 	// Helper to launch concurrent collection.
 	collect := func(fn func() error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					errMu.Lock()
@@ -279,13 +299,16 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 				}
 				errMu.Unlock()
 			}
-		}()
+		})
 	}
 
 	// Launch independent collection tasks.
 	collect(func() (err error) { cpuStats, err = collectCPU(); return })
 	collect(func() (err error) { memStats, err = collectMemory(); return })
 	collect(func() (err error) { diskStats, err = collectDisks(); return })
+	var trashSize uint64
+	var trashApprox bool
+	collect(func() (err error) { trashSize, trashApprox = collectTrashSize(); return nil })
 	collect(func() (err error) { diskIO = c.collectDiskIO(now); return nil })
 	collect(func() (err error) { netStats, err = c.collectNetwork(now); return })
 	collect(func() (err error) { proxyStats = collectProxy(); return nil })
@@ -305,7 +328,7 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 		}
 		return nil
 	})
-	collect(func() (err error) { topProcs = collectTopProcesses(); return nil })
+	collect(func() (err error) { allProcs, err = collectProcesses(); return })
 
 	// Wait for all to complete.
 	wg.Wait()
@@ -319,13 +342,22 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 	}
 	hwInfo := c.cachedHW
 
-	score, scoreMsg := calculateHealthScore(cpuStats, memStats, diskStats, diskIO, thermalStats)
+	score, scoreMsg := calculateHealthScore(cpuStats, memStats, diskStats, diskIO, thermalStats, batteryStats, hostInfo.Uptime)
+	topProcs := topProcesses(allProcs, 5)
+
+	var processAlerts []ProcessAlert
+	c.watchMu.Lock()
+	if c.processWatcher != nil {
+		processAlerts = c.processWatcher.Update(now, allProcs)
+	}
+	c.watchMu.Unlock()
 
 	return MetricsSnapshot{
 		CollectedAt:    now,
 		Host:           hostInfo.Hostname,
 		Platform:       fmt.Sprintf("%s %s", hostInfo.Platform, hostInfo.PlatformVersion),
 		Uptime:         formatUptime(hostInfo.Uptime),
+		UptimeSeconds:  hostInfo.Uptime,
 		Procs:          hostInfo.Procs,
 		Hardware:       hwInfo,
 		HealthScore:    score,
@@ -334,22 +366,26 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 		GPU:            gpuStats,
 		Memory:         memStats,
 		Disks:          diskStats,
+		TrashSize:      trashSize,
+		TrashApprox:    trashApprox,
 		DiskIO:         diskIO,
 		Network:        netStats,
 		NetworkHistory: NetworkHistory{
 			RxHistory: c.rxHistoryBuf.Slice(),
 			TxHistory: c.txHistoryBuf.Slice(),
 		},
-		Proxy:        proxyStats,
-		Batteries:    batteryStats,
-		Thermal:      thermalStats,
-		Sensors:      sensorStats,
-		Bluetooth:    btStats,
-		TopProcesses: topProcs,
+		Proxy:         proxyStats,
+		Batteries:     batteryStats,
+		Thermal:       thermalStats,
+		Sensors:       sensorStats,
+		Bluetooth:     btStats,
+		TopProcesses:  topProcs,
+		ProcessWatch:  c.processWatch,
+		ProcessAlerts: processAlerts,
 	}, mergeErr
 }
 
-func runCmd(ctx context.Context, name string, args ...string) (string, error) {
+var runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.Output()
 	if err != nil {
@@ -358,13 +394,36 @@ func runCmd(ctx context.Context, name string, args ...string) (string, error) {
 	return string(output), nil
 }
 
-func commandExists(name string) bool {
+var commandExists = func(name string) bool {
 	if name == "" {
 		return false
 	}
+
+	commandExistsCacheMu.Lock()
+	if exists, ok := commandExistsCache[name]; ok {
+		commandExistsCacheMu.Unlock()
+		return exists
+	}
+	commandExistsCacheMu.Unlock()
+
+	exists := lookPathExists(name)
+
+	commandExistsCacheMu.Lock()
+	commandExistsCache[name] = exists
+	commandExistsCacheMu.Unlock()
+	return exists
+}
+
+var (
+	commandExistsCacheMu sync.Mutex
+	commandExistsCache   = make(map[string]bool)
+)
+
+func lookPathExists(name string) (exists bool) {
 	defer func() {
-		// Treat LookPath panics as "missing".
-		_ = recover()
+		if recover() != nil {
+			exists = false
+		}
 	}()
 	_, err := exec.LookPath(name)
 	return err == nil

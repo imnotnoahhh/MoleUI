@@ -44,13 +44,31 @@ setup() {
     [[ -n "$result" ]]
 }
 
+@test "cleanup_result_color_kb always returns green" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+small_kb=1
+large_kb=$(((MOLE_ONE_GB_BYTES * 2) / 1024))
+
+if [[ "$(cleanup_result_color_kb "$small_kb")" == "$GREEN" ]] &&
+    [[ "$(cleanup_result_color_kb "$large_kb")" == "$GREEN" ]]; then
+    echo "ok"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "ok" ]
+}
+
 @test "log_info prints message and appends to log file" {
     local message="Informational message from test"
     local stdout_output
     stdout_output="$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; log_info '$message'")"
     [[ "$stdout_output" == *"$message"* ]]
 
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     [[ -f "$log_file" ]]
     grep -q "INFO: $message" "$log_file"
 }
@@ -64,15 +82,41 @@ setup() {
     [[ -s "$stderr_file" ]]
     grep -q "$message" "$stderr_file"
 
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     [[ -f "$log_file" ]]
     grep -q "ERROR: $message" "$log_file"
 }
 
+@test "log_operation recreates operations log if the log directory disappears mid-session" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+rm -rf "$HOME/Library/Logs/mole"
+log_operation "clean" "REMOVED" "/tmp/example" "1KB"
+EOF
+    [ "$status" -eq 0 ]
+
+    local oplog="$HOME/Library/Logs/mole/operations.log"
+    [[ -f "$oplog" ]]
+    grep -Fq "[clean] REMOVED /tmp/example (1KB)" "$oplog"
+}
+
+@test "should_protect_path protects Mole runtime logs" {
+    result="$(
+        HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc -c \
+            'source "$PROJECT_ROOT/lib/core/common.sh"; should_protect_path "$HOME/Library/Logs/mole/operations.log" && echo protected || echo not-protected'
+    )"
+    [ "$result" = "protected" ]
+}
+
 @test "rotate_log_once only checks log size once per session" {
-    local log_file="$HOME/.config/mole/mole.log"
+    local log_file="$HOME/Library/Logs/mole/mole.log"
     mkdir -p "$(dirname "$log_file")"
-    dd if=/dev/zero of="$log_file" bs=1024 count=1100 2> /dev/null
+    if command -v mkfile > /dev/null 2>&1; then
+        mkfile -n 1100k "$log_file"
+    else
+        truncate -s 1100k "$log_file"
+    fi
 
     HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'"
     [[ -f "${log_file}.old" ]]
@@ -142,8 +186,52 @@ EOF
     result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.clash.app' && echo 'protected' || echo 'not-protected'")
     [ "$result" = "protected" ]
 
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'io.github.clash-verge-rev.clash-verge-rev' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'org.amnezia.awg' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.wireguard.macos' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
     result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.example.RegularApp' && echo 'protected' || echo 'not-protected'")
     [ "$result" = "not-protected" ]
+}
+
+# Regression: CUPS prefs have a bundle-ID-style name but no parent .app,
+# so the orphan sweep deleted them and users lost their default printer
+# and recent-printer list. See #731.
+@test "should_protect_data protects CUPS printing prefs (#731)" {
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'org.cups.PrintingPrefs' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'org.cups.printers' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+}
+
+@test "should_protect_data protects Codex runtime identifiers" {
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'Codex' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'com.openai.codex' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_data 'codex-runtimes' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    local codex_runtimes_path="$HOME/.cache/codex-runtimes"
+    result=$(HOME="$HOME" TARGET_PATH="$codex_runtimes_path" bash --noprofile --norc -c 'source "$PROJECT_ROOT/lib/core/common.sh"; should_protect_path "$TARGET_PATH" && echo "protected" || echo "not-protected"')
+    [ "$result" = "protected" ]
+}
+
+@test "should_protect_path protects NetworkExtension VPN preferences" {
+    result=$(HOME="$HOME" bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; should_protect_path '/Volumes/Data/Library/Preferences/com.apple.networkextension.plist' && echo 'protected' || echo 'not-protected'")
+    [ "$result" = "protected" ]
+
+    local user_network_ext_pref="$HOME/Library/Preferences/com.apple.networkextension.necp.plist"
+    result=$(HOME="$HOME" TARGET_PATH="$user_network_ext_pref" bash --noprofile --norc -c 'source "$PROJECT_ROOT/lib/core/common.sh"; should_protect_path "$TARGET_PATH" && echo "protected" || echo "not-protected"')
+    [ "$result" = "protected" ]
 }
 
 @test "input methods are protected during cleanup but allowed for uninstall" {
@@ -201,8 +289,32 @@ sleep 0.1
 stop_inline_spinner
 echo "done"
 EOF
-)
+    )
     [[ "$result" == *"done"* ]]
+}
+
+@test "start_inline_spinner ignores PATH-provided sleep in TTY mode" {
+    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+        skip "script cannot allocate a TTY in this environment"
+    fi
+
+    local fake_bin="$HOME/fake-bin"
+    local marker="$HOME/fake-sleep.marker"
+
+    mkdir -p "$fake_bin"
+    cat > "$fake_bin/sleep" <<EOF
+#!/bin/bash
+echo "fake" >> "$marker"
+exec /bin/sleep "\$@"
+EOF
+    chmod +x "$fake_bin/sleep"
+
+    PATH="$fake_bin:$PATH" PROJECT_ROOT="$PROJECT_ROOT" HOME="$HOME" \
+        /usr/bin/script -q /dev/null /bin/bash --noprofile --norc -c \
+        "source \"\$PROJECT_ROOT/lib/core/common.sh\"; start_inline_spinner \"Testing...\"; /bin/sleep 0.15; stop_inline_spinner" \
+        > /dev/null 2>&1
+
+    [ ! -f "$marker" ]
 }
 
 @test "read_key maps j/k/h/l to navigation" {
@@ -230,4 +342,61 @@ EOF
 @test "read_key respects MOLE_READ_KEY_FORCE_CHAR" {
     run bash -c "export MOLE_BASE_LOADED=1; export MOLE_READ_KEY_FORCE_CHAR=1; source '$PROJECT_ROOT/lib/core/ui.sh'; echo -n 'j' | read_key"
     [ "$output" = "CHAR:j" ]
+}
+
+@test "ensure_sudo_session returns 1 and sets MOLE_SUDO_ESTABLISHED=false in test mode" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 bash --noprofile --norc <<'SCRIPT'
+source "$PROJECT_ROOT/lib/core/base.sh"
+source "$PROJECT_ROOT/lib/core/sudo.sh"
+MOLE_SUDO_ESTABLISHED=""
+ensure_sudo_session "Test prompt" && rc=0 || rc=$?
+echo "EXIT=$rc"
+echo "FLAG=$MOLE_SUDO_ESTABLISHED"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"EXIT=1"* ]]
+    [[ "$output" == *"FLAG=false"* ]]
+}
+
+@test "sudo helpers do not invoke sudo in no-auth test mode" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 bash --noprofile --norc <<'SCRIPT'
+source "$PROJECT_ROOT/lib/core/base.sh"
+source "$PROJECT_ROOT/lib/core/sudo.sh"
+sudo() {
+    echo "SUDO_CALLED:$*" >&2
+    exit 99
+}
+export -f sudo
+
+has_sudo_session && has_rc=0 || has_rc=$?
+request_sudo_access "Test prompt" && request_rc=0 || request_rc=$?
+ensure_sudo_session "Test prompt" && ensure_rc=0 || ensure_rc=$?
+
+echo "HAS=$has_rc"
+echo "REQUEST=$request_rc"
+echo "ENSURE=$ensure_rc"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"HAS=1"* ]]
+    [[ "$output" == *"REQUEST=1"* ]]
+    [[ "$output" == *"ENSURE=1"* ]]
+    [[ "$output" != *"SUDO_CALLED"* ]]
+}
+
+@test "ensure_sudo_session short-circuits to 0 when session already established" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+source "$PROJECT_ROOT/lib/core/sudo.sh"
+has_sudo_session() { return 0; }
+export -f has_sudo_session
+MOLE_SUDO_ESTABLISHED="true"
+ensure_sudo_session "Test prompt"
+echo "EXIT=$?"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"EXIT=0"* ]]
 }

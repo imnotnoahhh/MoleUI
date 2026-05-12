@@ -41,16 +41,19 @@ tests/tmp-*
 *.pid
 *.lock
 
-# AI Assistant Instructions
+# Local AI Assistant Instructions
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+AGENTS.override.md
 .claude/
-.agents/
+.agents/settings.local.json
 .gemini/
 .kiro/
-CLAUDE.md
 GEMINI.md
 ANTIGRAVITY.md
 WARP.md
-AGENTS.md
+journal/
 .cursorrules
 
 # Go build artifacts (development)
@@ -77,6 +80,4 @@ coverage.html
 
 session.json
 run_tests.ps1
-AGENTS.md
 mole_guidelines.md
-CLAUDE.md

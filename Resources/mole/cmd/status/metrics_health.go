@@ -35,9 +35,21 @@ const (
 	// Disk IO (MB/s).
 	ioNormalThreshold = 50.0
 	ioHighThreshold   = 150.0
+
+	// Battery.
+	batteryCycleWarn   = 500
+	batteryCycleDanger = 900
+	batteryCapWarn     = 90
+	batteryCapDanger   = 80
+
+	// Uptime (seconds).
+	uptimeWarnDays   = 7
+	uptimeDangerDays = 14
+	uptimeWarnSecs   = uptimeWarnDays * 86400
+	uptimeDangerSecs = uptimeDangerDays * 86400
 )
 
-func calculateHealthScore(cpu CPUStatus, mem MemoryStatus, disks []DiskStatus, diskIO DiskIOStatus, thermal ThermalStatus) (int, string) {
+func calculateHealthScore(cpu CPUStatus, mem MemoryStatus, disks []DiskStatus, diskIO DiskIOStatus, thermal ThermalStatus, batteries []BatteryStatus, uptimeSecs uint64) (int, string) {
 	score := 100.0
 	issues := []string{}
 
@@ -123,6 +135,27 @@ func calculateHealthScore(cpu CPUStatus, mem MemoryStatus, disks []DiskStatus, d
 	}
 	score -= ioPenalty
 
+	// Battery health penalty (only when battery present).
+	if len(batteries) > 0 {
+		b := batteries[0]
+		_, sev := batteryHealthLabel(b.CycleCount, b.Capacity)
+		switch sev {
+		case "danger":
+			score -= 5
+			issues = append(issues, "Battery Service Soon")
+		case "warn":
+			score -= 2
+		}
+	}
+
+	// Uptime penalty (long uptime without restart).
+	if uptimeSecs > uptimeDangerSecs {
+		score -= 3
+		issues = append(issues, "Restart Recommended")
+	} else if uptimeSecs > uptimeWarnSecs {
+		score -= 1
+	}
+
 	// Clamp score.
 	if score < 0 {
 		score = 0
@@ -151,6 +184,29 @@ func calculateHealthScore(cpu CPUStatus, mem MemoryStatus, disks []DiskStatus, d
 	}
 
 	return int(score), msg
+}
+
+// batteryHealthLabel returns a human-readable health label and severity based on cycle count and capacity.
+// Severity is "ok", "warn", or "danger".
+func batteryHealthLabel(cycles int, capacity int) (string, string) {
+	if cycles > batteryCycleDanger || (capacity > 0 && capacity < batteryCapDanger) {
+		return "Service Soon", "danger"
+	}
+	if cycles > batteryCycleWarn || (capacity > 0 && capacity < batteryCapWarn) {
+		return "Fair", "warn"
+	}
+	return "Healthy", "ok"
+}
+
+// uptimeSeverity returns "ok", "warn", or "danger" based on uptime seconds.
+func uptimeSeverity(secs uint64) string {
+	if secs > uptimeDangerSecs {
+		return "danger"
+	}
+	if secs > uptimeWarnSecs {
+		return "warn"
+	}
+	return "ok"
 }
 
 func formatUptime(secs uint64) string {

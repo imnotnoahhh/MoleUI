@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	cpuSampleInterval = 200 * time.Millisecond
+	cpuSampleInterval = 100 * time.Millisecond
 )
 
 func collectCPU() (CPUStatus, error) {
