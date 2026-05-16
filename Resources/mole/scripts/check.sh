@@ -120,6 +120,8 @@ if command -v golangci-lint > /dev/null 2>&1; then
         echo -e "${GREEN}${ICON_SUCCESS} golangci-lint passed${NC}\n"
     else
         echo -e "${RED}${ICON_ERROR} golangci-lint failed${NC}\n"
+        echo -e "${YELLOW}If the output points to deleted temporary worktrees or non-existent paths, run:${NC}"
+        echo -e "${YELLOW}  golangci-lint cache clean && golangci-lint run ./cmd/...${NC}\n"
         exit 1
     fi
 elif command -v go > /dev/null 2>&1; then

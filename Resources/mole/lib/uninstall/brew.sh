@@ -35,6 +35,21 @@ is_homebrew_available() {
     command -v brew > /dev/null 2>&1
 }
 
+# Check whether a cask is still recorded as installed in Homebrew.
+# Exit codes:
+#   0 - cask is installed
+#   1 - cask is not installed
+#   2 - install state could not be determined
+is_brew_cask_installed() {
+    local cask_name="$1"
+    [[ -n "$cask_name" ]] || return 2
+    is_homebrew_available || return 2
+
+    local cask_list
+    cask_list=$(HOMEBREW_NO_ENV_HINTS=1 brew list --cask 2> /dev/null) || return 2
+    grep -qxF "$cask_name" <<< "$cask_list"
+}
+
 # Extract cask token from a Caskroom path
 # Args: $1 - path (must be inside Caskroom)
 # Prints: cask token to stdout
@@ -42,9 +57,10 @@ is_homebrew_available() {
 _extract_cask_token_from_path() {
     local path="$1"
 
-    # Check if path is inside Caskroom
+    # Check if path is inside Caskroom. Quote literals so Homebrew bottle
+    # relocation cannot break parsing when the prefix contains spaces.
     case "$path" in
-        /opt/homebrew/Caskroom/* | /usr/local/Caskroom/*) ;;
+        "/opt/homebrew/Caskroom/"* | "/usr/local/Caskroom/"*) ;;
         *) return 1 ;;
     esac
 
@@ -193,13 +209,23 @@ brew_uninstall_cask() {
         debug_log "App size: ${size_gb}GB, timeout: ${timeout}s"
     fi
 
-    # Run with timeout to prevent hangs from problematic cask scripts
-    local brew_exit=0
-    if HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+    # Run with timeout to prevent hangs from problematic cask scripts.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        if run_with_timeout "$timeout" sudo -u "$SUDO_USER" env \
+            HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+            brew uninstall --cask --zap "$cask_name" 2>&1; then
+            uninstall_ok=true
+        else
+            brew_exit=$?
+        fi
+    elif HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
         run_with_timeout "$timeout" brew uninstall --cask --zap "$cask_name" 2>&1; then
         uninstall_ok=true
     else
         brew_exit=$?
+    fi
+
+    if [[ "$uninstall_ok" != "true" ]]; then
         debug_log "brew uninstall timeout or failed with exit code: $brew_exit"
         # Exit code 124 indicates timeout from run_with_timeout
         # On timeout, fail immediately without verification to avoid inconsistent state
@@ -211,7 +237,12 @@ brew_uninstall_cask() {
 
     # Verify removal (only if not timed out)
     local cask_gone=true app_gone=true
-    HOMEBREW_NO_ENV_HINTS=1 brew list --cask 2> /dev/null | grep -qxF "$cask_name" && cask_gone=false
+    if is_brew_cask_installed "$cask_name"; then
+        cask_gone=false
+    else
+        local cask_state=$?
+        [[ $cask_state -eq 1 ]] || cask_gone=false
+    fi
     [[ -n "$app_path" && -e "$app_path" ]] && app_gone=false
 
     # Success: uninstall worked and both are gone, or already uninstalled

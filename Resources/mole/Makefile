@@ -1,6 +1,6 @@
 # Makefile for Mole
 
-.PHONY: all build clean release
+.PHONY: all build clean check format test test-go verify release release-amd64 release-arm64 mod-download
 
 # Output directory
 BIN_DIR := bin
@@ -41,6 +41,20 @@ build: mod-download
 	@echo "Building for local architecture..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-go $(ANALYZE_SRC)
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-go $(STATUS_SRC)
+
+check:
+	./scripts/check.sh --no-format
+
+format:
+	./scripts/check.sh --format
+
+test:
+	MOLE_TEST_NO_AUTH=1 ./scripts/test.sh
+
+test-go:
+	$(GO) test ./cmd/...
+
+verify: check test-go
 
 # Release build targets (run on native architectures for CGO support)
 release-amd64: mod-download

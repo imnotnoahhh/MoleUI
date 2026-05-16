@@ -24,7 +24,7 @@ teardown_file() {
 }
 
 setup() {
-    find "$HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+    find "$HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2> /dev/null || true
     source "$PROJECT_ROOT/lib/core/base.sh"
     source "$PROJECT_ROOT/lib/core/log.sh"
     source "$PROJECT_ROOT/lib/core/app_protection.sh"
@@ -109,10 +109,64 @@ setup() {
     [[ "$result" =~ .local/share/firefox ]]
 }
 
+@test "find_app_files detects bundle-id-derived extension leftovers" {
+    mkdir -p "$HOME/Library/Application Support/FileProvider/com.tencent.xinWeChat.WeChatFileProviderExtension"
+    mkdir -p "$HOME/Library/Application Scripts/com.tencent.xinWeChat.WeChatMacShare"
+    mkdir -p "$HOME/Library/Application Scripts/5A4RE8SF68.com.tencent.xinWeChat"
+    mkdir -p "$HOME/Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension"
+    mkdir -p "$HOME/Library/Group Containers/5A4RE8SF68.com.tencent.xinWeChat"
+    mkdir -p "$HOME/Library/Containers/com.tencent.otherapp.Helper"
+
+    result=$(find_app_files "com.tencent.xinWeChat" "WeChat")
+
+    [[ "$result" =~ Library/Application\ Support/FileProvider/com.tencent.xinWeChat.WeChatFileProviderExtension ]]
+    [[ "$result" =~ Library/Application\ Scripts/com.tencent.xinWeChat.WeChatMacShare ]]
+    [[ "$result" =~ Library/Application\ Scripts/5A4RE8SF68.com.tencent.xinWeChat ]]
+    [[ "$result" =~ Library/Containers/com.tencent.xinWeChat.WeChatFileProviderExtension ]]
+    [[ "$result" =~ Library/Group\ Containers/5A4RE8SF68.com.tencent.xinWeChat ]]
+    [[ ! "$result" =~ Library/Containers/com.tencent.otherapp.Helper ]]
+}
+
+@test "find_app_files detects vendor-nested Application Support directories" {
+    mkdir -p "$HOME/Library/Application Support/Avid/Sibelius"
+    mkdir -p "$HOME/Library/Application Support/OtherVendor/Sibelius"
+    echo "test" > "$HOME/Library/Application Support/Avid/Sibelius/settings.db"
+    echo "test" > "$HOME/Library/Application Support/OtherVendor/Sibelius/settings.db"
+
+    result=$(find_app_files "com.avid.sibelius" "Sibelius")
+
+    [[ "$result" =~ Library/Application\ Support/Avid/Sibelius ]]
+    [[ ! "$result" =~ Library/Application\ Support/OtherVendor/Sibelius ]]
+}
+
 @test "find_app_files does not match empty app name" {
     mkdir -p "$HOME/Library/Application Support/test"
 
-    result=$(find_app_files "com.test" "" 2>/dev/null || true)
+    result=$(find_app_files "com.test" "" 2> /dev/null || true)
 
     [[ ! "$result" =~ "Library/Application Support"$ ]]
+}
+
+@test "find_app_files detects VS Code stable Application Support folder (#850)" {
+    mkdir -p "$HOME/Library/Application Support/Code"
+    mkdir -p "$HOME/Library/Application Support/Code - Insiders"
+    mkdir -p "$HOME/.vscode"
+
+    result=$(find_app_files "com.microsoft.VSCode" "Visual Studio Code")
+
+    [[ "$result" =~ Library/Application\ Support/Code$'\n' ]] || [[ "$result" == *"Library/Application Support/Code"* ]]
+    [[ "$result" == *"/.vscode"* ]]
+    [[ "$result" != *"Code - Insiders"* ]]
+}
+
+@test "find_app_files detects VS Code Insiders Application Support folder (#850)" {
+    mkdir -p "$HOME/Library/Application Support/Code"
+    mkdir -p "$HOME/Library/Application Support/Code - Insiders"
+    mkdir -p "$HOME/.vscode-insiders"
+
+    result=$(find_app_files "com.microsoft.VSCodeInsiders" "Visual Studio Code - Insiders")
+
+    [[ "$result" == *"Library/Application Support/Code - Insiders"* ]]
+    [[ "$result" == *"/.vscode-insiders"* ]]
+    [[ ! "$result" =~ Library/Application\ Support/Code$'\n' ]]
 }
