@@ -52,8 +52,8 @@ populate_brew_update_counts_if_unset() {
         local formula_outdated=""
         local cask_outdated=""
 
-        formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null || true)
-        cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null || true)
+        formula_outdated=$(run_with_timeout 8 brew outdated --formula --quiet 2> /dev/null || true) # 8s: brew outdated, see lib/core/timeouts.sh
+        cask_outdated=$(run_with_timeout 8 brew outdated --cask --quiet 2> /dev/null || true)       # 8s: brew outdated, see lib/core/timeouts.sh
 
         formula_count=$(printf '%s\n' "$formula_outdated" | awk 'NF {count++} END {print count + 0}')
         cask_count=$(printf '%s\n' "$cask_outdated" | awk 'NF {count++} END {print count + 0}')

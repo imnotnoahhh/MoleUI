@@ -1,53 +1,187 @@
 package main
 
 import (
+	"container/heap"
 	"context"
+	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func collectTopProcesses() []ProcessInfo {
+func collectProcesses() ([]ProcessInfo, error) {
 	if runtime.GOOS != "darwin" {
-		return nil
+		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Use ps to get top processes by CPU.
-	out, err := runCmd(ctx, "ps", "-Aceo", "pcpu,pmem,comm", "-r")
+	out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,comm=", "-r")
 	if err != nil {
-		return nil
+		out, err = runCmd(ctx, "ps", "aux")
+		if err != nil {
+			return nil, err
+		}
+		return parsePsAuxOutput(out), nil
 	}
+	return parseProcessOutput(out), nil
+}
 
-	var procs []ProcessInfo
-	i := 0
-	for line := range strings.Lines(strings.TrimSpace(out)) {
-		if i == 0 {
-			i++
-			continue
-		}
-		if i > 5 {
-			break
-		}
-		i++
+func parseProcessOutput(raw string) []ProcessInfo {
+	procs := make([]ProcessInfo, 0, strings.Count(raw, "\n"))
+	for line := range strings.Lines(strings.TrimSpace(raw)) {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 5 {
 			continue
 		}
-		cpuVal, _ := strconv.ParseFloat(fields[0], 64)
-		memVal, _ := strconv.ParseFloat(fields[1], 64)
-		name := fields[len(fields)-1]
-		// Strip path from command name.
-		if idx := strings.LastIndex(name, "/"); idx >= 0 {
-			name = name[idx+1:]
+
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		ppid, _ := strconv.Atoi(fields[1])
+		cpuVal, err := strconv.ParseFloat(fields[2], 64)
+		if err != nil {
+			continue
+		}
+		memVal, err := strconv.ParseFloat(fields[3], 64)
+		if err != nil {
+			continue
+		}
+
+		command := strings.Join(fields[4:], " ")
+		if command == "" {
+			continue
 		}
 		procs = append(procs, ProcessInfo{
-			Name:   name,
-			CPU:    cpuVal,
-			Memory: memVal,
+			PID:     pid,
+			PPID:    ppid,
+			Name:    processNameFromCommand(command),
+			Command: command,
+			CPU:     cpuVal,
+			Memory:  memVal,
 		})
 	}
 	return procs
+}
+
+// parsePsAuxOutput parses the fallback "ps aux" format.
+// Columns: USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND
+func parsePsAuxOutput(raw string) []ProcessInfo {
+	procs := make([]ProcessInfo, 0, strings.Count(raw, "\n"))
+	first := true
+	for line := range strings.Lines(strings.TrimSpace(raw)) {
+		if first {
+			first = false
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 11 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		cpuVal, err := strconv.ParseFloat(fields[2], 64)
+		if err != nil {
+			continue
+		}
+		memVal, err := strconv.ParseFloat(fields[3], 64)
+		if err != nil {
+			continue
+		}
+		command := strings.Join(fields[10:], " ")
+		if command == "" {
+			continue
+		}
+		procs = append(procs, ProcessInfo{
+			PID:     pid,
+			PPID:    0,
+			Name:    processNameFromCommand(command),
+			Command: command,
+			CPU:     cpuVal,
+			Memory:  memVal,
+		})
+	}
+	return procs
+}
+
+func processNameFromCommand(command string) string {
+	name := command
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if spIdx := strings.Index(name, " "); spIdx >= 0 {
+		name = name[:spIdx]
+	}
+	return name
+}
+
+func topProcesses(processes []ProcessInfo, limit int) []ProcessInfo {
+	if limit <= 0 || len(processes) == 0 {
+		return nil
+	}
+
+	h := &processHeap{}
+	heap.Init(h)
+	for _, proc := range processes {
+		if h.Len() < limit {
+			heap.Push(h, proc)
+			continue
+		}
+		if processRanksBefore(proc, (*h)[0]) {
+			heap.Pop(h)
+			heap.Push(h, proc)
+		}
+	}
+
+	top := make([]ProcessInfo, h.Len())
+	for i := range slices.Backward(top) {
+		top[i] = heap.Pop(h).(ProcessInfo)
+	}
+	return top
+}
+
+func formatProcessLabel(proc ProcessInfo) string {
+	if proc.Name != "" {
+		return fmt.Sprintf("%s (%d)", proc.Name, proc.PID)
+	}
+	return fmt.Sprintf("pid %d", proc.PID)
+}
+
+func processRanksBefore(a, b ProcessInfo) bool {
+	if a.CPU != b.CPU {
+		return a.CPU > b.CPU
+	}
+	if a.Memory != b.Memory {
+		return a.Memory > b.Memory
+	}
+	return a.PID < b.PID
+}
+
+type processHeap []ProcessInfo
+
+func (h processHeap) Len() int { return len(h) }
+
+func (h processHeap) Less(i, j int) bool {
+	return processRanksBefore(h[j], h[i])
+}
+
+func (h processHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *processHeap) Push(x any) {
+	*h = append(*h, x.(ProcessInfo))
+}
+
+func (h *processHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }

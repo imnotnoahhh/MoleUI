@@ -106,11 +106,11 @@ setup() {
     cat > "$fake_cmd" <<'EOF'
 #!/bin/bash
 trap "" TERM
-sleep 30
+sleep 5
 EOF
     chmod +x "$fake_cmd"
 
-    run /usr/bin/perl -e 'alarm 8; exec @ARGV' env FAKE_CMD="$fake_cmd" bash --noprofile --norc <<'EOF'
+    run /usr/bin/perl -e 'alarm 5; exec @ARGV' env FAKE_CMD="$fake_cmd" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/timeout.sh"
 MO_TIMEOUT_BIN=""
@@ -186,4 +186,130 @@ EOF
         echo 'loaded'
     ")
     [[ "$result" == "loaded" ]]
+}
+
+@test "normalize_paths_for_cleanup handles large nested batches without hanging" {
+    local limit_ms="${MOLE_PERF_NORMALIZE_PATHS_LIMIT_MS:-10000}"
+
+    run env PROJECT_ROOT="$PROJECT_ROOT" LIMIT_MS="$limit_ms" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+    PYTHON_BIN=$(command -v python3 || command -v python || true)
+fi
+[[ -n "$PYTHON_BIN" ]] || { echo "python unavailable"; exit 127; }
+
+"$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import os
+project_root = Path(os.environ["PROJECT_ROOT"])
+text = (project_root / "bin/clean.sh").read_text()
+start = text.index("normalize_paths_for_cleanup() {")
+depth = 0
+end = None
+for i in range(start, len(text)):
+    ch = text[i]
+    if ch == "{":
+        depth += 1
+    elif ch == "}":
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+Path("/tmp/normalize_paths_for_cleanup.sh").write_text(text[start:end] + "\n")
+PY
+
+source /tmp/normalize_paths_for_cleanup.sh
+
+paths=(
+    "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches"
+    "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/"
+)
+for i in $(seq 1 6000); do
+    paths+=("$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches/item-$i")
+    paths+=("$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches/item-$i")
+done
+
+start_ns=$("$PYTHON_BIN" - <<'PY'
+import time
+print(time.time_ns())
+PY
+)
+normalized=()
+while IFS= read -r -d '' line; do
+    normalized+=("$line")
+done < <(normalize_paths_for_cleanup "${paths[@]}")
+end_ns=$("$PYTHON_BIN" - <<'PY'
+import time
+print(time.time_ns())
+PY
+)
+elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+
+printf 'COUNT=%s ELAPSED_MS=%s\n' "${#normalized[@]}" "$elapsed_ms"
+printf '%s\n' "${normalized[@]}"
+
+[[ ${#normalized[@]} -eq 2 ]]
+[[ "${normalized[0]}" == "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches" || "${normalized[1]}" == "$HOME/Library/Containers/com.microsoft.Excel/Data/Library/Caches" ]]
+[[ "${normalized[0]}" == "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches" || "${normalized[1]}" == "$HOME/Library/Containers/com.microsoft.Word/Data/Library/Caches" ]]
+(( elapsed_ms < LIMIT_MS ))
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"COUNT=2"* ]]
+}
+
+@test "normalize_paths_for_cleanup removes whole Gradle DSL hash dirs" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+    PYTHON_BIN=$(command -v python3 || command -v python || true)
+fi
+[[ -n "$PYTHON_BIN" ]] || { echo "python unavailable"; exit 127; }
+
+"$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import os
+project_root = Path(os.environ["PROJECT_ROOT"])
+text = (project_root / "bin/clean.sh").read_text()
+start = text.index("normalize_paths_for_cleanup() {")
+depth = 0
+end = None
+for i in range(start, len(text)):
+    ch = text[i]
+    if ch == "{":
+        depth += 1
+    elif ch == "}":
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+Path("/tmp/normalize_paths_for_cleanup_gradle.sh").write_text(text[start:end] + "\n")
+PY
+
+source /tmp/normalize_paths_for_cleanup_gradle.sh
+
+hash_dir="$HOME/.gradle/caches/8.13/groovy-dsl/abc123"
+paths=(
+    "$hash_dir/metadata.bin"
+    "$hash_dir/classes/cp.bin"
+    "$HOME/.gradle/caches/8.13/kotlin-dsl/def456/metadata.bin"
+)
+
+normalized=()
+while IFS= read -r -d '' line; do
+    normalized+=("$line")
+done < <(normalize_paths_for_cleanup "${paths[@]}")
+
+printf '%s\n' "${normalized[@]}"
+
+[[ ${#normalized[@]} -eq 2 ]]
+[[ "${normalized[0]}" == "$HOME/.gradle/caches/8.13/groovy-dsl/abc123" || "${normalized[1]}" == "$HOME/.gradle/caches/8.13/groovy-dsl/abc123" ]]
+[[ "${normalized[0]}" == "$HOME/.gradle/caches/8.13/kotlin-dsl/def456" || "${normalized[1]}" == "$HOME/.gradle/caches/8.13/kotlin-dsl/def456" ]]
+EOF
+
+    [ "$status" -eq 0 ]
 }

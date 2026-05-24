@@ -184,9 +184,19 @@ format_installer_display() {
     truncated_name=$(truncate_by_display_width "$filename" "$available_width")
     local current_width
     current_width=$(get_display_width "$truncated_name")
-    local char_count=${#truncated_name}
+
+    # Get byte count for printf width calculation
+    local old_lc="${LC_ALL:-}"
+    export LC_ALL=C
+    local byte_count=${#truncated_name}
+    if [[ -n "$old_lc" ]]; then
+        export LC_ALL="$old_lc"
+    else
+        unset LC_ALL
+    fi
+
     local padding=$((available_width - current_width))
-    local printf_width=$((char_count + padding))
+    local printf_width=$((byte_count + padding))
 
     # Format: "filename  size | source"
     printf "%-*s %8s | %-10s" "$printf_width" "$truncated_name" "$size_str" "$source"

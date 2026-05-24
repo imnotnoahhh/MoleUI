@@ -14,13 +14,20 @@ setup_file() {
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
 setup() {
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
     export TERM="dumb"
     rm -rf "${HOME:?}"/*
     mkdir -p "$HOME"
@@ -130,4 +137,73 @@ EOF
     [ "$status" -eq 0 ]
     run bash -c "grep -q 'MOLE_VERSION=\"dev\"' '$PROJECT_ROOT/install.sh'"
     [ "$status" -eq 0 ]
+}
+
+@test "update_homebrew_tap_formula.sh updates all release artifacts" {
+    local formula_file="$HOME/mole.rb"
+    cat > "$formula_file" <<'EOF'
+class Mole < Formula
+  desc "Mole"
+  homepage "https://github.com/tw93/Mole"
+  url "https://github.com/tw93/Mole/archive/refs/tags/V1.32.0.tar.gz"
+  sha256 "old-source-sha"
+
+  on_arm do
+    url "https://github.com/tw93/Mole/releases/download/V1.32.0/binaries-darwin-arm64.tar.gz"
+    sha256 "old-arm-sha"
+  end
+
+  on_intel do
+    url "https://github.com/tw93/Mole/releases/download/V1.32.0/binaries-darwin-amd64.tar.gz"
+    sha256 "old-amd-sha"
+  end
+end
+EOF
+
+    run "$PROJECT_ROOT/scripts/update_homebrew_tap_formula.sh" \
+        --formula "$formula_file" \
+        --tag "V1.33.0" \
+        --source-sha "new-source-sha" \
+        --arm-sha "new-arm-sha" \
+        --amd-sha "new-amd-sha"
+    [ "$status" -eq 0 ]
+
+    run grep -q 'url "https://github.com/tw93/Mole/archive/refs/tags/V1.33.0.tar.gz"' "$formula_file"
+    [ "$status" -eq 0 ]
+    run grep -q 'sha256 "new-source-sha"' "$formula_file"
+    [ "$status" -eq 0 ]
+    run grep -q 'url "https://github.com/tw93/Mole/releases/download/V1.33.0/binaries-darwin-arm64.tar.gz"' "$formula_file"
+    [ "$status" -eq 0 ]
+    run grep -q 'sha256 "new-arm-sha"' "$formula_file"
+    [ "$status" -eq 0 ]
+    run grep -q 'url "https://github.com/tw93/Mole/releases/download/V1.33.0/binaries-darwin-amd64.tar.gz"' "$formula_file"
+    [ "$status" -eq 0 ]
+    run grep -q 'sha256 "new-amd-sha"' "$formula_file"
+    [ "$status" -eq 0 ]
+}
+
+@test "update_homebrew_tap_formula.sh fails when expected sections are missing" {
+    local formula_file="$HOME/mole-missing-intel.rb"
+    cat > "$formula_file" <<'EOF'
+class Mole < Formula
+  desc "Mole"
+  homepage "https://github.com/tw93/Mole"
+  url "https://github.com/tw93/Mole/archive/refs/tags/V1.32.0.tar.gz"
+  sha256 "old-source-sha"
+
+  on_arm do
+    url "https://github.com/tw93/Mole/releases/download/V1.32.0/binaries-darwin-arm64.tar.gz"
+    sha256 "old-arm-sha"
+  end
+end
+EOF
+
+    run "$PROJECT_ROOT/scripts/update_homebrew_tap_formula.sh" \
+        --formula "$formula_file" \
+        --tag "V1.33.0" \
+        --source-sha "new-source-sha" \
+        --arm-sha "new-arm-sha" \
+        --amd-sha "new-amd-sha"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Failed to update formula"* ]]
 }

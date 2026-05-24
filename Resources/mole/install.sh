@@ -5,11 +5,20 @@
 
 set -euo pipefail
 
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+# Honor https://no-color.org: any non-empty NO_COLOR disables ANSI escapes.
+if [[ -n "${NO_COLOR:-}" ]]; then
+    GREEN=''
+    BLUE=''
+    YELLOW=''
+    RED=''
+    NC=''
+else
+    GREEN='\033[0;32m'
+    BLUE='\033[0;34m'
+    YELLOW='\033[1;33m'
+    RED='\033[0;31m'
+    NC='\033[0m'
+fi
 
 _SPINNER_PID=""
 start_line_spinner() {
@@ -19,6 +28,7 @@ start_line_spinner() {
         return
     }
     local chars="|/-\\"
+    # shellcheck disable=SC1003
     [[ -z "$chars" ]] && chars='|/-\\'
     local i=0
     (while true; do
@@ -106,6 +116,10 @@ needs_sudo() {
 
 maybe_sudo() {
     if needs_sudo; then
+        if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+            log_error "Admin access required, blocked in test mode"
+            return 1
+        fi
         sudo "$@"
     else
         "$@"
@@ -264,6 +278,65 @@ normalize_release_tag() {
     fi
 }
 
+release_checksums_url() {
+    local tag="$1"
+    printf 'https://github.com/tw93/mole/releases/download/%s/SHA256SUMS\n' "$tag"
+}
+
+download_release_checksums() {
+    local tag="$1"
+    local output_file="$2"
+    local url
+    url="$(release_checksums_url "$tag")"
+
+    curl -fsSL --connect-timeout 10 --max-time 60 -o "$output_file" "$url"
+}
+
+extract_release_checksum() {
+    local checksums_file="$1"
+    local asset_name="$2"
+
+    awk -v asset="$asset_name" '$2 == asset { print $1; found = 1; exit } END { exit found ? 0 : 1 }' "$checksums_file"
+}
+
+calculate_file_sha256() {
+    local file="$1"
+
+    if command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1; exit}'
+        return
+    fi
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1; exit}'
+        return
+    fi
+
+    return 1
+}
+
+verify_release_asset_checksum() {
+    local tag="$1"
+    local asset_name="$2"
+    local file="$3"
+    local checksums_file
+    checksums_file="$(mktemp "${TMPDIR:-/tmp}/mole-checksums.XXXXXX")" || return 1
+
+    local expected=""
+    local actual=""
+    local result=1
+
+    if download_release_checksums "$tag" "$checksums_file" > /dev/null 2>&1; then
+        expected=$(extract_release_checksum "$checksums_file" "$asset_name" 2> /dev/null || true)
+        actual=$(calculate_file_sha256 "$file" 2> /dev/null || true)
+        if [[ -n "$expected" && -n "$actual" && "$expected" == "$actual" ]]; then
+            result=0
+        fi
+    fi
+
+    rm -f "$checksums_file"
+    return "$result"
+}
+
 get_installed_version() {
     local binary="$INSTALL_DIR/mole"
     if [[ -x "$binary" ]]; then
@@ -302,11 +375,18 @@ write_install_channel_metadata() {
     local commit_hash="${2:-}"
     local metadata_file="$CONFIG_DIR/install_channel"
 
+    mkdir -p "$CONFIG_DIR" 2> /dev/null || return 1
     local tmp_file
     tmp_file=$(mktemp "${CONFIG_DIR}/install_channel.XXXXXX") || return 1
+    # Use a plain if/fi so the block's exit code reflects only I/O failure.
+    # The previous form `[[ -n "$h" ]] && printf ...` returned 1 whenever the
+    # commit hash was empty (the stable channel always omits it), which made
+    # the redirect look like it had failed and tripped the warning.
     {
         printf 'CHANNEL=%s\n' "$channel"
-        [[ -n "$commit_hash" ]] && printf 'COMMIT_HASH=%s\n' "$commit_hash"
+        if [[ -n "$commit_hash" ]]; then
+            printf 'COMMIT_HASH=%s\n' "$commit_hash"
+        fi
     } > "$tmp_file" || {
         rm -f "$tmp_file" 2> /dev/null || true
         return 1
@@ -545,7 +625,10 @@ download_binary() {
         fi
         return 1
     fi
-    local url="https://github.com/tw93/mole/releases/download/V${version}/${binary_name}-darwin-${arch_suffix}"
+    local release_tag
+    release_tag="$(normalize_release_tag "$version")"
+    local asset_name="${binary_name}-darwin-${arch_suffix}"
+    local url="https://github.com/tw93/mole/releases/download/${release_tag}/${asset_name}"
 
     # Skip preflight network checks to avoid false negatives.
 
@@ -557,18 +640,51 @@ download_binary() {
 
     if curl -fsSL --connect-timeout 10 --max-time 60 -o "$target_path" "$url"; then
         if [[ -t 1 ]]; then stop_line_spinner; fi
-        chmod +x "$target_path"
-        xattr -c "$target_path" 2> /dev/null || true
-        log_success "Downloaded ${binary_name} binary"
-    else
-        if [[ -t 1 ]]; then stop_line_spinner; fi
-        log_warning "Could not download ${binary_name} binary, v${version}, trying local build"
+        if verify_release_asset_checksum "$release_tag" "$asset_name" "$target_path"; then
+            chmod +x "$target_path"
+            xattr -c "$target_path" 2> /dev/null || true
+            log_success "Downloaded ${binary_name} binary"
+            return 0
+        fi
+        rm -f "$target_path"
+        log_warning "Checksum verification failed for ${binary_name}, trying local build"
         if build_binary_from_source "$binary_name" "$target_path"; then
             return 0
         fi
-        log_error "Failed to install ${binary_name} binary"
+        log_error "Failed to install verified ${binary_name} binary"
         return 1
     fi
+    if [[ -t 1 ]]; then stop_line_spinner; fi
+
+    local fallback_tag
+    fallback_tag=$(get_latest_release_tag 2> /dev/null || true)
+    if [[ -n "$fallback_tag" && "$fallback_tag" != "$release_tag" ]]; then
+        local fallback_url="https://github.com/tw93/mole/releases/download/${fallback_tag}/${asset_name}"
+        if [[ -t 1 ]]; then
+            start_line_spinner "Retrying ${binary_name} from ${fallback_tag}..."
+        else
+            echo "Retrying ${binary_name} from ${fallback_tag}..."
+        fi
+        if curl -fsSL --connect-timeout 10 --max-time 60 -o "$target_path" "$fallback_url"; then
+            if [[ -t 1 ]]; then stop_line_spinner; fi
+            if verify_release_asset_checksum "$fallback_tag" "$asset_name" "$target_path"; then
+                chmod +x "$target_path"
+                xattr -c "$target_path" 2> /dev/null || true
+                log_success "Downloaded ${binary_name} from ${fallback_tag} (v${version} not yet published)"
+                return 0
+            fi
+            rm -f "$target_path"
+            log_warning "Checksum verification failed for ${binary_name} from ${fallback_tag}"
+        fi
+        if [[ -t 1 ]]; then stop_line_spinner; fi
+    fi
+
+    log_warning "Could not download ${binary_name} binary, v${version}, trying local build"
+    if build_binary_from_source "$binary_name" "$target_path"; then
+        return 0
+    fi
+    log_error "Failed to install ${binary_name} binary"
+    return 1
 }
 
 # File installation (bin/lib/scripts + go helpers).
@@ -587,6 +703,11 @@ install_files() {
         if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
             if needs_sudo; then
                 log_admin "Admin access required for /usr/local/bin"
+                if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
+                    log_error "Admin access required, blocked in test mode"
+                    return 1
+                fi
+                sudo -v
             fi
 
             # Atomic update: copy to temporary name first, then move
@@ -656,7 +777,9 @@ install_files() {
     fi
 
     if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
-        maybe_sudo sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"
+        # Use absolute /usr/bin/sed (always BSD on macOS) so PATH-shadowed
+        # GNU sed from Homebrew gnu-sed does not break the -i '' syntax.
+        maybe_sudo /usr/bin/sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"
     fi
 
     if ! download_binary "analyze"; then

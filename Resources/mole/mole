@@ -13,12 +13,11 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.30.0"
+VERSION="1.39.1"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
-    local pam_sudo_file="/etc/pam.d/sudo"
-    [[ -f "$pam_sudo_file" ]] && grep -q "pam_tid.so" "$pam_sudo_file" 2> /dev/null
+    grep -q "pam_tid.so" /etc/pam.d/sudo /etc/pam.d/sudo_local 2> /dev/null
 }
 
 get_latest_version() {
@@ -37,13 +36,34 @@ get_latest_version_from_github() {
     echo "$version"
 }
 
+run_brew_command() {
+    local timeout_seconds="$1"
+    shift
+
+    HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+        run_with_timeout "$timeout_seconds" "$@"
+}
+
+run_brew_detect() {
+    run_brew_command "${MOLE_HOMEBREW_DETECT_TIMEOUT:-2}" "$@"
+}
+
+run_brew_query() {
+    run_brew_command "${MOLE_HOMEBREW_QUERY_TIMEOUT:-5}" "$@"
+}
+
+brew_mole_formula_installed() {
+    local brew_cmd="${1:-brew}"
+    run_brew_detect "$brew_cmd" list mole > /dev/null 2>&1
+}
+
 get_homebrew_latest_version() {
     command -v brew > /dev/null 2>&1 || return 1
 
     local line candidate=""
 
     # Prefer local tap outdated info to avoid notifying before formula is available.
-    line=$(HOMEBREW_NO_AUTO_UPDATE=1 brew outdated --formula --verbose mole 2> /dev/null | head -1 || true)
+    line=$(run_brew_query brew outdated --formula --verbose mole 2> /dev/null | head -1 || true)
     if [[ "$line" == *"< "* ]]; then
         candidate="${line##*< }"
         candidate="${candidate%% *}"
@@ -51,7 +71,7 @@ get_homebrew_latest_version() {
 
     # Fallback for environments where outdated output is unavailable.
     if [[ -z "$candidate" ]]; then
-        line=$(HOMEBREW_NO_AUTO_UPDATE=1 brew info mole 2> /dev/null | awk 'NR==1 { print; exit }' || true)
+        line=$(run_brew_query brew info mole 2> /dev/null | awk 'NR==1 { print; exit }' || true)
         line="${line#==> }"
         line="${line#*: }"
         if [[ "$line" == stable* ]]; then
@@ -61,32 +81,43 @@ get_homebrew_latest_version() {
 
     [[ -n "$candidate" ]] && printf '%s\n' "$candidate"
 }
-# Install detection (Homebrew vs manual).
-# Uses variable capture + string matching to avoid SIGPIPE under pipefail.
-is_homebrew_install() {
-    local mole_path link_target has_brew=false
-    mole_path=$(command -v mole 2> /dev/null) || return 1
-
-    if command -v brew > /dev/null 2>&1; then
-        has_brew=true
+resolve_mole_source_path() {
+    local mole_path="${BASH_SOURCE[0]:-$0}"
+    if [[ "$mole_path" != /* ]]; then
+        if [[ "$mole_path" == */* ]]; then
+            mole_path="$(cd "$(dirname "$mole_path")" 2> /dev/null && pwd)/${mole_path##*/}"
+        else
+            mole_path=$(command -v "$mole_path" 2> /dev/null || true)
+        fi
     fi
+    [[ -n "$mole_path" ]] && printf '%s\n' "$mole_path"
+}
+
+is_homebrew_mole_path() {
+    local mole_path="$1"
+    local has_brew="$2"
+    local link_target=""
+    [[ -n "$mole_path" ]] || return 1
 
     if [[ -L "$mole_path" ]]; then
         link_target=$(readlink "$mole_path" 2> /dev/null) || true
         if [[ "$link_target" == *"Cellar/mole"* ]]; then
             if $has_brew; then
-                brew list mole > /dev/null 2>&1 && return 0
+                brew_mole_formula_installed brew && return 0
             fi
             return 1
         fi
+        return 1
     fi
 
     if [[ -f "$mole_path" ]]; then
+        # Paths are quoted so Homebrew bottle relocation cannot break parsing
+        # when the prefix contains spaces (e.g. Applite under "Application Support").
         case "$mole_path" in
-            /opt/homebrew/bin/mole | /usr/local/bin/mole)
-                if [[ -d /opt/homebrew/Cellar/mole ]] || [[ -d /usr/local/Cellar/mole ]]; then
+            "/opt/homebrew/bin/mole" | "/usr/local/bin/mole")
+                if [[ -d "/opt/homebrew/Cellar/mole" ]] || [[ -d "/usr/local/Cellar/mole" ]]; then
                     if $has_brew; then
-                        brew list mole > /dev/null 2>&1 && return 0
+                        brew_mole_formula_installed brew && return 0
                     else
                         return 0 # Cellar exists, probably Homebrew install
                     fi
@@ -95,11 +126,31 @@ is_homebrew_install() {
         esac
     fi
 
-    if $has_brew; then
-        local brew_prefix
-        brew_prefix=$(brew --prefix 2> /dev/null)
-        if [[ -n "$brew_prefix" && "$mole_path" == "$brew_prefix/bin/mole" && -d "$brew_prefix/Cellar/mole" ]]; then
-            brew list mole > /dev/null 2>&1 && return 0
+    return 1
+}
+
+# Install detection (Homebrew vs manual).
+# Default path checks only the active script, keeping source-tree commands fast.
+# Pass --include-path when update/remove flows intentionally need to inspect
+# an installed `mole` found through PATH.
+is_homebrew_install() {
+    local include_path_lookup="${1:-}"
+    local has_brew=false
+    if command -v brew > /dev/null 2>&1; then
+        has_brew=true
+    fi
+
+    local mole_path
+    mole_path=$(resolve_mole_source_path || true)
+    if is_homebrew_mole_path "$mole_path" "$has_brew"; then
+        return 0
+    fi
+
+    if [[ "$include_path_lookup" == "--include-path" ]]; then
+        local path_mole
+        path_mole=$(command -v mole 2> /dev/null || true)
+        if [[ -n "$path_mole" && "$path_mole" != "$mole_path" ]] && is_homebrew_mole_path "$path_mole" "$has_brew"; then
+            return 0
         fi
     fi
 
@@ -133,6 +184,14 @@ get_install_commit() {
     fi
 }
 
+get_latest_commit_from_github() {
+    local sha
+    sha=$(curl -fsSL --connect-timeout 2 --max-time 3 \
+        "https://api.github.com/repos/tw93/mole/commits/main" 2> /dev/null |
+        grep '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]\{40\}"' | head -1 | sed -E 's/.*"sha"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    echo "$sha"
+}
+
 # Background update notice
 check_for_updates() {
     local msg_cache="$HOME/.cache/mole/update_message"
@@ -141,28 +200,44 @@ check_for_updates() {
 
     (
         (
-            local latest
+            local channel
+            channel=$(get_install_channel)
 
-            latest=$(get_latest_version_from_github)
-            if [[ -z "$latest" ]]; then
-                latest=$(get_latest_version)
-            fi
+            if [[ "$channel" == "nightly" ]]; then
+                # Nightly: compare commit hashes instead of version numbers
+                local installed_commit latest_commit
+                installed_commit=$(get_install_commit)
+                latest_commit=$(get_latest_commit_from_github)
 
-            if [[ -n "$latest" && "$VERSION" != "$latest" && "$(printf '%s\n' "$VERSION" "$latest" | sort -V | head -1)" == "$VERSION" ]]; then
-                if is_homebrew_install; then
-                    # For Homebrew, only notify if the brew tap has the new version available locally
-                    local brew_latest
-                    brew_latest=$(get_homebrew_latest_version || true)
-                    if [[ -n "$brew_latest" && "$brew_latest" != "$VERSION" && "$(printf '%s\n' "$VERSION" "$brew_latest" | sort -V | head -1)" == "$VERSION" ]]; then
-                        printf "\nUpdate %s available, run %smo update%s\n\n" "$brew_latest" "$GREEN" "$NC" > "$msg_cache"
-                    else
-                        echo -n > "$msg_cache"
-                    fi
+                if [[ -n "$installed_commit" && -n "$latest_commit" && "${installed_commit:0:7}" != "${latest_commit:0:7}" ]]; then
+                    printf "\nNew nightly commit %s available, run %smo update --nightly%s\n\n" "${latest_commit:0:7}" "$GREEN" "$NC" > "$msg_cache"
                 else
-                    printf "\nUpdate %s available, run %smo update%s\n\n" "$latest" "$GREEN" "$NC" > "$msg_cache"
+                    echo -n > "$msg_cache"
                 fi
             else
-                echo -n > "$msg_cache"
+                local latest
+
+                latest=$(get_latest_version_from_github)
+                if [[ -z "$latest" ]]; then
+                    latest=$(get_latest_version)
+                fi
+
+                if [[ -n "$latest" && "$VERSION" != "$latest" && "$(printf '%s\n' "$VERSION" "$latest" | sort -V | head -1)" == "$VERSION" ]]; then
+                    if is_homebrew_install; then
+                        # For Homebrew, only notify if the brew tap has the new version available locally
+                        local brew_latest
+                        brew_latest=$(get_homebrew_latest_version || true)
+                        if [[ -n "$brew_latest" && "$brew_latest" != "$VERSION" && "$(printf '%s\n' "$VERSION" "$brew_latest" | sort -V | head -1)" == "$VERSION" ]]; then
+                            printf "\nUpdate %s available, run %smo update%s\n\n" "$brew_latest" "$GREEN" "$NC" > "$msg_cache"
+                        else
+                            echo -n > "$msg_cache"
+                        fi
+                    else
+                        printf "\nUpdate %s available, run %smo update%s\n\n" "$latest" "$GREEN" "$NC" > "$msg_cache"
+                    fi
+                else
+                    echo -n > "$msg_cache"
+                fi
             fi
         ) > /dev/null 2>&1 < /dev/null &
     )
@@ -288,11 +363,11 @@ update_mole() {
     }
     trap '_update_cleanup; update_interrupted=true; echo ""; exit 130' INT TERM
 
-    if is_homebrew_install; then
+    if is_homebrew_install --include-path; then
         if [[ "$nightly_update" == "true" ]]; then
-            log_error "Nightly update is only available for script installations"
-            echo -e "${ICON_REVIEW} Homebrew installs follow stable releases."
-            echo -e "${ICON_REVIEW} Reinstall via script to use: ${GRAY}mo update --nightly${NC}"
+            local review_icon="${ICON_REVIEW:-☞}"
+            log_error "Nightly update is only available for script installations. Homebrew installs follow stable releases."
+            printf '%s Reinstall via script to use: mo update --nightly\n' "$review_icon"
             exit 1
         fi
         update_via_homebrew "$VERSION"
@@ -319,6 +394,11 @@ update_mole() {
             echo -e "${ICON_REVIEW} Try again with: ${GRAY}mo update${NC}"
             exit 1
         fi
+        if [[ ! "$latest" =~ ^[Vv]?[0-9]+(\.[0-9]+)*$ ]]; then
+            log_error "Invalid version response: $latest"
+            echo -e "${ICON_REVIEW} Try again later or use: ${GRAY}mo update --nightly${NC}"
+            exit 1
+        fi
 
         if [[ "$VERSION" == "$latest" && "$force_update" != "true" ]]; then
             echo ""
@@ -334,7 +414,11 @@ update_mole() {
         echo "${download_label%...}"
     fi
 
-    local installer_url="https://raw.githubusercontent.com/tw93/mole/main/install.sh"
+    local installer_ref="main"
+    if [[ "$nightly_update" != "true" ]]; then
+        installer_ref="V${latest#V}"
+    fi
+    local installer_url="https://raw.githubusercontent.com/tw93/mole/${installer_ref}/install.sh"
     local tmp_installer
     tmp_installer="$(mktemp_file)" || {
         log_error "Update failed"
@@ -494,6 +578,10 @@ update_mole() {
 # Remove flow (Homebrew + manual + config/cache).
 remove_mole() {
     local dry_run_mode="${1:-false}"
+    local test_mode=false
+    if [[ "${MOLE_TEST_MODE:-0}" == "1" ]]; then
+        test_mode=true
+    fi
 
     if [[ -t 1 ]]; then
         start_inline_spinner "Detecting Mole installations..."
@@ -507,37 +595,47 @@ remove_mole() {
     local -a manual_installs=()
     local -a alias_installs=()
 
-    if command -v brew > /dev/null 2>&1; then
-        brew_cmd="brew"
-    elif [[ -x "/opt/homebrew/bin/brew" ]]; then
-        brew_cmd="/opt/homebrew/bin/brew"
-    elif [[ -x "/usr/local/bin/brew" ]]; then
-        brew_cmd="/usr/local/bin/brew"
-    fi
-
-    if [[ -n "$brew_cmd" ]]; then
-        if "$brew_cmd" list mole > /dev/null 2>&1; then
-            brew_has_mole="true"
+    if [[ "$test_mode" != "true" ]]; then
+        if command -v brew > /dev/null 2>&1; then
+            brew_cmd="brew"
+        elif [[ -x "/opt/homebrew/bin/brew" ]]; then
+            brew_cmd="/opt/homebrew/bin/brew"
+        elif [[ -x "/usr/local/bin/brew" ]]; then
+            brew_cmd="/usr/local/bin/brew"
         fi
-    fi
 
-    if [[ "$brew_has_mole" == "true" ]] || is_homebrew_install; then
-        is_homebrew=true
+        if [[ -n "$brew_cmd" ]]; then
+            if brew_mole_formula_installed "$brew_cmd"; then
+                brew_has_mole="true"
+            fi
+        fi
+
+        if [[ "$brew_has_mole" == "true" ]] || is_homebrew_install; then
+            is_homebrew=true
+        fi
     fi
 
     local found_mole
-    found_mole=$(command -v mole 2> /dev/null || true)
-    if [[ -n "$found_mole" && -f "$found_mole" ]]; then
-        if [[ ! -L "$found_mole" ]] || ! readlink "$found_mole" | grep -q "Cellar/mole"; then
-            manual_installs+=("$found_mole")
+    found_mole=""
+    if [[ "$test_mode" != "true" ]]; then
+        found_mole=$(command -v mole 2> /dev/null || true)
+        if [[ -n "$found_mole" && -f "$found_mole" ]]; then
+            if [[ ! -L "$found_mole" ]] || ! readlink "$found_mole" | grep -q "Cellar/mole"; then
+                manual_installs+=("$found_mole")
+            fi
         fi
     fi
 
-    local -a fallback_paths=(
-        "/usr/local/bin/mole"
-        "$HOME/.local/bin/mole"
-        "/opt/local/bin/mole"
-    )
+    local -a fallback_paths=()
+    if [[ "$test_mode" == "true" ]]; then
+        fallback_paths=("$HOME/.local/bin/mole")
+    else
+        fallback_paths=(
+            "/usr/local/bin/mole"
+            "$HOME/.local/bin/mole"
+            "/opt/local/bin/mole"
+        )
+    fi
 
     for path in "${fallback_paths[@]}"; do
         if [[ -f "$path" && "$path" != "$found_mole" ]]; then
@@ -548,18 +646,26 @@ remove_mole() {
     done
 
     local found_mo
-    found_mo=$(command -v mo 2> /dev/null || true)
-    if [[ -n "$found_mo" && -f "$found_mo" ]]; then
-        if [[ ! -L "$found_mo" ]] || ! readlink "$found_mo" | grep -q "Cellar/mole"; then
-            alias_installs+=("$found_mo")
+    found_mo=""
+    if [[ "$test_mode" != "true" ]]; then
+        found_mo=$(command -v mo 2> /dev/null || true)
+        if [[ -n "$found_mo" && -f "$found_mo" ]]; then
+            if [[ ! -L "$found_mo" ]] || ! readlink "$found_mo" | grep -q "Cellar/mole"; then
+                alias_installs+=("$found_mo")
+            fi
         fi
     fi
 
-    local -a alias_fallback=(
-        "/usr/local/bin/mo"
-        "$HOME/.local/bin/mo"
-        "/opt/local/bin/mo"
-    )
+    local -a alias_fallback=()
+    if [[ "$test_mode" == "true" ]]; then
+        alias_fallback=("$HOME/.local/bin/mo")
+    else
+        alias_fallback=(
+            "/usr/local/bin/mo"
+            "$HOME/.local/bin/mo"
+            "/opt/local/bin/mo"
+        )
+    fi
 
     for alias in "${alias_fallback[@]}"; do
         if [[ -f "$alias" && "$alias" != "$found_mo" ]]; then
@@ -602,6 +708,7 @@ remove_mole() {
         fi
         [[ -d "$HOME/.cache/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.cache/mole${NC}"
         [[ -d "$HOME/.config/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.config/mole${NC}"
+        [[ -d "$HOME/Library/Logs/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/Library/Logs/mole${NC}"
 
         printf '\n%s\n\n' "${GREEN}${ICON_SUCCESS}${NC} Dry run complete, no changes made"
         exit 0
@@ -616,6 +723,7 @@ remove_mole() {
     done
     echo "  ${ICON_LIST} ~/.config/mole"
     echo "  ${ICON_LIST} ~/.cache/mole"
+    echo "  ${ICON_LIST} ~/Library/Logs/mole"
     echo -ne "${PURPLE}${ICON_ARROW}${NC} Press ${GREEN}Enter${NC} to confirm, ${GRAY}ESC${NC} to cancel: "
 
     IFS= read -r -s -n1 key || key=""
@@ -656,7 +764,7 @@ remove_mole() {
         for install in "${manual_installs[@]}"; do
             if [[ -f "$install" ]]; then
                 if [[ ! -w "$(dirname "$install")" ]]; then
-                    if ! sudo rm -f "$install" 2> /dev/null; then
+                    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]] || ! sudo rm -f "$install" 2> /dev/null; then
                         has_error=true
                     fi
                 else
@@ -671,7 +779,7 @@ remove_mole() {
         for alias in "${alias_installs[@]}"; do
             if [[ -f "$alias" ]]; then
                 if [[ ! -w "$(dirname "$alias")" ]]; then
-                    if ! sudo rm -f "$alias" 2> /dev/null; then
+                    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]] || ! sudo rm -f "$alias" 2> /dev/null; then
                         has_error=true
                     fi
                 else
@@ -687,6 +795,9 @@ remove_mole() {
     fi
     if [[ -d "$HOME/.config/mole" ]]; then
         rm -rf "$HOME/.config/mole" 2> /dev/null || true
+    fi
+    if [[ -d "$HOME/Library/Logs/mole" ]]; then
+        rm -rf "$HOME/Library/Logs/mole" 2> /dev/null || true
     fi
 
     local final_message
@@ -731,13 +842,13 @@ show_main_menu() {
 
     printf '\r\033[2K%s\n' "$(show_menu_option 1 "Clean        Free up disk space" "$([[ $selected -eq 1 ]] && echo true || echo false)")"
     printf '\r\033[2K%s\n' "$(show_menu_option 2 "Uninstall    Remove apps completely" "$([[ $selected -eq 2 ]] && echo true || echo false)")"
-    printf '\r\033[2K%s\n' "$(show_menu_option 3 "Optimize     Check and maintain system" "$([[ $selected -eq 3 ]] && echo true || echo false)")"
+    printf '\r\033[2K%s\n' "$(show_menu_option 3 "Optimize     Refresh caches and services" "$([[ $selected -eq 3 ]] && echo true || echo false)")"
     printf '\r\033[2K%s\n' "$(show_menu_option 4 "Analyze      Explore disk usage" "$([[ $selected -eq 4 ]] && echo true || echo false)")"
     printf '\r\033[2K%s\n' "$(show_menu_option 5 "Status       Monitor system health" "$([[ $selected -eq 5 ]] && echo true || echo false)")"
 
     if [[ -t 0 ]]; then
         printf '\r\033[2K\n'
-        local controls="${GRAY}↑↓  |  Enter  |  M More"
+        local controls="${GRAY}↑↓  |  Enter  |  M More  |  V Version"
         if ! is_touchid_configured; then
             controls="${controls}  |  T TouchID"
         elif [[ "${MAIN_MENU_SHOW_UPDATE:-false}" == "true" ]]; then
@@ -864,7 +975,7 @@ main() {
     done
 
     case "${args[0]:-""}" in
-        "optimize")
+        "optimize" | "optimise")
             exec "$SCRIPT_DIR/bin/optimize.sh" "${args[@]:1}"
             ;;
         "clean")
@@ -873,7 +984,7 @@ main() {
         "uninstall")
             exec "$SCRIPT_DIR/bin/uninstall.sh" "${args[@]:1}"
             ;;
-        "analyze")
+        "analyze" | "analyse")
             exec "$SCRIPT_DIR/bin/analyze.sh" "${args[@]:1}"
             ;;
         "status")

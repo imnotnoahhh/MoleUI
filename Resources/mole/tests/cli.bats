@@ -7,17 +7,51 @@ setup_file() {
 	ORIGINAL_HOME="${HOME:-}"
 	export ORIGINAL_HOME
 
+	# Capture real GOCACHE before HOME is replaced with a temp dir.
+	# Without this, go build would use $HOME/Library/Caches/go-build inside the
+	# temp dir (empty), causing a full cold rebuild on every test run (~6s).
+	ORIGINAL_GOCACHE="$(go env GOCACHE 2>/dev/null || true)"
+	export ORIGINAL_GOCACHE
+
 	HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-cli-home.XXXXXX")"
 	export HOME
 
 	mkdir -p "$HOME"
+
+	CLI_OWNS_GO_HELPERS=0
+	export CLI_OWNS_GO_HELPERS
+
+	if [[ -x "${MOLE_TEST_ANALYZE_BIN:-}" && -x "${MOLE_TEST_STATUS_BIN:-}" ]]; then
+		ANALYZE_BIN="$MOLE_TEST_ANALYZE_BIN"
+		STATUS_BIN="$MOLE_TEST_STATUS_BIN"
+		export ANALYZE_BIN STATUS_BIN
+	elif command -v go > /dev/null 2>&1; then
+		# Build Go binaries from current source for JSON tests.
+		# Point GOPATH/GOMODCACHE/GOCACHE at the real home so local focused runs
+		# can reuse caches when the full runner did not prebuild helpers.
+		ANALYZE_BIN="$(mktemp "${TMPDIR:-/tmp}/analyze-go.XXXXXX")"
+		STATUS_BIN="$(mktemp "${TMPDIR:-/tmp}/status-go.XXXXXX")"
+		GOPATH="${ORIGINAL_HOME}/go" GOMODCACHE="${ORIGINAL_HOME}/go/pkg/mod" \
+			GOCACHE="${ORIGINAL_GOCACHE}" \
+			go build -o "$ANALYZE_BIN" "$PROJECT_ROOT/cmd/analyze" 2>/dev/null
+		GOPATH="${ORIGINAL_HOME}/go" GOMODCACHE="${ORIGINAL_HOME}/go/pkg/mod" \
+			GOCACHE="${ORIGINAL_GOCACHE}" \
+			go build -o "$STATUS_BIN" "$PROJECT_ROOT/cmd/status" 2>/dev/null
+		CLI_OWNS_GO_HELPERS=1
+		export ANALYZE_BIN STATUS_BIN
+	fi
 }
 
 teardown_file() {
-	rm -rf "$HOME/.config/mole"
-	rm -rf "$HOME"
+	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		rm -rf "$HOME/.config/mole"
+		rm -rf "$HOME"
+	fi
 	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
 		export HOME="$ORIGINAL_HOME"
+	fi
+	if [[ "${CLI_OWNS_GO_HELPERS:-0}" == "1" ]]; then
+		rm -f "${ANALYZE_BIN:-}" "${STATUS_BIN:-}"
 	fi
 }
 
@@ -43,9 +77,32 @@ fi
 exit 0
 SCRIPT
 	chmod +x "$dir/bioutil"
+
+	cat >"$dir/chown" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 0
+SCRIPT
+	chmod +x "$dir/chown"
+
+	cat >"$dir/install" <<'SCRIPT'
+#!/usr/bin/env bash
+args=()
+skip_next=""
+for arg in "$@"; do
+    if [[ -n "$skip_next" ]]; then skip_next=""; continue; fi
+    case "$arg" in -o|-g) skip_next=1 ;; *) args+=("$arg") ;; esac
+done
+exec /usr/bin/install "${args[@]}"
+SCRIPT
+	chmod +x "$dir/install"
 }
 
 setup() {
+	# Safety: refuse to operate on a real home directory.
+	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+		return 1
+	fi
 	rm -rf "$HOME/.config/mole"
 	mkdir -p "$HOME/.config/mole"
 }
@@ -54,7 +111,9 @@ setup() {
 	run env HOME="$HOME" "$PROJECT_ROOT/mole" --help
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"mo clean"* ]]
+	[[ "$output" == *"mo optimize"* ]]
 	[[ "$output" == *"mo analyze"* ]]
+	[[ "$output" != *"mo optimise"* ]]
 }
 
 @test "mole --version reports script version" {
@@ -62,6 +121,22 @@ setup() {
 	run env HOME="$HOME" "$PROJECT_ROOT/mole" --version
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"$expected_version"* ]]
+}
+
+@test "mole --version does not hang on slow Homebrew detection" {
+	local fake_bin
+	fake_bin="$(mktemp -d "${BATS_TEST_TMPDIR}/fake-bin.XXXXXX")"
+	ln -s "$PROJECT_ROOT/mole" "$fake_bin/mole"
+	cat > "$fake_bin/brew" <<'SCRIPT'
+#!/usr/bin/env bash
+sleep 3
+exit 1
+SCRIPT
+	chmod +x "$fake_bin/brew"
+
+	run env HOME="$HOME" PATH="$fake_bin:$PATH" MOLE_HOMEBREW_DETECT_TIMEOUT=1 "$PROJECT_ROOT/mole" --version
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Install: Manual"* ]]
 }
 
 @test "mole --version shows nightly channel metadata" {
@@ -81,6 +156,30 @@ EOF
 	run env HOME="$HOME" "$PROJECT_ROOT/mole" unknown-command
 	[ "$status" -ne 0 ]
 	[[ "$output" == *"Unknown command: unknown-command"* ]]
+}
+
+@test "mole --help does not list check command" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" --help
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"mo check"* ]]
+}
+
+@test "mole check is not a public command" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" check --help
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"Unknown command: check"* ]]
+}
+
+@test "mole doctor is not a public command" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" doctor --help
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"Unknown command: doctor"* ]]
+}
+
+@test "mole optimize --check is not a public option" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" optimize --check
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"Unknown optimize option: --check"* ]]
 }
 
 @test "mole uninstall --whitelist returns unsupported option error" {
@@ -164,7 +263,7 @@ EOF
 }
 
 @test "mo optimize command is recognized" {
-	run bash -c "grep -q '\"optimize\")' '$PROJECT_ROOT/mole'"
+	run bash -c "grep -Eq '\"optimi[sz]e\"[[:space:]]*\\|[[:space:]]*\"optimi[sz]e\"' '$PROJECT_ROOT/mole'"
 	[ "$status" -eq 0 ]
 }
 
@@ -184,7 +283,7 @@ EOF
 	[ "$status" -eq 0 ]
 	MOLE_OUTPUT="$output"
 
-	DEBUG_LOG="$HOME/.config/mole/mole_debug_session.log"
+	DEBUG_LOG="$HOME/Library/Logs/mole/mole_debug_session.log"
 	[ -f "$DEBUG_LOG" ]
 
 	run grep "Mole Debug Session" "$DEBUG_LOG"
@@ -206,13 +305,48 @@ EOF
 	run env HOME="$HOME" TERM="xterm-256color" MOLE_TEST_MODE=1 MO_DEBUG=1 "$PROJECT_ROOT/mole" clean --dry-run
 	[ "$status" -eq 0 ]
 
-	DEBUG_LOG="$HOME/.config/mole/mole_debug_session.log"
+	DEBUG_LOG="$HOME/Library/Logs/mole/mole_debug_session.log"
 
 	run grep "User:" "$DEBUG_LOG"
 	[ "$status" -eq 0 ]
 
 	run grep "Architecture:" "$DEBUG_LOG"
 	[ "$status" -eq 0 ]
+}
+
+@test "mo clean --help includes external volume option" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" clean --help
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"--external PATH"* ]]
+	[[ "$output" == *"already-uninstalled apps"* ]]
+}
+
+@test "mo uninstall --help directs leftover-only cleanup to clean" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" uninstall --help
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"already gone, use mo clean"* ]]
+}
+
+@test "mo clean --external accepts canonicalized custom root" {
+	real_root="$(mktemp -d "$HOME/ext-real.XXXXXX")"
+	link_root="$HOME/ext-link"
+	ln -s "$real_root" "$link_root"
+	mkdir -p "$link_root/USB/.Trashes"
+	touch "$link_root/USB/.Trashes/cache.tmp"
+
+	mock_bin="$HOME/mock-bin"
+	mkdir -p "$mock_bin"
+	cat > "$mock_bin/diskutil" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+	chmod +x "$mock_bin/diskutil"
+
+	run env HOME="$HOME" PATH="$mock_bin:$PATH" MOLE_EXTERNAL_VOLUMES_ROOT="$link_root" \
+		MOLE_TEST_NO_AUTH=1 "$PROJECT_ROOT/mole" clean --external "$link_root/USB" --dry-run
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Clean External Volume"* ]]
+	[[ "$output" == *"External volume cleanup"* ]]
 }
 
 @test "touchid status reflects pam file contents" {
@@ -277,4 +411,213 @@ EOF
 
 	run grep "pam_tid.so" "$pam_file"
 	[ "$status" -ne 0 ]
+}
+
+@test "enable_touchid sets correct file permissions on pam file" {
+	pam_file="$HOME/pam_perms_enable"
+	cat >"$pam_file" <<'EOF'
+auth       sufficient     pam_opendirectory.so
+EOF
+
+	fake_bin="$HOME/fake-bin-perms-enable"
+	create_fake_utils "$fake_bin"
+
+	run env PATH="$fake_bin:$PATH" MOLE_PAM_SUDO_FILE="$pam_file" "$PROJECT_ROOT/bin/touchid.sh" enable
+	[ "$status" -eq 0 ]
+	grep -q "pam_tid.so" "$pam_file"
+
+	local perms
+	perms=$(stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
+	[ "$perms" = "444" ]
+}
+
+@test "disable_touchid sets correct file permissions on pam file" {
+	pam_file="$HOME/pam_perms_disable"
+	cat >"$pam_file" <<'EOF'
+auth       sufficient     pam_tid.so
+auth       sufficient     pam_opendirectory.so
+EOF
+
+	fake_bin="$HOME/fake-bin-perms-disable"
+	create_fake_utils "$fake_bin"
+
+	run env PATH="$fake_bin:$PATH" MOLE_PAM_SUDO_FILE="$pam_file" "$PROJECT_ROOT/bin/touchid.sh" disable
+	[ "$status" -eq 0 ]
+
+	local perms
+	perms=$(stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
+	[ "$perms" = "444" ]
+}
+
+@test "enable_touchid sets correct permissions on sudo_local file" {
+	pam_file="$HOME/pam_perms_sudolocal"
+	pam_local="$(dirname "$pam_file")/sudo_local_perms"
+	cat >"$pam_file" <<'EOF'
+# sudo: auth account password session
+auth       include        sudo_local
+auth       sufficient     pam_opendirectory.so
+EOF
+
+	fake_bin="$HOME/fake-bin-perms-sudolocal"
+	create_fake_utils "$fake_bin"
+
+	run env PATH="$fake_bin:$PATH" \
+		MOLE_PAM_SUDO_FILE="$pam_file" \
+		MOLE_PAM_SUDO_LOCAL_FILE="$pam_local" \
+		"$PROJECT_ROOT/bin/touchid.sh" enable
+	[ "$status" -eq 0 ]
+	grep -q "pam_tid.so" "$pam_local"
+
+	local perms
+	perms=$(stat -f "%Lp" "$pam_local" 2>/dev/null || stat -c "%a" "$pam_local" 2>/dev/null)
+	[ "$perms" = "444" ]
+}
+
+# --- JSON output mode tests ---
+
+@test "mo analyze --json outputs valid JSON with expected fields" {
+	if [[ ! -x "${ANALYZE_BIN:-}" ]]; then
+		skip "analyze binary not available (go not installed?)"
+	fi
+
+	run "$ANALYZE_BIN" --json /tmp
+	[ "$status" -eq 0 ]
+
+	# Validate it is parseable JSON
+	echo "$output" | python3 -c "import sys, json; json.load(sys.stdin)"
+
+	# Check required top-level keys
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert 'path' in data, 'missing path'
+assert 'overview' in data, 'missing overview'
+assert 'entries' in data, 'missing entries'
+assert 'total_size' in data, 'missing total_size'
+assert 'total_files' in data, 'missing total_files'
+assert isinstance(data['entries'], list), 'entries is not a list'
+"
+}
+
+@test "mo analyze --json entries contain required fields" {
+	if [[ ! -x "${ANALYZE_BIN:-}" ]]; then
+		skip "analyze binary not available (go not installed?)"
+	fi
+
+	run "$ANALYZE_BIN" --json /tmp
+	[ "$status" -eq 0 ]
+
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['overview'] is False, 'explicit path should not be overview mode'
+for entry in data['entries']:
+    assert 'name' in entry, 'entry missing name'
+    assert 'path' in entry, 'entry missing path'
+    assert 'size' in entry, 'entry missing size'
+    assert 'is_dir' in entry, 'entry missing is_dir'
+"
+}
+
+@test "mo analyze --json path reflects target directory" {
+	if [[ ! -x "${ANALYZE_BIN:-}" ]]; then
+		skip "analyze binary not available (go not installed?)"
+	fi
+
+	run "$ANALYZE_BIN" --json /tmp
+	[ "$status" -eq 0 ]
+
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['path'] == '/tmp' or data['path'] == '/private/tmp', \
+    f\"unexpected path: {data['path']}\"
+"
+}
+
+@test "mo analyze --json overview mode returns expected schema" {
+	if [[ ! -x "${ANALYZE_BIN:-}" ]]; then
+		skip "analyze binary not available (go not installed?)"
+	fi
+
+	run "$ANALYZE_BIN" --json
+	[ "$status" -eq 0 ]
+
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert 'path' in data, 'missing path'
+assert 'overview' in data, 'missing overview'
+assert data['overview'] is True, 'overview scan should have overview: true'
+assert 'entries' in data, 'missing entries'
+assert 'total_size' in data, 'missing total_size'
+assert isinstance(data['entries'], list), 'entries is not a list'
+"
+}
+
+@test "mo status --json outputs valid JSON with expected fields" {
+	if [[ ! -x "${STATUS_BIN:-}" ]]; then
+		skip "status binary not available (go not installed?)"
+	fi
+
+	run "$STATUS_BIN" --json
+	[ "$status" -eq 0 ]
+
+	# Validate it is parseable JSON
+	echo "$output" | python3 -c "import sys, json; json.load(sys.stdin)"
+
+	# Check required top-level keys
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for key in ['cpu', 'memory', 'disks', 'health_score', 'host', 'uptime']:
+    assert key in data, f'missing key: {key}'
+"
+}
+
+@test "mo status --json cpu section has expected structure" {
+	if [[ ! -x "${STATUS_BIN:-}" ]]; then
+		skip "status binary not available (go not installed?)"
+	fi
+
+	run "$STATUS_BIN" --json
+	[ "$status" -eq 0 ]
+
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+cpu = data['cpu']
+assert 'usage' in cpu, 'cpu missing usage'
+assert 'logical_cpu' in cpu, 'cpu missing logical_cpu'
+assert isinstance(cpu['usage'], (int, float)), 'cpu usage is not a number'
+"
+}
+
+@test "mo status --json memory section has expected structure" {
+	if [[ ! -x "${STATUS_BIN:-}" ]]; then
+		skip "status binary not available (go not installed?)"
+	fi
+
+	run "$STATUS_BIN" --json
+	[ "$status" -eq 0 ]
+
+	echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+mem = data['memory']
+assert 'total' in mem, 'memory missing total'
+assert 'used' in mem, 'memory missing used'
+assert 'used_percent' in mem, 'memory missing used_percent'
+assert mem['total'] > 0, 'memory total should be positive'
+"
+}
+
+@test "mo status --json piped to stdout auto-detects JSON mode" {
+	if [[ ! -x "${STATUS_BIN:-}" ]]; then
+		skip "status binary not available (go not installed?)"
+	fi
+
+	# When piped (not a tty), status should auto-detect and output JSON
+	output=$("$STATUS_BIN" 2>/dev/null)
+	echo "$output" | python3 -c "import sys, json; json.load(sys.stdin)"
 }
