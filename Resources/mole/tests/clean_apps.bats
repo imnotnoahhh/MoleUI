@@ -10,11 +10,17 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-apps-module.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
@@ -28,8 +34,8 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 start_inline_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
-get_file_size() { echo 10; }
-bytes_to_human() { echo "0B"; }
+get_file_size() { echo $((2 * 1024 * 1024 * 1024)); }
+bytes_to_human() { echo "2.15GB"; }
 files_cleaned=0
 total_size_cleaned=0
 total_items=0
@@ -40,6 +46,30 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"DS test"* ]]
+    [[ "$output" == *$'\033[0;33m→\033[0m'* ]]
+}
+
+@test "clean_ds_store_tree uses green for successful cleanups" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+start_inline_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+get_file_size() { echo 512; }
+bytes_to_human() { echo "512B"; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+mkdir -p "$HOME/test_ds"
+touch "$HOME/test_ds/.DS_Store"
+clean_ds_store_tree "$HOME/test_ds" "DS test"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DS test"* ]]
+    [[ "$output" == *$'\033[0;32m✓\033[0m'* ]]
 }
 
 @test "scan_installed_apps uses cache when fresh" {
@@ -57,6 +87,97 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"com.example.App"* ]]
+}
+
+@test "scan_installed_apps filters missing value from osascript output" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+# Create a fake .app with a plist that has no CFBundleIdentifier
+mkdir -p "$HOME/Applications/FakeApp.app/Contents"
+cat > "$HOME/Applications/FakeApp.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>FakeApp</string>
+</dict>
+</plist>
+PLIST
+
+# Create a valid .app alongside it
+mkdir -p "$HOME/Applications/GoodApp.app/Contents"
+cat > "$HOME/Applications/GoodApp.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.GoodApp</string>
+</dict>
+</plist>
+PLIST
+
+debug_log() { :; }
+scan_installed_apps "$HOME/installed.txt"
+cat "$HOME/installed.txt"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"com.example.GoodApp"* ]]
+    [[ "$output" != *"missing value"* ]]
+}
+
+@test "scan_installed_apps keeps find traversal options before predicates" {
+    rm -f "$HOME/.cache/mole/installed_apps_cache"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+stub_dir="$HOME/stub-bin"
+mkdir -p "$stub_dir" "$HOME/Applications/Ordered.app/Contents"
+cat > "$stub_dir/find" <<'SH'
+#!/bin/sh
+root="$1"
+shift
+if [ "${1:-}" != "-maxdepth" ] ||
+    [ "${2:-}" != "3" ] ||
+    [ "${3:-}" != "-type" ] ||
+    [ "${4:-}" != "d" ] ||
+    [ "${5:-}" != "-name" ] ||
+    [ "${6:-}" != "*.app" ]; then
+    exit 64
+fi
+
+if [ "$root" = "$HOME/Applications" ]; then
+    printf '%s\n' "$HOME/Applications/Ordered.app"
+fi
+SH
+chmod +x "$stub_dir/find"
+
+cat > "$HOME/Applications/Ordered.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.Ordered</string>
+</dict>
+</plist>
+PLIST
+
+debug_log() { :; }
+export PATH="$stub_dir:$PATH"
+scan_installed_apps "$HOME/installed.txt"
+cat "$HOME/installed.txt"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"com.example.Ordered"* ]]
 }
 
 @test "is_bundle_orphaned returns true for old uninstalled bundle" {
@@ -340,6 +461,75 @@ EOF
 }
 
 
+@test "clean_orphaned_app_data honors WHITELIST_PATTERNS for Claude VM bundle" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+scan_installed_apps() { : > "$1"; }
+mdfind() { return 0; }
+pgrep() { return 1; }
+run_with_timeout() { shift; "$@"; }
+get_file_mtime() { echo 0; }
+get_path_size_kb() { echo 4; }
+safe_clean() { echo "UNEXPECTED_CLEAN:$2"; rm -rf "$1"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+mkdir -p "$HOME/Library/Caches"
+mkdir -p "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle"
+echo "vm data" > "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img"
+
+WHITELIST_PATTERNS=("$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle")
+
+clean_orphaned_app_data
+
+if [[ -d "$HOME/Library/Application Support/Claude/vm_bundles/claudevm.bundle" ]]; then
+    echo "PASS: Claude VM preserved by whitelist"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"UNEXPECTED_CLEAN"* ]]
+    [[ "$output" == *"PASS: Claude VM preserved by whitelist"* ]]
+}
+
+@test "clean_orphaned_app_data honors WHITELIST_PATTERNS for orphaned caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+scan_installed_apps() { : > "$1"; }
+is_bundle_orphaned() { return 0; }
+is_claude_vm_bundle_orphaned() { return 1; }
+mdfind() { return 0; }
+pgrep() { return 1; }
+run_with_timeout() { shift; "$@"; }
+get_file_mtime() { echo 0; }
+get_path_size_kb() { echo 4; }
+safe_clean() { echo "UNEXPECTED_CLEAN:$2"; rm -rf "$1"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+mkdir -p "$HOME/Library/Caches/com.devtool.localbuild"
+echo "c" > "$HOME/Library/Caches/com.devtool.localbuild/data"
+
+WHITELIST_PATTERNS=("$HOME/Library/Caches/com.devtool.localbuild")
+
+clean_orphaned_app_data
+
+if [[ -d "$HOME/Library/Caches/com.devtool.localbuild" ]]; then
+    echo "PASS: whitelisted orphan cache preserved"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"UNEXPECTED_CLEAN"* ]]
+    [[ "$output" == *"PASS: whitelisted orphan cache preserved"* ]]
+}
+
 @test "is_critical_system_component matches known system services" {
     run bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -367,7 +557,7 @@ EOF
 }
 
 @test "clean_orphaned_system_services respects dry-run" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
@@ -412,143 +602,338 @@ EOF
     [[ "$output" != *"launchctl-called"* ]]
 }
 
-@test "is_launch_item_orphaned detects orphan when program missing" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+@test "clean_orphaned_system_services does not count protected skips as cleaned" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false MOLE_DRY_RUN=0 bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.orphan.plist"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.orphan</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/nonexistent/app/program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when program exists" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.active.plist"
-tmp_program="$tmp_dir/program"
-touch "$tmp_program"
-
-cat > "$tmp_plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.active</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$tmp_program</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "is_launch_item_orphaned protects when app support active" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-tmp_dir="$(mktemp -d)"
-tmp_plist="$tmp_dir/com.test.appsupport.plist"
-
-mkdir -p "$HOME/Library/Application Support/TestApp"
-touch "$HOME/Library/Application Support/TestApp/recent.txt"
-
-cat > "$tmp_plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.test.appsupport</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$HOME/Library/Application Support/TestApp/Current/app</string>
-    </array>
-</dict>
-</plist>
-PLIST
-
-run_with_timeout() { shift; "$@"; }
-
-if is_launch_item_orphaned "$tmp_plist"; then
-    echo "orphan"
-else
-    echo "not-orphan"
-fi
-
-rm -rf "$tmp_dir"
-rm -rf "$HOME/Library/Application Support/TestApp"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"not-orphan"* ]]
-}
-
-@test "clean_orphaned_launch_agents skips when no orphans" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/apps.sh"
-
-mkdir -p "$HOME/Library/LaunchAgents"
 
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
-get_path_size_kb() { echo "1"; }
-run_with_timeout() { shift; "$@"; }
+debug_log() { :; }
+should_protect_path() { return 0; }
+safe_sudo_remove() {
+  echo "unexpected-remove"
+  return 0
+}
 
-clean_orphaned_launch_agents
+tmp_dir="$(mktemp -d)"
+tmp_plist="$tmp_dir/com.sogou.test.plist"
+touch "$tmp_plist"
+
+sudo() {
+  if [[ "$1" == "-n" && "$2" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$1" == "find" ]]; then
+    case "$2" in
+      /Library/LaunchDaemons) printf '%s\0' "$tmp_plist" ;;
+      *) : ;;
+    esac
+    return 0
+  fi
+  if [[ "$1" == "du" ]]; then
+    echo "4 $tmp_plist"
+    return 0
+  fi
+  if [[ "$1" == "launchctl" ]]; then
+    echo "unexpected-launchctl"
+    return 0
+  fi
+  command "$@"
+}
+
+clean_orphaned_system_services
 EOF
 
     [ "$status" -eq 0 ]
+    [[ "$output" == *"skipped 1 protected, failed 0"* ]]
+    [[ "$output" != *"Cleaned 1 orphaned services"* ]]
+    [[ "$output" != *"unexpected-remove"* ]]
+    [[ "$output" != *"unexpected-launchctl"* ]]
+}
+
+@test "clean_orphaned_system_services protects AmneziaWG helpers" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false MOLE_DRY_RUN=0 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+bundle_has_installed_app() { return 1; }
+safe_sudo_remove() {
+  echo "unexpected-remove"
+  return 0
+}
+
+tmp_dir="$(mktemp -d)"
+tmp_helper="$tmp_dir/org.amnezia.awg"
+touch "$tmp_helper"
+
+sudo() {
+  if [[ "$1" == "-n" && "$2" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$1" == "find" ]]; then
+    case "$2" in
+      /Library/PrivilegedHelperTools) printf '%s\0' "$tmp_helper" ;;
+      *) : ;;
+    esac
+    return 0
+  fi
+  if [[ "$1" == "du" ]]; then
+    echo "4 $tmp_helper"
+    return 0
+  fi
+  if [[ "$1" == "launchctl" ]]; then
+    echo "unexpected-launchctl"
+    return 0
+  fi
+  command "$@"
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"skipped 1 protected, failed 0"* ]]
+    [[ "$output" != *"unexpected-remove"* ]]
+    [[ "$output" != *"unexpected-launchctl"* ]]
+}
+
+@test "clean_orphaned_system_services dry-run skips protected paths (#886)" {
+    # MOLE_TEST_NO_AUTH=0 overrides the CI default (=1) so the function actually
+    # runs past the auth-skip guard in apps.sh; the sudo() mock satisfies the
+    # `sudo -n true` probe.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 DRY_RUN=true bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { echo "debug: $*"; }
+
+should_protect_path() { return 0; }
+
+tmp_dir="$(mktemp -d)"
+tmp_plist="$tmp_dir/com.microsoft.office.licensingV2.helper.plist"
+/usr/libexec/PlistBuddy -c "Add :Program string $tmp_dir/missing-protected-helper" "$tmp_plist" 2>/dev/null || true
+
+sudo() {
+  if [[ "$1" == "-n" && "$2" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$1" == "find" ]]; then
+    case "$2" in
+      /Library/LaunchDaemons) printf '%s\0' "$tmp_plist" ;;
+      *) : ;;
+    esac
+    return 0
+  fi
+  command "$@"
+}
+
+clean_orphaned_system_services
+EOF
+
+    # `|| return 1` after each assertion ensures bats fails as soon as one fails
+    # (bare `[[ ]]` in the middle of a test body gets swallowed by the next
+    # passing command — see #886 review notes).
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Found 1 orphaned"* ]] || return 1
+    [[ "$output" == *"skipped 1 protected"* ]] || return 1
+    [[ "$output" != *"Would remove orphaned service"* ]] || return 1
+}
+
+@test "clean_orphaned_system_services dry-run reports unprotected orphans (#886)" {
+    # MOLE_TEST_NO_AUTH=0 overrides CI default so the function executes.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 DRY_RUN=true bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { echo "debug: $*"; }
+
+should_protect_path() { return 1; }
+
+tmp_dir="$(mktemp -d)"
+tmp_plist="$tmp_dir/com.example.unprotected.orphan.plist"
+/usr/libexec/PlistBuddy -c "Add :Program string $tmp_dir/missing-binary" "$tmp_plist" 2>/dev/null || true
+
+sudo() {
+  if [[ "$1" == "-n" && "$2" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$1" == "find" ]]; then
+    case "$2" in
+      /Library/LaunchDaemons) printf '%s\0' "$tmp_plist" ;;
+      *) : ;;
+    esac
+    return 0
+  fi
+  command "$@"
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Found 1 orphaned"* ]] || return 1
+    [[ "$output" == *"Would remove orphaned service"* ]] || return 1
+    [[ "$output" != *"Skipping protected"* ]] || return 1
+}
+
+@test "clean_orphaned_container_stubs removes stub container when app is uninstalled" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+# Stub container: only the metadata plist, no Data/ subdir
+stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
+mkdir -p "$stub"
+touch "$stub/.com.apple.containermanagerd.metadata.plist"
+
+# Canonical app path does not exist (uninstalled)
+# mdfind returns nothing (uninstalled)
+mdfind() { echo ""; return 0; }
+run_with_timeout() { shift; "$@"; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() { return 1; }
+
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+clean_orphaned_container_stubs
+
+if [[ ! -d "$stub" ]]; then
+    echo "PASS: stub removed"
+else
+    echo "FAIL: stub still exists"
+    exit 1
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS: stub removed"* ]]
+    [[ "$output" == *"Orphaned app container stubs"* ]]
+}
+
+@test "clean_orphaned_container_stubs preserves container when app is installed" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
+mkdir -p "$stub"
+touch "$stub/.com.apple.containermanagerd.metadata.plist"
+
+# Simulate the app installed in a user-level Applications directory.
+mkdir -p "$HOME/Applications/CleanMyMac X.app"
+
+mdfind() { echo ""; return 0; }
+run_with_timeout() { shift; "$@"; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() { return 1; }
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+clean_orphaned_container_stubs
+
+if [[ -d "$stub" ]]; then
+    echo "PASS: stub preserved"
+else
+    echo "FAIL: stub was wrongly removed"
+    exit 1
+fi
+
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS: stub preserved"* ]]
+}
+
+@test "clean_orphaned_container_stubs preserves container with Data subdirectory" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+# Container has a Data/ subtree — real sandbox data, must NOT be deleted
+stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
+mkdir -p "$stub/Data/Library/Preferences"
+touch "$stub/.com.apple.containermanagerd.metadata.plist"
+touch "$stub/Data/Library/Preferences/settings.plist"
+
+mdfind() { echo ""; return 0; }
+run_with_timeout() { shift; "$@"; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() { return 1; }
+
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+clean_orphaned_container_stubs
+
+if [[ -d "$stub/Data" ]]; then
+    echo "PASS: data container preserved"
+else
+    echo "FAIL: data container was wrongly removed"
+    exit 1
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS: data container preserved"* ]]
+}
+
+@test "clean_orphaned_container_stubs preserves non-metadata-only container" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
+mkdir -p "$stub"
+touch "$stub/.com.apple.containermanagerd.metadata.plist"
+touch "$stub/session.lock"
+
+mdfind() { echo ""; return 0; }
+run_with_timeout() { shift; "$@"; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() { return 1; }
+
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+clean_orphaned_container_stubs
+
+if [[ -f "$stub/session.lock" ]]; then
+    echo "PASS: non-stub container preserved"
+else
+    echo "FAIL: non-stub container was wrongly removed"
+    exit 1
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS: non-stub container preserved"* ]]
 }

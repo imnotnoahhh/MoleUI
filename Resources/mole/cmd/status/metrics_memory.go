@@ -31,6 +31,7 @@ func collectMemory() (MemoryStatus, error) {
 	return MemoryStatus{
 		Used:        vm.Used,
 		Total:       vm.Total,
+		Available:   vm.Available,
 		UsedPercent: vm.UsedPercent,
 		SwapUsed:    swap.Used,
 		SwapTotal:   swap.Total,

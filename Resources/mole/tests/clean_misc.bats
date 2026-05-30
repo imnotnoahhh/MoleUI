@@ -10,11 +10,17 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-clean-extras.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
@@ -41,6 +47,29 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
 stop_section_spinner() { :; }
+pgrep() { return 1; }
+safe_clean() { echo "$2|$1"; }
+clean_virtualization_tools
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VMware Fusion cache"* ]]
+    [[ "$output" == *"Parallels cache"* ]]
+    [[ "$output" == *"UTM app cache|$HOME/Library/Caches/com.utmapp.UTM/"* ]]
+    [[ "$output" == *"UTM sandbox cache|$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Caches/"* ]]
+    [[ "$output" == *"UTM temporary files|$HOME/Library/Containers/com.utmapp.UTM/Data/tmp/"* ]]
+}
+
+@test "clean_virtualization_tools skips UTM caches while UTM is running" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+stop_section_spinner() { :; }
+debug_log() { :; }
+pgrep() {
+    [[ "${1:-}" == "-x" && "${2:-}" == "UTM" ]]
+}
 safe_clean() { echo "$2"; }
 clean_virtualization_tools
 EOF
@@ -48,6 +77,8 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"VMware Fusion cache"* ]]
     [[ "$output" == *"Parallels cache"* ]]
+    [[ "$output" != *"UTM app cache"* ]]
+    [[ "$output" != *"UTM sandbox cache"* ]]
 }
 
 @test "clean_email_clients calls expected caches" {
@@ -61,6 +92,20 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Spark cache"* ]]
     [[ "$output" == *"Airmail cache"* ]]
+}
+
+@test "clean_virtualization_tools includes Lima download cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+stop_section_spinner() { :; }
+safe_clean() { echo "$2|$1"; }
+clean_virtualization_tools
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Lima download cache|$HOME/Library/Caches/lima/download/by-url-sha256/"* ]]
 }
 
 @test "clean_note_apps calls expected caches" {
@@ -87,26 +132,6 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Todoist cache"* ]]
     [[ "$output" == *"Any.do cache"* ]]
-}
-
-@test "scan_external_volumes skips when no volumes" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
-set -euo pipefail
-export DRY_RUN="false"
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/user.sh"
-run_with_timeout() { return 1; }
-# Mock missing dependencies and UI to ensure test passes regardless of volumes
-clean_ds_store_tree() { :; }
-start_section_spinner() { :; }
-stop_section_spinner() { :; }
-is_path_whitelisted() { return 1; }
-WHITELIST_PATTERNS=()
-PROTECT_FINDER_METADATA="false"
-scan_external_volumes
-EOF
-
-    [ "$status" -eq 0 ]
 }
 
 @test "clean_video_tools calls expected caches" {

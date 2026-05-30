@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -13,6 +15,11 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 )
+
+// cacheSchemaVersion is bumped whenever directory-size semantics change so
+// stale on-disk cache entries are rejected instead of silently reused.
+// v2: analyze deduplicates hardlinked files to match `du`.
+const cacheSchemaVersion = 2
 
 type overviewSizeSnapshot struct {
 	Size    int64     `json:"size"`
@@ -36,13 +43,36 @@ func snapshotFromModel(m model) historyEntry {
 		EntryOffset:   m.offset,
 		LargeSelected: m.largeSelected,
 		LargeOffset:   m.largeOffset,
+		NeedsRefresh:  m.viewNeedsRefresh,
 		IsOverview:    m.isOverview,
 	}
 }
 
-func cacheSnapshot(m model) historyEntry {
-	entry := snapshotFromModel(m)
-	entry.Dirty = false
+func filterNonEmptyEntries(entries []dirEntry) []dirEntry {
+	filtered := make([]dirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Size > 0 {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func historyEntryFromScanResult(path string, result scanResult, previous historyEntry, needsRefresh bool) historyEntry {
+	entry := historyEntry{
+		Path:          path,
+		Entries:       slices.Clone(result.Entries),
+		LargeFiles:    slices.Clone(result.LargeFiles),
+		TotalSize:     result.TotalSize,
+		TotalFiles:    result.TotalFiles,
+		Selected:      previous.Selected,
+		EntryOffset:   previous.EntryOffset,
+		LargeSelected: previous.LargeSelected,
+		LargeOffset:   previous.LargeOffset,
+		NeedsRefresh:  needsRefresh,
+		Dirty:         false,
+		IsOverview:    previous.IsOverview,
+	}
 	return entry
 }
 
@@ -182,6 +212,45 @@ func getCachePath(path string) (string, error) {
 	return filepath.Join(cacheDir, filename), nil
 }
 
+func pruneAnalyzerCache() {
+	cacheDir, err := getCacheDir()
+	if err != nil {
+		return
+	}
+	// Pruning is best-effort; errors are intentionally ignored to avoid blocking startup.
+	_ = pruneAnalyzerCacheDir(cacheDir, time.Now())
+}
+
+func pruneAnalyzerCacheDir(cacheDir string, now time.Time) error {
+	if cacheDir == "" || analyzerCacheTTL <= 0 {
+		return nil
+	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	cutoff := now.Add(-analyzerCacheTTL)
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".cache" {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.ModTime().After(cutoff) {
+			continue
+		}
+
+		_ = os.Remove(filepath.Join(cacheDir, entry.Name()))
+	}
+
+	return nil
+}
+
 func loadRawCacheFromDisk(path string) (*cacheEntry, error) {
 	cachePath, err := getCachePath(path)
 	if err != nil {
@@ -200,6 +269,10 @@ func loadRawCacheFromDisk(path string) (*cacheEntry, error) {
 		return nil, err
 	}
 
+	if entry.SchemaVersion != cacheSchemaVersion {
+		return nil, fmt.Errorf("cache schema mismatch: got %d, want %d", entry.SchemaVersion, cacheSchemaVersion)
+	}
+
 	return &entry, nil
 }
 
@@ -215,7 +288,7 @@ func loadCacheFromDisk(path string) (*cacheEntry, error) {
 	}
 
 	scanAge := time.Since(entry.ScanTime)
-	if scanAge > 7*24*time.Hour {
+	if scanAge > analyzerCacheTTL {
 		return nil, fmt.Errorf("cache expired: too old")
 	}
 
@@ -253,6 +326,10 @@ func loadStaleCacheFromDisk(path string) (*cacheEntry, error) {
 }
 
 func saveCacheToDisk(path string, result scanResult) error {
+	return saveCacheToDiskWithOptions(path, result, false)
+}
+
+func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh bool) error {
 	cachePath, err := getCachePath(path)
 	if err != nil {
 		return err
@@ -264,12 +341,14 @@ func saveCacheToDisk(path string, result scanResult) error {
 	}
 
 	entry := cacheEntry{
-		Entries:    result.Entries,
-		LargeFiles: result.LargeFiles,
-		TotalSize:  result.TotalSize,
-		TotalFiles: result.TotalFiles,
-		ModTime:    info.ModTime(),
-		ScanTime:   time.Now(),
+		Entries:       result.Entries,
+		LargeFiles:    result.LargeFiles,
+		TotalSize:     result.TotalSize,
+		TotalFiles:    result.TotalFiles,
+		ModTime:       info.ModTime(),
+		ScanTime:      time.Now(),
+		NeedsRefresh:  needsRefresh,
+		SchemaVersion: cacheSchemaVersion,
 	}
 
 	file, err := os.Create(cachePath)
@@ -313,6 +392,22 @@ func invalidateCache(path string) {
 	removeOverviewSnapshot(path)
 }
 
+// invalidateCacheTree invalidates the cache for path and all its direct
+// child directories so that a rescan does not reuse stale subdirectory
+// sizes. See #812.
+func invalidateCacheTree(path string) {
+	invalidateCache(path)
+	children, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		if child.IsDir() {
+			invalidateCache(filepath.Join(path, child.Name()))
+		}
+	}
+}
+
 func removeOverviewSnapshot(path string) {
 	if path == "" {
 		return
@@ -347,16 +442,29 @@ func prefetchOverviewCache(ctx context.Context) {
 		return
 	}
 
+	sem := make(chan struct{}, maxConcurrentOverview)
+	var wg sync.WaitGroup
 	for _, path := range needScan {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		default:
 		}
 
-		size, err := measureOverviewSize(path)
-		if err == nil && size > 0 {
-			_ = storeOverviewSize(path, size)
-		}
+		wg.Go(func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			size, err := measureOverviewSize(path)
+			if err == nil && size > 0 {
+				_ = storeOverviewSize(path, size)
+			}
+		})
 	}
+	wg.Wait()
 }
