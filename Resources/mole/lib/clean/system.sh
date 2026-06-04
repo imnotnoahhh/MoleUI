@@ -1,6 +1,45 @@
 #!/bin/bash
 # System-Level Cleanup Module (requires sudo).
 set -euo pipefail
+
+is_rebuildable_gpu_cache_dir() {
+    local cache_dir="$1"
+
+    # Only match current-user-accessible Darwin cache shards under C/.  Do not
+    # match T/ temp folders, generic /private/var/folders entries, or arbitrary
+    # system paths: these Metal/GPU caches are rebuildable, but deleting active
+    # caches can force live apps to recompile shaders and momentarily stutter.
+    case "$cache_dir" in
+        /private/var/folders/*/*/C/*/com.apple.gpuarchiver | \
+            /private/var/folders/*/*/C/*/com.apple.metal | \
+            /private/var/folders/*/*/C/*/com.apple.metalfe | \
+            /var/folders/*/*/C/*/com.apple.gpuarchiver | \
+            /var/folders/*/*/C/*/com.apple.metal | \
+            /var/folders/*/*/C/*/com.apple.metalfe)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+gpu_cache_dir_is_stale() {
+    local cache_dir="$1"
+    local age_days="${2:-${MOLE_GPU_CACHE_AGE_DAYS:-1}}"
+
+    [[ "$age_days" =~ ^[0-9]+$ ]] || age_days=1
+    [[ -d "$cache_dir" ]] || return 1
+    [[ -L "$cache_dir" ]] && return 1
+
+    # Directory mtime only changes when entries are added/removed/renamed.
+    # Treat a cache as stale only when no contained file was modified inside
+    # the retention window, so live apps that rewrite existing Metal cache
+    # files do not lose their active shader/GPU cache on every cleanup run.
+    local recent_file=""
+    recent_file=$(command find "$cache_dir" -type f -mtime "-$age_days" -print -quit 2> /dev/null) || return 1
+    [[ -z "$recent_file" ]]
+}
+
 # System caches, logs, and temp files.
 clean_deep_system() {
     stop_section_spinner
@@ -116,8 +155,11 @@ clean_deep_system() {
         fi
     fi
     # Clean macOS installer apps (e.g., "Install macOS Sequoia.app")
-    # Only remove installers older than 14 days and not currently running
+    # Only remove installers older than 14 days, not currently running,
+    # and not matching the currently installed macOS version (recovery safety).
     local installer_cleaned=0
+    local current_macos_version=""
+    current_macos_version=$(sw_vers -productVersion 2> /dev/null | cut -d. -f1 || true)
     for installer_app in /Applications/Install\ macOS*.app; do
         [[ -d "$installer_app" ]] || continue
         local app_name
@@ -126,6 +168,19 @@ clean_deep_system() {
         if pgrep -f "$installer_app" > /dev/null 2>&1; then
             debug_log "Skipping $app_name: currently running"
             continue
+        fi
+        # Skip if this installer matches the current macOS major version.
+        # Users may need it for recovery or reinstallation.
+        if [[ -n "$current_macos_version" ]]; then
+            local installer_plist="$installer_app/Contents/Info.plist"
+            if [[ -f "$installer_plist" ]]; then
+                local installer_version=""
+                installer_version=$(/usr/libexec/PlistBuddy -c "Print :DTPlatformVersion" "$installer_plist" 2> /dev/null | cut -d. -f1 || true)
+                if [[ -n "$installer_version" && "$installer_version" == *"$current_macos_version"* ]]; then
+                    debug_log "Keeping $app_name: matches current macOS version ($current_macos_version)"
+                    continue
+                fi
+            fi
         fi
         # Check age (same 14-day threshold as /macOS Install Data)
         local mtime
@@ -155,9 +210,50 @@ clean_deep_system() {
         if safe_sudo_remove "$cache_dir"; then
             code_sign_cleaned=$((code_sign_cleaned + 1))
         fi
-    done < <(run_with_timeout 5 command find /private/var/folders -type d -name "*.code_sign_clone" -path "*/X/*" -print0 2> /dev/null || true)
+    done < <(run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" command find /private/var/folders -maxdepth 5 -type d -name "*.code_sign_clone" -path "*/X/*" -print0 2> /dev/null || true)
     stop_section_spinner
     [[ $code_sign_cleaned -gt 0 ]] && log_success "Browser code signature caches, $code_sign_cleaned items"
+
+    start_section_spinner "Cleaning rebuildable system service caches..."
+    local rebuildable_cache_cleaned=0
+    local -a rebuildable_cache_dirs=(
+        "/Library/Caches/com.apple.iconservices.store"
+    )
+    local rebuildable_cache_dir=""
+    for rebuildable_cache_dir in "${rebuildable_cache_dirs[@]}"; do
+        if sudo test -e "$rebuildable_cache_dir" 2> /dev/null; then
+            if safe_sudo_remove "$rebuildable_cache_dir"; then
+                rebuildable_cache_cleaned=$((rebuildable_cache_cleaned + 1))
+            fi
+        fi
+    done
+    stop_section_spinner
+    if [[ $rebuildable_cache_cleaned -gt 0 ]]; then
+        local rebuildable_cache_label="items"
+        [[ $rebuildable_cache_cleaned -eq 1 ]] && rebuildable_cache_label="item"
+        log_success "Rebuildable system caches, $rebuildable_cache_cleaned $rebuildable_cache_label"
+    fi
+
+    start_section_spinner "Scanning accessible rebuildable GPU caches..."
+    local gpu_cache_cleaned=0
+    local gpu_cache_dir=""
+    while IFS= read -r -d '' gpu_cache_dir; do
+        is_rebuildable_gpu_cache_dir "$gpu_cache_dir" || continue
+        gpu_cache_dir_is_stale "$gpu_cache_dir" "$MOLE_GPU_CACHE_AGE_DAYS" || continue
+        if safe_sudo_remove "$gpu_cache_dir"; then
+            gpu_cache_cleaned=$((gpu_cache_cleaned + 1))
+        fi
+    done < <(run_with_timeout 8 command find /private/var/folders -maxdepth 8 -type d \( \
+        -name "com.apple.gpuarchiver" -o \
+        -name "com.apple.metal" -o \
+        -name "com.apple.metalfe" \
+        \) -path "*/C/*" -print0 2> /dev/null || true) # 8s: deep /private/var/folders walk, see lib/core/timeouts.sh
+    stop_section_spinner
+    if [[ $gpu_cache_cleaned -gt 0 ]]; then
+        local gpu_cache_label="items"
+        [[ $gpu_cache_cleaned -eq 1 ]] && gpu_cache_label="item"
+        log_success "Accessible rebuildable GPU caches, $gpu_cache_cleaned $gpu_cache_label"
+    fi
 
     local diag_base="/private/var/db/diagnostics"
     start_section_spinner "Cleaning system diagnostic logs..."
@@ -223,7 +319,7 @@ clean_time_machine_failed_backups() {
     start_section_spinner "Checking Time Machine configuration..."
     local spinner_active=true
     local tm_info
-    tm_info=$(run_with_timeout 2 tmutil destinationinfo 2>&1 || echo "failed")
+    tm_info=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" tmutil destinationinfo 2>&1 || echo "failed")
     if [[ "$tm_info" == *"No destinations configured"* || "$tm_info" == "failed" ]]; then
         if [[ "$spinner_active" == "true" ]]; then
             stop_section_spinner
@@ -270,7 +366,7 @@ clean_time_machine_failed_backups() {
     fi
     for volume in "${backup_volumes[@]}"; do
         local fs_type
-        fs_type=$(run_with_timeout 1 command df -T "$volume" 2> /dev/null | tail -1 | awk '{print $2}' || echo "unknown")
+        fs_type=$(run_with_timeout 1 command df -T "$volume" 2> /dev/null | tail -1 | awk '{print $2}' || echo "unknown") # 1s: volume FS-type probe, see lib/core/timeouts.sh
         case "$fs_type" in
             nfs | smbfs | afpfs | cifs | webdav | unknown) continue ;;
         esac
@@ -299,7 +395,7 @@ clean_time_machine_failed_backups() {
                 local size_human
                 size_human=$(bytes_to_human "$((size_kb * 1024))")
                 if [[ "$DRY_RUN" == "true" ]]; then
-                    echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Incomplete backup: $backup_name${NC}, ${YELLOW}$size_human dry${NC}"
+                    echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Incomplete backup: $backup_name${NC}, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
                     tm_cleaned=$((tm_cleaned + 1))
                     note_activity
                     continue
@@ -309,7 +405,9 @@ clean_time_machine_failed_backups() {
                     continue
                 fi
                 if tmutil delete "$inprogress_file" 2> /dev/null; then
-                    echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Incomplete backup: $backup_name${NC}, ${GREEN}$size_human${NC}"
+                    local line_color
+                    line_color=$(cleanup_result_color_kb "$size_kb")
+                    echo -e "  ${line_color}${ICON_SUCCESS}${NC} Incomplete backup: $backup_name${NC}, ${line_color}$size_human${NC}"
                     tm_cleaned=$((tm_cleaned + 1))
                     files_cleaned=$((files_cleaned + 1))
                     total_size_cleaned=$((total_size_cleaned + size_kb))
@@ -318,7 +416,7 @@ clean_time_machine_failed_backups() {
                 else
                     echo -e "  ${YELLOW}!${NC} Could not delete: $backup_name · try manually with sudo"
                 fi
-            done < <(run_with_timeout 15 find "$backupdb_dir" -maxdepth 3 -type d \( -name "*.inProgress" -o -name "*.inprogress" \) 2> /dev/null || true)
+            done < <(run_with_timeout 15 find "$backupdb_dir" -maxdepth 3 -type d \( -name "*.inProgress" -o -name "*.inprogress" \) 2> /dev/null || true) # 15s: Time Machine backupdb find, see lib/core/timeouts.sh
         fi
         # APFS bundles.
         for bundle in "$volume"/*.backupbundle "$volume"/*.sparsebundle; do
@@ -351,7 +449,7 @@ clean_time_machine_failed_backups() {
                     local size_human
                     size_human=$(bytes_to_human "$((size_kb * 1024))")
                     if [[ "$DRY_RUN" == "true" ]]; then
-                        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Incomplete APFS backup in $bundle_name: $backup_name${NC}, ${YELLOW}$size_human dry${NC}"
+                        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Incomplete APFS backup in $bundle_name: $backup_name${NC}, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
                         tm_cleaned=$((tm_cleaned + 1))
                         note_activity
                         continue
@@ -360,7 +458,9 @@ clean_time_machine_failed_backups() {
                         continue
                     fi
                     if tmutil delete "$inprogress_file" 2> /dev/null; then
-                        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Incomplete APFS backup in $bundle_name: $backup_name${NC}, ${GREEN}$size_human${NC}"
+                        local line_color
+                        line_color=$(cleanup_result_color_kb "$size_kb")
+                        echo -e "  ${line_color}${ICON_SUCCESS}${NC} Incomplete APFS backup in $bundle_name: $backup_name${NC}, ${line_color}$size_human${NC}"
                         tm_cleaned=$((tm_cleaned + 1))
                         files_cleaned=$((files_cleaned + 1))
                         total_size_cleaned=$((total_size_cleaned + size_kb))
@@ -369,7 +469,7 @@ clean_time_machine_failed_backups() {
                     else
                         echo -e "  ${YELLOW}!${NC} Could not delete from bundle: $backup_name"
                     fi
-                done < <(run_with_timeout 15 find "$mounted_path" -maxdepth 3 -type d \( -name "*.inProgress" -o -name "*.inprogress" \) 2> /dev/null || true)
+                done < <(run_with_timeout 15 find "$mounted_path" -maxdepth 3 -type d \( -name "*.inProgress" -o -name "*.inprogress" \) 2> /dev/null || true) # 15s: TM sparsebundle inner find, see lib/core/timeouts.sh
             fi
         done
     done
@@ -424,7 +524,7 @@ clean_local_snapshots() {
 
     start_section_spinner "Checking local snapshots..."
     local snapshot_list
-    snapshot_list=$(run_with_timeout 3 tmutil listlocalsnapshots / 2> /dev/null || true)
+    snapshot_list=$(run_with_timeout "$MOLE_TIMEOUT_SHORT_QUERY_SEC" tmutil listlocalsnapshots / 2> /dev/null || true)
     stop_section_spinner
     [[ -z "$snapshot_list" ]] && return 0
 

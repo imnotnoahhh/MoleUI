@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import "time"
@@ -9,6 +11,7 @@ const (
 	spotlightMinFileSize   = 100 << 20
 	largeFileWarmupMinSize = 1 << 20
 	defaultViewport        = 12
+	analyzerCacheTTL       = 7 * 24 * time.Hour
 	overviewCacheTTL       = 7 * 24 * time.Hour
 	overviewCacheFile      = "overview_sizes.json"
 	duTimeout              = 30 * time.Second
@@ -19,13 +22,28 @@ const (
 	cacheReuseWindow       = 24 * time.Hour
 	staleCacheTTL          = 3 * 24 * time.Hour
 
-	// Worker pool limits.
-	minWorkers         = 16
-	maxWorkers         = 64
-	cpuMultiplier      = 4
-	maxDirWorkers      = 32
+	// Worker pool limits. Deliberately conservative: the User Library scan
+	// blocks many goroutines in syscalls on high-fan-out trees (Steam
+	// workshop/temp, browser caches), and each blocked goroutine holds an
+	// OS thread. Exceeding the per-user thread limit on macOS produces a
+	// fatal "runtime: failed to create new OS thread" with no recovery.
+	// Further reduced after #765: System Library (184GB, 261k files) with
+	// deep permission checks can still exhaust threads at previous limits.
+	minWorkers         = 2
+	maxWorkers         = 12
+	cpuMultiplier      = 1
+	maxDirWorkers      = 6
 	openCommandTimeout = 10 * time.Second
+	scanSendTimeout    = 100 * time.Millisecond
+	uiTickInterval     = 100 * time.Millisecond
 )
+
+var overviewDuIgnoreNames = map[string]bool{
+	// iCloud Drive's FileProvider tree can block `du` for tens of seconds even
+	// when most entries are cloud placeholders. Keep the overview responsive;
+	// users can still drill into the folder explicitly when they need it.
+	"Mobile Documents": true,
+}
 
 var foldDirs = map[string]bool{
 	// VCS.

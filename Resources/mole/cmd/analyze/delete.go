@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -119,9 +122,19 @@ func trashPathWithProgress(root string, counter *int64) (int64, error) {
 // moveToTrash uses macOS Finder to move a file/directory to Trash.
 // This is the safest method as it uses the system's native trash mechanism.
 func moveToTrash(path string) error {
+	// Validate raw input before Abs resolves ".." components away.
+	if err := validateTrashTarget(path); err != nil {
+		return err
+	}
+
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	// Validate resolved path as well (defense-in-depth).
+	if err := validateTrashTarget(absPath); err != nil {
+		return err
 	}
 
 	// Escape path for AppleScript (handle quotes and backslashes).
@@ -142,5 +155,59 @@ func moveToTrash(path string) error {
 		return fmt.Errorf("failed to move to Trash: %s", strings.TrimSpace(string(output)))
 	}
 
+	return nil
+}
+
+func validateTrashTarget(path string) error {
+	if err := validatePath(path); err != nil {
+		return err
+	}
+	if isProtectedAnalyzeDeletePath(path) {
+		return fmt.Errorf("protected path cannot be deleted: %s", path)
+	}
+	return nil
+}
+
+func isProtectedAnalyzeDeletePath(path string) bool {
+	home := os.Getenv("HOME")
+	if home == "" || path == "" {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	orbstackState := filepath.Join(home, ".orbstack")
+	if cleanPath == orbstackState || strings.HasPrefix(cleanPath, orbstackState+string(filepath.Separator)) {
+		return true
+	}
+
+	groupContainers := filepath.Join(home, "Library", "Group Containers")
+	rel, err := filepath.Rel(groupContainers, cleanPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+
+	containerName := rel
+	if idx := strings.Index(containerName, string(filepath.Separator)); idx >= 0 {
+		containerName = containerName[:idx]
+	}
+	return strings.HasSuffix(containerName, "dev.orbstack")
+}
+
+// validatePath checks path safety for external commands.
+// Returns error if path is empty, relative, contains null bytes, or has traversal.
+func validatePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("path must be absolute: %s", path)
+	}
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("path contains null bytes")
+	}
+	// Check for path traversal attempts (.. components).
+	if slices.Contains(strings.Split(path, string(filepath.Separator)), "..") {
+		return fmt.Errorf("path contains traversal components: %s", path)
+	}
 	return nil
 }

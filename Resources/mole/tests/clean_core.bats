@@ -10,17 +10,28 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-clean-home.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
 setup() {
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
     export TERM="xterm-256color"
     rm -rf "${HOME:?}"/*
     rm -rf "$HOME/Library" "$HOME/.config"
@@ -72,11 +83,29 @@ run_clean_dry_run() {
     [[ "$output" != *"system preview included"* ]]
 }
 
-@test "mo clean --dry-run includes system preview when sudo is cached" {
+@test "mo clean --dry-run does not probe sudo in test mode" {
     set_mock_sudo_cached
+    cat > "$TEST_MOCK_BIN/sudo" << 'MOCK'
+#!/bin/bash
+echo "sudo should not be called" >&2
+exit 99
+MOCK
+    chmod +x "$TEST_MOCK_BIN/sudo"
+
     run_clean_dry_run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"system preview included"* ]]
+    [[ "$output" == *"sudo -v && mo clean --dry-run"* ]]
+    [[ "$output" != *"sudo should not be called"* ]]
+}
+
+@test "mo clean rejects removed cleanup selection flags" {
+    local removed_flag
+    for removed_flag in "--select" "--categories" "--exclude"; do
+        run env HOME="$HOME" MOLE_TEST_MODE=1 "$PROJECT_ROOT/mole" clean "$removed_flag"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"was removed in this release"* ]]
+        [[ "$output" == *"mo clean --dry-run"* ]]
+    done
 }
 
 @test "mo clean --dry-run shows hint when sudo is not cached" {
@@ -85,6 +114,112 @@ run_clean_dry_run() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"sudo -v"* ]]
     [[ "$output" == *"full preview"* ]]
+}
+
+@test "cloud and office timeout path uses helper function instead of bash -c" {
+    run bash -c "grep -Eq 'run_with_shell_timeout 300 run_cloud_and_office_cleanup' '$PROJECT_ROOT/bin/clean.sh'"
+    [ "$status" -eq 0 ]
+
+    run bash -c "! grep -Eq 'run_with_timeout 300[[:space:]]+bash[[:space:]]+-c' '$PROJECT_ROOT/bin/clean.sh'"
+    [ "$status" -eq 0 ]
+}
+
+@test "mo clean summary separates tracked cleanup from free space change" {
+    local mock_bin="$HOME/bin"
+    mkdir -p "$mock_bin"
+    cat > "$mock_bin/df" <<'MOCK'
+#!/bin/bash
+count_file="${MOLE_DF_COUNT:?}"
+count=0
+if [[ -f "$count_file" ]]; then
+    count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+
+available=73400320
+if [[ "$count" -ge 2 ]]; then
+    available=74400320
+fi
+
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/disk1 200000000 126599680 %s 64%% /\n' "$available"
+MOCK
+    chmod +x "$mock_bin/df"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$mock_bin:$PATH" MOLE_DF_COUNT="$HOME/df.count" MOLE_TEST_MODE=0 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+DRY_RUN=false
+SYSTEM_CLEAN=false
+EXTERNAL_VOLUME_TARGET=""
+WHITELIST_PATTERNS=()
+WHITELIST_WARNINGS=()
+
+check_tcc_permissions() { :; }
+start_section() { :; }
+end_section() { :; }
+log_operation_session_end() { :; }
+run_with_shell_timeout() { shift; "$@"; }
+
+clean_user_essentials() {
+    total_size_cleaned=$((total_size_cleaned + 1000000))
+    files_cleaned=$((files_cleaned + 1))
+    total_items=$((total_items + 1))
+}
+clean_finder_metadata() { :; }
+clean_app_caches() { :; }
+clean_browsers() { :; }
+run_cloud_and_office_cleanup() { :; }
+clean_developer_tools() { :; }
+clean_user_gui_applications() { :; }
+clean_virtualization_tools() { :; }
+clean_application_support_logs() { :; }
+clean_orphaned_app_data() { :; }
+clean_orphaned_system_services() { :; }
+clean_orphaned_container_stubs() { :; }
+show_user_launch_agent_hint_notice() { :; }
+show_orphan_dotdir_hint_notice() { :; }
+clean_apple_silicon_caches() { :; }
+clean_cached_device_firmware() { :; }
+check_ios_device_backups() { :; }
+clean_time_machine_failed_backups() { :; }
+check_large_file_candidates() { :; }
+show_system_data_hint_notice() { :; }
+show_project_artifact_hint_notice() { :; }
+
+perform_cleanup
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Free space: 75.16GB"* ]]
+    [[ "$output" == *"Tracked cleanup:"* ]]
+    [[ "$output" == *"1.02GB"* ]]
+    [[ "$output" == *"Free space change: +1.02GB"* ]]
+    [[ "$output" == *"Free space now: 76.19GB"* ]]
+    [[ "$output" != *"Space freed:"* ]]
+    [ "$(cat "$HOME/df.count")" = "2" ]
+}
+
+@test "mo clean --dry-run survives an unwritable TMPDIR" {
+    local blocked_tmp="$HOME/blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    set_mock_sudo_uncached
+    local test_path="$PATH"
+    if [[ -n "${TEST_MOCK_BIN:-}" ]]; then
+        test_path="$TEST_MOCK_BIN:$PATH"
+    fi
+
+    run env HOME="$HOME" TMPDIR="$blocked_tmp" MOLE_TEST_MODE=1 PATH="$test_path" \
+        "$PROJECT_ROOT/mole" clean --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"mktemp:"* ]]
+    [[ "$output" != *"Failed to create temporary file"* ]]
+    [ -d "$HOME/.cache/mole/tmp" ]
 }
 
 @test "mo clean --dry-run reports user cache without deleting it" {
@@ -96,6 +231,41 @@ run_clean_dry_run() {
     [[ "$output" == *"User app cache"* ]]
     [[ "$output" == *"Potential space"* ]]
     [ -f "$HOME/Library/Caches/TestApp/cache.tmp" ]
+}
+
+@test "mo clean --dry-run reports stale login item without deleting it" {
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$HOME/Library/LaunchAgents/com.example.stale.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.stale</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Missing.app/Contents/MacOS/Missing</string>
+    </array>
+</dict>
+</plist>
+PLIST
+
+    run env HOME="$HOME" MOLE_TEST_MODE=1 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Potential stale login item: com.example.stale.plist"* ]]
+    [ -f "$HOME/Library/LaunchAgents/com.example.stale.plist" ]
+}
+
+@test "mo clean --dry-run does not export duplicate targets across sections" {
+    mkdir -p "$HOME/Library/Application Support/Code/CachedData"
+    echo "cache" > "$HOME/Library/Application Support/Code/CachedData/data.bin"
+
+    run env HOME="$HOME" MOLE_TEST_MODE=0 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+
+    run grep -c "Application Support/Code/CachedData" "$HOME/.config/mole/clean-list.txt"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
 }
 
 @test "mo clean honors whitelist entries" {
@@ -216,7 +386,11 @@ EOF
     touch "$HOME/Library/Mail Downloads/old.pdf"
     touch -t 202301010000 "$HOME/Library/Mail Downloads/old.pdf"
 
-    dd if=/dev/zero of="$HOME/Library/Mail Downloads/dummy.dat" bs=1024 count=6000 2>/dev/null
+    if command -v mkfile > /dev/null 2>&1; then
+        mkfile -n 6000k "$HOME/Library/Mail Downloads/dummy.dat"
+    else
+        truncate -s 6000k "$HOME/Library/Mail Downloads/dummy.dat"
+    fi
 
     [ -f "$HOME/Library/Mail Downloads/old.pdf" ]
 
@@ -322,4 +496,3 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Time Machine backup in progress, skipping cleanup"* ]]
 }
-
