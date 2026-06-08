@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -5,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func resetOverviewSnapshotForTest() {
@@ -16,6 +21,30 @@ func resetOverviewSnapshotForTest() {
 	overviewSnapshotCache = nil
 	overviewSnapshotLoaded = false
 	overviewSnapshotMu.Unlock()
+}
+
+func runScanResultCmd(t *testing.T, cmd tea.Cmd) scanResultMsg {
+	t.Helper()
+
+	msg := cmd()
+	switch typed := msg.(type) {
+	case scanResultMsg:
+		return typed
+	case tea.BatchMsg:
+		for _, batchCmd := range typed {
+			if batchCmd == nil {
+				continue
+			}
+			if scanMsg, ok := batchCmd().(scanResultMsg); ok {
+				return scanMsg
+			}
+		}
+		t.Fatalf("expected tea.BatchMsg to contain a scanResultMsg, got %T", msg)
+	default:
+		t.Fatalf("expected scanResultMsg or tea.BatchMsg, got %T", msg)
+	}
+
+	return scanResultMsg{}
 }
 
 func TestScanPathConcurrentBasic(t *testing.T) {
@@ -91,6 +120,66 @@ func TestScanPathConcurrentBasic(t *testing.T) {
 	}
 }
 
+// TestScanPathConcurrentDedupsHardlinks guards #906: a file with multiple
+// hardlinks (e.g. Final Cut Pro managed media) must be counted once, the way
+// `du` does, instead of once per link.
+func TestScanPathConcurrentDedupsHardlinks(t *testing.T) {
+	root := t.TempDir()
+
+	nested := filepath.Join(root, "nested")
+	other := filepath.Join(root, "other")
+	for _, d := range []string{nested, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	original := filepath.Join(nested, "media.bin")
+	if err := os.WriteFile(original, []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+	// Two more hardlinks to the same inode, one in this dir and one in a
+	// sibling dir, so the shared scan-wide dedup set is exercised.
+	for _, link := range []string{
+		filepath.Join(nested, "media-copy.bin"),
+		filepath.Join(other, "media-link.bin"),
+	} {
+		if err := os.Link(original, link); err != nil {
+			t.Fatalf("hardlink %s: %v", link, err)
+		}
+	}
+	// An unrelated plain file that must still be counted in full.
+	plain := filepath.Join(other, "plain.bin")
+	if err := os.WriteFile(plain, []byte("plaindata"), 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	if err != nil {
+		t.Fatalf("scanPathConcurrent returned error: %v", err)
+	}
+
+	mediaInfo, err := os.Lstat(original)
+	if err != nil {
+		t.Fatalf("stat original: %v", err)
+	}
+	plainInfo, err := os.Lstat(plain)
+	if err != nil {
+		t.Fatalf("stat plain: %v", err)
+	}
+	want := getActualFileSize(original, mediaInfo) + getActualFileSize(plain, plainInfo)
+	if result.TotalSize != want {
+		t.Fatalf("expected hardlinked media counted once (total %d), got %d", want, result.TotalSize)
+	}
+	if !result.dedupedHardlink {
+		t.Fatalf("expected dedupedHardlink flag to be set when a hardlink is deduped")
+	}
+}
+
 func TestPerformScanForJSONCountsTopLevelFiles(t *testing.T) {
 	root := t.TempDir()
 
@@ -109,7 +198,7 @@ func TestPerformScanForJSONCountsTopLevelFiles(t *testing.T) {
 		t.Fatalf("write nested file: %v", err)
 	}
 
-	result := performScanForJSON(root)
+	result := performScanForJSON(root, false)
 
 	if result.TotalFiles != 2 {
 		t.Fatalf("expected 2 files in JSON output, got %d", result.TotalFiles)
@@ -180,6 +269,141 @@ func TestOverviewStoreAndLoad(t *testing.T) {
 	}
 }
 
+func TestUpdateKeyEscGoesBackFromDirectoryView(t *testing.T) {
+	m := model{
+		path: "/tmp/child",
+		history: []historyEntry{
+			{
+				Path:        "/tmp",
+				Entries:     []dirEntry{{Name: "child", Path: "/tmp/child", Size: 1, IsDir: true}},
+				TotalSize:   1,
+				Selected:    0,
+				EntryOffset: 0,
+			},
+		},
+		entries: []dirEntry{{Name: "file.txt", Path: "/tmp/child/file.txt", Size: 1}},
+	}
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatalf("expected no command when returning from cached history, got %v", cmd)
+	}
+
+	got, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", updated)
+	}
+	if got.path != "/tmp" {
+		t.Fatalf("expected path /tmp after Esc, got %s", got.path)
+	}
+	if got.status == "" {
+		t.Fatalf("expected status to be updated after Esc navigation")
+	}
+}
+
+func TestUpdateKeyCtrlCQuits(t *testing.T) {
+	m := model{}
+
+	_, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatalf("expected quit command for Ctrl+C")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from quit command")
+	}
+}
+
+func TestViewShowsEscBackAndCtrlCQuitHints(t *testing.T) {
+	m := model{
+		path:       "/tmp/project",
+		history:    []historyEntry{{Path: "/tmp"}},
+		entries:    []dirEntry{{Name: "cache", Path: "/tmp/project/cache", Size: 1, IsDir: true}},
+		largeFiles: []fileEntry{{Name: "large.bin", Path: "/tmp/project/large.bin", Size: 1024}},
+		totalSize:  1024,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Esc Back") {
+		t.Fatalf("expected Esc Back hint in view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl+C Quit") {
+		t.Fatalf("expected Ctrl+C Quit hint in view, got:\n%s", view)
+	}
+}
+
+func TestViewKeepsCachedEntriesWhileRefreshing(t *testing.T) {
+	m := model{
+		path:             "/tmp/project/child",
+		history:          []historyEntry{{Path: "/tmp/project"}},
+		entries:          []dirEntry{{Name: "warmed-child", Path: "/tmp/project/child/warmed-child", Size: 100, IsDir: true}},
+		totalSize:        100,
+		scanning:         true,
+		viewNeedsRefresh: true,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "warmed-child") {
+		t.Fatalf("expected cached entry to render during refresh, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Showing cached results while refreshing") {
+		t.Fatalf("expected refreshing hint during cached refresh, got:\n%s", view)
+	}
+}
+
+func TestViewBlanksToScanOnlyWithoutWarmCache(t *testing.T) {
+	// Right after entering an uncached child, m.entries still holds the parent's
+	// stale entries while viewNeedsRefresh is false. The view must not paint
+	// those stale rows under the new path; it stays scan-only until results land.
+	m := model{
+		path:             "/tmp/project/child",
+		history:          []historyEntry{{Path: "/tmp/project"}},
+		entries:          []dirEntry{{Name: "stale-parent-row", Path: "/tmp/project/stale-parent-row", Size: 100, IsDir: true}},
+		totalSize:        100,
+		scanning:         true,
+		viewNeedsRefresh: false,
+	}
+
+	view := m.View()
+	if strings.Contains(view, "stale-parent-row") {
+		t.Fatalf("expected scan-only view to hide stale entries, got:\n%s", view)
+	}
+	if strings.Contains(view, "Showing cached results while refreshing") {
+		t.Fatalf("did not expect cached-refresh hint without a warm cache, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Scanning") {
+		t.Fatalf("expected scan-only view to show scanning progress, got:\n%s", view)
+	}
+}
+
+func TestOverviewViewShowsFreeSpaceLabel(t *testing.T) {
+	m := model{
+		path:       "/",
+		isOverview: true,
+		diskFree:   123_400_000,
+		entries:    []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	view := m.View()
+	want := fmt.Sprintf("(%s free)", humanizeBytes(m.diskFree))
+	if !strings.Contains(view, want) {
+		t.Fatalf("expected free-space label %q in overview view, got:\n%s", want, view)
+	}
+}
+
+func TestOverviewViewOmitsFreeSpaceLabelWhenUnknown(t *testing.T) {
+	m := model{
+		path:       "/",
+		isOverview: true,
+		diskFree:   0,
+		entries:    []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	view := m.View()
+	if strings.Contains(view, "free)") {
+		t.Fatalf("expected overview view to omit free-space label when unavailable, got:\n%s", view)
+	}
+}
+
 func TestCacheSaveLoadRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -215,6 +439,486 @@ func TestCacheSaveLoadRoundTrip(t *testing.T) {
 	}
 	if len(cache.LargeFiles) != len(result.LargeFiles) {
 		t.Fatalf("large file count mismatch: want %d, got %d", len(result.LargeFiles), len(cache.LargeFiles))
+	}
+}
+
+func TestPruneAnalyzerCacheDirRemovesOnlyExpiredCacheFiles(t *testing.T) {
+	cacheDir := t.TempDir()
+	now := time.Now()
+	oldTime := now.Add(-analyzerCacheTTL - time.Hour)
+	freshTime := now.Add(-time.Hour)
+
+	oldCache := filepath.Join(cacheDir, "old.cache")
+	freshCache := filepath.Join(cacheDir, "fresh.cache")
+	namedState := filepath.Join(cacheDir, overviewCacheFile)
+	cacheDirEntry := filepath.Join(cacheDir, "directory.cache")
+	symlinkTarget := filepath.Join(cacheDir, "target")
+	symlinkCache := filepath.Join(cacheDir, "link.cache")
+
+	for _, path := range []string{oldCache, freshCache, namedState, symlinkTarget} {
+		if err := os.WriteFile(path, []byte("cache"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	if err := os.Mkdir(cacheDirEntry, 0o755); err != nil {
+		t.Fatalf("mkdir cache dir entry: %v", err)
+	}
+	if err := os.Symlink(symlinkTarget, symlinkCache); err != nil {
+		t.Fatalf("symlink cache entry: %v", err)
+	}
+
+	for _, path := range []string{oldCache, namedState, cacheDirEntry, symlinkCache} {
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatalf("chtimes %s: %v", path, err)
+		}
+	}
+	if err := os.Chtimes(freshCache, freshTime, freshTime); err != nil {
+		t.Fatalf("chtimes fresh cache: %v", err)
+	}
+
+	if err := pruneAnalyzerCacheDir(cacheDir, now); err != nil {
+		t.Fatalf("pruneAnalyzerCacheDir: %v", err)
+	}
+
+	if _, err := os.Stat(oldCache); !os.IsNotExist(err) {
+		t.Fatalf("expected expired cache file to be removed, stat err: %v", err)
+	}
+	for _, path := range []string{freshCache, namedState, cacheDirEntry, symlinkCache} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("expected %s to be preserved: %v", path, err)
+		}
+	}
+}
+
+func TestPruneAnalyzerCacheDirMissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := pruneAnalyzerCacheDir(missing, time.Now()); err != nil {
+		t.Fatalf("expected missing cache dir to be ignored, got: %v", err)
+	}
+}
+
+func TestPruneAnalyzerCacheDirIgnoresRemoveFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can remove files from read-only directories")
+	}
+
+	cacheDir := t.TempDir()
+	oldCache := filepath.Join(cacheDir, "old.cache")
+	if err := os.WriteFile(oldCache, []byte("cache"), 0o644); err != nil {
+		t.Fatalf("write old cache: %v", err)
+	}
+	oldTime := time.Now().Add(-analyzerCacheTTL - time.Hour)
+	if err := os.Chtimes(oldCache, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old cache: %v", err)
+	}
+
+	if err := os.Chmod(cacheDir, 0o555); err != nil {
+		t.Fatalf("chmod cache dir read-only: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(cacheDir, 0o755)
+	}()
+
+	if err := pruneAnalyzerCacheDir(cacheDir, time.Now()); err != nil {
+		t.Fatalf("expected remove failure to be ignored, got: %v", err)
+	}
+	if _, err := os.Stat(oldCache); err != nil {
+		t.Fatalf("expected failed removal to leave cache file in place: %v", err)
+	}
+}
+
+func TestScanPathConcurrentWarmsChildDirectoryCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, "root")
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root.txt"), []byte("root-data"), 0o644); err != nil {
+		t.Fatalf("write root data: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "data.bin"), []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+		t.Fatalf("write child data: %v", err)
+	}
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	if _, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
+		t.Fatalf("scanPathConcurrent(root): %v", err)
+	}
+
+	cached, err := loadCacheFromDisk(child)
+	if err != nil {
+		t.Fatalf("expected warmed child cache, got error: %v", err)
+	}
+	if cached.TotalSize <= 0 {
+		t.Fatalf("expected positive cached child size, got %d", cached.TotalSize)
+	}
+	if len(cached.Entries) == 0 {
+		t.Fatalf("expected cached child entries to be populated")
+	}
+	if cached.TotalFiles != 1 {
+		t.Fatalf("expected warmed child cache to track local file count 1, got %d", cached.TotalFiles)
+	}
+	if !cached.NeedsRefresh {
+		t.Fatalf("expected warmed child cache to be marked for refresh")
+	}
+}
+
+func TestScanPathConcurrentUsesChildCacheLargeFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, "root")
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	largeFile := filepath.Join(child, "large.bin")
+	if err := os.WriteFile(largeFile, []byte(strings.Repeat("x", 2<<20)), 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+
+	var childFiles, childDirs, childBytes int64
+	childCurrent := &atomic.Value{}
+	childCurrent.Store("")
+	childResult, err := scanPathConcurrent(child, &childFiles, &childDirs, &childBytes, childCurrent)
+	if err != nil {
+		t.Fatalf("scanPathConcurrent(child): %v", err)
+	}
+	if err := saveCacheToDisk(child, childResult); err != nil {
+		t.Fatalf("saveCacheToDisk(child): %v", err)
+	}
+
+	if err := os.Chmod(child, 0o000); err != nil {
+		t.Fatalf("chmod child unreadable: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(child, 0o755)
+	}()
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	if err != nil {
+		t.Fatalf("scanPathConcurrent(root): %v", err)
+	}
+
+	foundChild := false
+	for _, entry := range result.Entries {
+		if entry.Path == child {
+			foundChild = true
+			if entry.Size != childResult.TotalSize {
+				t.Fatalf("cached child size mismatch: want %d, got %d", childResult.TotalSize, entry.Size)
+			}
+			break
+		}
+	}
+	if !foundChild {
+		t.Fatalf("expected cached child directory in root entries")
+	}
+
+	foundLargeFile := false
+	for _, file := range result.LargeFiles {
+		if file.Path == largeFile {
+			foundLargeFile = true
+			break
+		}
+	}
+	if !foundLargeFile {
+		t.Fatalf("expected root large files to include cached child large file")
+	}
+}
+
+func TestScanPathConcurrentWarmsChildCachesWithoutRecursiveSpotlight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, "root")
+	childOne := filepath.Join(root, "child-one")
+	childTwo := filepath.Join(root, "child-two")
+	for _, dir := range []string{childOne, childTwo} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create dir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "data.bin"), []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+			t.Fatalf("write data in %s: %v", dir, err)
+		}
+	}
+
+	logPath := filepath.Join(home, "mdfind.log")
+	stubDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(stubDir, 0o755); err != nil {
+		t.Fatalf("create stub dir: %v", err)
+	}
+	stubPath := filepath.Join(stubDir, "mdfind")
+	stubScript := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %s\nexit 0\n", strconv.Quote(logPath))
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write mdfind stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	if _, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
+		t.Fatalf("scanPathConcurrent(root): %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read mdfind log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected only root spotlight invocation, got %d lines: %q", len(lines), string(data))
+	}
+}
+
+func TestScanCmdTreatsWarmedCacheAsStale(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	target := filepath.Join(home, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	result := scanResult{
+		Entries:    []dirEntry{{Name: "child", Path: filepath.Join(target, "child"), Size: 1, IsDir: true}},
+		LargeFiles: []fileEntry{{Name: "big.bin", Path: filepath.Join(target, "big.bin"), Size: 2 << 20}},
+		TotalSize:  42,
+		TotalFiles: 1,
+	}
+	if err := saveCacheToDiskWithOptions(target, result, true); err != nil {
+		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
+	}
+
+	m := newModel(target, false)
+	msg := m.scanCmd(target)()
+	scanMsg, ok := msg.(scanResultMsg)
+	if !ok {
+		t.Fatalf("expected scanResultMsg, got %T", msg)
+	}
+	if !scanMsg.stale {
+		t.Fatalf("expected warmed cache to trigger stale refresh path")
+	}
+	if scanMsg.result.TotalFiles != result.TotalFiles {
+		t.Fatalf("expected cached result to survive stale load, got %d", scanMsg.result.TotalFiles)
+	}
+}
+
+func TestEnterSelectedDirRefreshesStaleInMemoryCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	parent := filepath.Join(home, "parent")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	freshPath := filepath.Join(child, "fresh.bin")
+	if err := os.WriteFile(freshPath, []byte("fresh-data"), 0o644); err != nil {
+		t.Fatalf("write fresh file: %v", err)
+	}
+	freshInfo, err := os.Stat(freshPath)
+	if err != nil {
+		t.Fatalf("stat fresh file: %v", err)
+	}
+	freshSize := getActualFileSize(freshPath, freshInfo)
+
+	warmed := scanResult{
+		Entries:    []dirEntry{{Name: "stale.bin", Path: filepath.Join(child, "stale.bin"), Size: 1}},
+		TotalSize:  1,
+		TotalFiles: 1,
+	}
+	if err := saveCacheToDiskWithOptions(child, warmed, true); err != nil {
+		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
+	}
+
+	m := newModel(parent, false)
+	m.entries = []dirEntry{{Name: "child", Path: child, Size: 9, IsDir: true}}
+	m.cache[child] = historyEntry{
+		Path:         child,
+		Entries:      []dirEntry{{Name: "stale.bin", Path: filepath.Join(child, "stale.bin"), Size: 1}},
+		TotalSize:    1,
+		TotalFiles:   1,
+		NeedsRefresh: true,
+	}
+
+	updated, cmd := m.enterSelectedDir()
+	if cmd == nil {
+		t.Fatalf("expected stale in-memory child cache to trigger a refresh")
+	}
+
+	got := updated.(model)
+	if got.path != child {
+		t.Fatalf("expected path %s, got %s", child, got.path)
+	}
+	if !got.scanning {
+		t.Fatalf("expected directory to remain scanning while refreshing stale cache")
+	}
+	if got.totalSize != 1 {
+		t.Fatalf("expected stale cache contents to be shown immediately, got %d", got.totalSize)
+	}
+
+	scanMsg := runScanResultCmd(t, cmd)
+	if scanMsg.stale {
+		t.Fatalf("expected stale cached navigation to force a fresh scan")
+	}
+	if scanMsg.result.TotalSize != freshSize {
+		t.Fatalf("expected fresh rescan total size %d, got %d", freshSize, scanMsg.result.TotalSize)
+	}
+	if scanMsg.result.Entries[0].Name != "fresh.bin" {
+		t.Fatalf("expected rescan to surface live filesystem contents, got %+v", scanMsg.result.Entries)
+	}
+}
+
+func TestGoBackRefreshesHistoryEntryNeedingRefresh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	child := filepath.Join(home, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	freshPath := filepath.Join(child, "fresh.bin")
+	if err := os.WriteFile(freshPath, []byte("fresh-data-2"), 0o644); err != nil {
+		t.Fatalf("write fresh file: %v", err)
+	}
+	freshInfo, err := os.Stat(freshPath)
+	if err != nil {
+		t.Fatalf("stat fresh file: %v", err)
+	}
+	freshSize := getActualFileSize(freshPath, freshInfo)
+
+	warmed := scanResult{
+		Entries:    []dirEntry{{Name: "stale.bin", Path: filepath.Join(child, "stale.bin"), Size: 2}},
+		TotalSize:  2,
+		TotalFiles: 1,
+	}
+	if err := saveCacheToDiskWithOptions(child, warmed, true); err != nil {
+		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
+	}
+
+	m := newModel(filepath.Join(child, "grandchild"), false)
+	m.history = []historyEntry{{
+		Path:         child,
+		Entries:      []dirEntry{{Name: "stale.bin", Path: filepath.Join(child, "stale.bin"), Size: 2}},
+		TotalSize:    2,
+		TotalFiles:   1,
+		NeedsRefresh: true,
+	}}
+
+	updated, cmd := m.goBack()
+	if cmd == nil {
+		t.Fatalf("expected stale history entry to trigger a refresh")
+	}
+
+	got := updated.(model)
+	if got.path != child {
+		t.Fatalf("expected path %s after goBack, got %s", child, got.path)
+	}
+	if !got.scanning {
+		t.Fatalf("expected goBack to keep scanning while refreshing stale history entry")
+	}
+	if got.totalSize != 2 {
+		t.Fatalf("expected stale history snapshot to be restored immediately, got %d", got.totalSize)
+	}
+
+	scanMsg := runScanResultCmd(t, cmd)
+	if scanMsg.stale {
+		t.Fatalf("expected stale history navigation to force a fresh scan")
+	}
+	if scanMsg.result.TotalSize != freshSize {
+		t.Fatalf("expected fresh rescan total size %d, got %d", freshSize, scanMsg.result.TotalSize)
+	}
+	if scanMsg.result.Entries[0].Name != "fresh.bin" {
+		t.Fatalf("expected rescan to surface live filesystem contents, got %+v", scanMsg.result.Entries)
+	}
+}
+
+func TestScanPathConcurrentWarmsChildCacheWithLiveProgress(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, "root")
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	const dirCount = 32
+	const filesPerDir = 256
+	for i := range dirCount {
+		dir := filepath.Join(child, fmt.Sprintf("dir-%02d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create nested dir %s: %v", dir, err)
+		}
+		for j := range filesPerDir {
+			file := filepath.Join(dir, fmt.Sprintf("file-%03d.bin", j))
+			if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", file, err)
+			}
+		}
+	}
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+		errCh <- err
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	sawLiveProgress := false
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&filesScanned) > 0 {
+			select {
+			case <-done:
+			default:
+				sawLiveProgress = true
+			}
+			if sawLiveProgress {
+				break
+			}
+		}
+		select {
+		case <-done:
+			if !sawLiveProgress {
+				t.Fatalf("expected live progress before child warm scan completed, final files=%d", atomic.LoadInt64(&filesScanned))
+			}
+		default:
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	if !sawLiveProgress {
+		t.Fatalf("expected filesScanned to advance before warm child scan finished")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("scanPathConcurrent(root): %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("scan did not complete")
 	}
 }
 

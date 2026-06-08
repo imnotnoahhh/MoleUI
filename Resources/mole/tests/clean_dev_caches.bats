@@ -14,13 +14,15 @@ setup_file() {
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
-@test "clean_dev_npm cleans orphaned pnpm store" {
+@test "clean_dev_npm prunes pnpm store without deleting orphaned global store" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -47,7 +49,9 @@ clean_dev_npm
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Orphaned pnpm store"* ]]
+    [[ "$output" == *"pnpm cache"* ]]
+    [[ "$output" != *"Orphaned pnpm store"* ]]
+    [[ "$output" != *"pnpm store"* ]]
 }
 
 @test "clean_dev_npm cleans default npm residual directories" {
@@ -76,6 +80,25 @@ EOF
     [[ "$output" == *"npm npx cache|$HOME/.npm/_npx/*"* ]]
     [[ "$output" == *"npm logs|$HOME/.npm/_logs/*"* ]]
     [[ "$output" == *"npm prebuilds|$HOME/.npm/_prebuilds/*"* ]]
+}
+
+@test "clean_conda_metadata_caches honors package cache whitelist before conda clean" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+WHITELIST_PATTERNS=("$HOME/anaconda3/pkgs")
+conda() { echo "conda called"; return 0; }
+export -f conda
+clean_conda_metadata_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"conda index/tarball/log caches · skipped (whitelist)"* ]]
+    [[ "$output" != *"conda called"* ]]
 }
 
 @test "clean_dev_npm cleans custom npm cache path when detected" {
@@ -159,25 +182,406 @@ EOF
     [[ "$output" != *"(custom path)"* ]]
 }
 
-@test "clean_dev_docker skips when daemon not running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 DRY_RUN=false bash --noprofile --norc <<'EOF'
+@test "clean_dev_npm cleans default bun cache when bun is unavailable" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-run_with_timeout() { return 1; }
-clean_tool_cache() { echo "$1"; }
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() { return 1; }
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Bun cache|$HOME/.bun/install/cache/*"* ]]
+    [[ "$output" != *"bun cache|bun cache bun pm cache rm"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm uses bun cache command for default bun cache path" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "$HOME/.bun/install/cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" != *"Bun cache|$HOME/.bun/install/cache/*"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm cleans orphaned default bun cache when custom path is configured" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "/tmp/mole-bun-cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" == *"Orphaned bun cache|$HOME/.bun/install/cache/*"* ]]
+}
+
+@test "clean_dev_npm treats default bun cache path with trailing slash as same path" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "$HOME/.bun/install/cache/"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"bun cache"* ]]
+    [[ "$output" != *"Orphaned bun cache"* ]]
+}
+
+@test "clean_dev_npm falls back to filesystem cleanup when bun cache command fails" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_tool_cache() { :; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+npm() { return 0; }
+bun() {
+    if [[ "$1" == "--version" ]]; then
+        echo "1.2.0"
+        return 0
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" && "${3:-}" == "rm" ]]; then
+        return 1
+    fi
+    if [[ "$1" == "pm" && "$2" == "cache" ]]; then
+        echo "/tmp/mole-bun-cache"
+        return 0
+    fi
+    return 0
+}
+export -f npm bun
+clean_dev_npm
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Bun cache|/tmp/mole-bun-cache/*"* ]]
+    [[ "$output" == *"Orphaned bun cache|$HOME/.bun/install/cache/*"* ]]
+}
+
+@test "clean_dev_docker skips daemon-managed cleanup by default" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
 safe_clean() { echo "$2"; }
-debug_log() { echo "$*"; }
-docker() { return 1; }
+note_activity() { :; }
+debug_log() { :; }
+docker() { echo "docker called"; return 0; }
 export -f docker
 clean_dev_docker
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Docker daemon not running"* ]]
-    [[ "$output" != *"Docker build cache"* ]]
+    [[ "$output" == *"Docker unused data · skipped by default"* ]]
+    [[ "$output" == *"Review: docker system df"* ]]
+    [[ "$output" == *"Prune:  docker system prune"* ]]
+    [[ "$output" == *"Docker BuildX cache"* ]]
+    [[ "$output" != *"docker called"* ]]
+}
+
+@test "clean_dev_docker keeps BuildX cache cleanup" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { echo "$2|$1"; }
+note_activity() { :; }
+debug_log() { :; }
+docker() { return 0; }
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker BuildX cache|$HOME/.docker/buildx/cache/*"* ]]
+}
+
+@test "clean_dev_docker reports OrbStack data without deleting disk images" {
+    local orb_data="$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data"
+    mkdir -p "$orb_data"
+    touch "$orb_data/data.img.raw" "$orb_data/swap.img"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { printf '%s|%s\n' "$2" "$1"; }
+note_activity() { :; }
+debug_log() { :; }
+get_path_size_kb() { echo "4096"; }
+bytes_to_human() { echo "4M"; }
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OrbStack container data · skipped by default (4M)"* ]]
+    [[ "$output" == *"Review: docker system df"* ]]
+    [[ "$output" == *"Prune:  docker system prune --filter until=720h"* ]]
+    [[ "$output" == *"Docker BuildX cache|$HOME/.docker/buildx/cache/*"* ]]
+    [[ "$output" != *"data.img.raw"* ]]
+    [[ "$output" != *"swap.img"* ]]
+}
+
+@test "clean_dev_docker no longer depends on whitelist to avoid prune" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+clean_tool_cache() { echo "$1|$*"; }
+safe_clean() { :; }
+note_activity() { :; }
+debug_log() { :; }
+is_path_whitelisted() {
+    [[ "$1" == "$HOME/.docker" ]] && return 0
+    return 1
+}
+export -f is_path_whitelisted
+docker() { echo "docker called"; return 0; }
+export -f docker
+clean_dev_docker
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Docker unused data · skipped by default"* ]]
+    [[ "$output" != *"whitelisted"* ]]
+    [[ "$output" != *"mo clean --whitelist"* ]]
+    [[ "$output" != *"docker called"* ]]
+    [[ "$output" == *"Prune:  docker system prune"* ]]
+}
+
+@test "clean_codex_runtimes reports active runtime for manual review" {
+    mkdir -p "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/runtime.json"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+pgrep() { return 1; }
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "1024"; }
+bytes_to_human() { echo "1M"; }
+note_activity() { :; }
+clean_codex_runtimes
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Codex runtimes · manual review"* ]]
+    [[ "$output" != *"SAFE_CLEAN:Codex CLI runtimes|$HOME/.cache/codex-runtimes/codex-primary-runtime"* ]]
+}
+
+@test "clean_codex_runtimes cleans only stale incomplete runtime dirs" {
+    mkdir -p "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin"
+    mkdir -p "$HOME/.cache/codex-runtimes/incomplete-old"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/runtime.json"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+pgrep() { return 1; }
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "1024"; }
+bytes_to_human() { echo "1M"; }
+note_activity() { :; }
+clean_codex_runtimes
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SAFE_CLEAN:Codex CLI runtimes|$HOME/.cache/codex-runtimes/incomplete-old"* ]]
+    [[ "$output" != *"SAFE_CLEAN:Codex CLI runtimes|$HOME/.cache/codex-runtimes/codex-primary-runtime"* ]]
+}
+
+@test "clean_codex_runtimes skips all runtimes while Codex is running" {
+    mkdir -p "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin"
+    mkdir -p "$HOME/.cache/codex-runtimes/incomplete-old"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/runtime.json"
+    touch "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+pgrep() { return 0; }
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "1024"; }
+bytes_to_human() { echo "1M"; }
+note_activity() { :; }
+clean_codex_runtimes
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Codex runtimes · skipped (Codex running)"* ]]
+    [[ "$output" != *"SAFE_CLEAN:"* ]]
+}
+
+@test "clean_codex_runtimes respects whitelist" {
+    mkdir -p "$HOME/.cache/codex-runtimes/incomplete-old"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+pgrep() { return 1; }
+is_path_whitelisted() { [[ "$1" == "$HOME/.cache/codex-runtimes"* || "$1" == "$HOME/.cache/codex-runtimes/incomplete-old" ]]; }
+get_path_size_kb() { echo "1024"; }
+bytes_to_human() { echo "1M"; }
+note_activity() { :; }
+clean_codex_runtimes
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Codex runtimes · skipped (whitelist)"* ]]
+    [[ "$output" != *"SAFE_CLEAN:"* ]]
+}
+
+@test "clean_codex_runtimes respects child runtime whitelist" {
+    mkdir -p "$HOME/.cache/codex-runtimes/incomplete-old"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+pgrep() { return 1; }
+is_path_whitelisted() { [[ "$1" == "$HOME/.cache/codex-runtimes/incomplete-old" ]]; }
+get_path_size_kb() { echo "1024"; }
+bytes_to_human() { echo "1M"; }
+note_activity() { :; }
+clean_codex_runtimes
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Codex runtimes · manual review"* ]]
+    [[ "$output" == *"Codex runtimes · skipped (whitelist)"* ]]
+    [[ "$output" != *"SAFE_CLEAN:"* ]]
+}
+
+@test "clean_dev_mise respects MISE_CACHE_DIR and only targets cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MISE_CACHE_DIR="/tmp/mise-cache" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_tool_cache() { :; }
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+clean_dev_mise
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"mise cache|/tmp/mise-cache/*"* ]]
+    [[ "$output" != *".local/share/mise"* ]]
+}
+
+@test "clean_dev_other_langs cleans configured composer cache paths" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" COMPOSER_HOME="$HOME/.config/composer-home" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_other_langs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PHP Composer cache (legacy)|"* ]]
+    [[ "$output" == *"PHP Composer cache|"* ]]
 }
 
 @test "clean_developer_tools runs key stages" {
@@ -191,8 +595,11 @@ clean_homebrew() { echo "brew"; }
 clean_project_caches() { :; }
 clean_dev_python() { :; }
 clean_dev_go() { :; }
+clean_dev_mise() { echo "mise"; }
 clean_dev_rust() { :; }
 check_rust_toolchains() { :; }
+clean_dev_ruby() { :; }
+clean_dev_perl() { :; }
 check_android_ndk() { :; }
 clean_dev_docker() { :; }
 clean_dev_cloud() { :; }
@@ -211,7 +618,6 @@ clean_dev_misc() { :; }
 clean_dev_elixir() { :; }
 clean_dev_haskell() { :; }
 clean_dev_ocaml() { :; }
-clean_dev_editors() { :; }
 clean_code_editors() { :; }
 clean_dev_jetbrains_toolbox() { :; }
 clean_xcode_tools() { :; }
@@ -222,7 +628,51 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"npm"* ]]
+    [[ "$output" == *"mise"* ]]
     [[ "$output" == *"brew"* ]]
+}
+
+@test "clean_dev_ruby cleans rbenv, gem, and bundler caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_ruby
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rbenv download cache|"* ]]
+    [[ "$output" == *"gem spec cache|"* ]]
+    [[ "$output" == *"gem package cache|"* ]]
+    [[ "$output" == *"Ruby Bundler cache|"* ]]
+}
+
+@test "clean_dev_perl cleans CPAN build and source caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_perl
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CPAN build artifacts|"* ]]
+    [[ "$output" == *"CPAN source cache|"* ]]
+}
+
+@test "clean_dev_other_langs no longer includes Ruby Bundler cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+safe_clean() { echo "$2|$1"; }
+clean_dev_other_langs
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Ruby Bundler cache"* ]]
 }
 
 @test "clean_project_caches cleans flutter .dart_tool and build directories" {
@@ -245,4 +695,185 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Flutter build cache (.dart_tool)"* ]]
     [[ "$output" == *"Flutter build cache (build/)"* ]]
+}
+
+@test "clean_dev_misc includes Chrome DevTools MCP cache when server not running" {
+    mkdir -p "$HOME/.cache/chrome-devtools-mcp/chrome-profile/Default/Cache"
+    touch "$HOME/.cache/chrome-devtools-mcp/chrome-profile/Default/Cache/data"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+pgrep() { return 1; }
+safe_clean() { echo "$2"; }
+safe_find_delete() { :; }
+clean_service_worker_cache() { :; }
+clean_dev_misc
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Chrome DevTools MCP browser cache"* ]]
+    [[ "$output" != *"Chrome DevTools MCP cache"* ]]
+}
+
+@test "clean_dev_misc skips Chrome DevTools MCP cache when server is running" {
+    mkdir -p "$HOME/.cache/chrome-devtools-mcp/chrome-profile/Default/Cache"
+    touch "$HOME/.cache/chrome-devtools-mcp/chrome-profile/Default/Cache/data"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+pgrep() { return 0; }
+safe_clean() { echo "$2"; }
+safe_find_delete() { :; }
+clean_service_worker_cache() { :; }
+clean_dev_misc
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Chrome DevTools MCP caches · skipped"* ]]
+    [[ "$output" != *"Chrome DevTools MCP browser cache"* ]]
+}
+
+@test "clean_chrome_devtools_mcp_caches preserves profile state" {
+    profile="$HOME/.cache/chrome-devtools-mcp/chrome-profile"
+    mkdir -p "$profile/Default/Cache" "$profile/Default/Code Cache" "$profile/Default/GPUCache"
+    mkdir -p "$profile/Default/Service Worker/CacheStorage"
+    mkdir -p "$profile/Default/Local Storage/leveldb"
+    touch "$profile/Default/Cache/data" "$profile/Default/Code Cache/data" "$profile/Default/GPUCache/data"
+    touch "$profile/Default/Service Worker/CacheStorage/data"
+    touch "$profile/Default/Cookies" "$profile/Default/Local Storage/leveldb/state"
+    touch "$profile/Local State"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+pgrep() { return 1; }
+safe_clean() { echo "SAFE_CLEAN:$2|$1"; }
+clean_service_worker_cache() { echo "SWC:$1|$2"; }
+clean_chrome_devtools_mcp_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SAFE_CLEAN:Chrome DevTools MCP browser cache|$profile/Default/Cache/"* ]]
+    [[ "$output" == *"SAFE_CLEAN:Chrome DevTools MCP code cache|$profile/Default/Code Cache/"* ]]
+    [[ "$output" == *"SAFE_CLEAN:Chrome DevTools MCP GPU cache|$profile/Default/GPUCache/"* ]]
+    [[ "$output" == *"SWC:Chrome DevTools MCP|$profile/Default/Service Worker/CacheStorage"* ]]
+    [[ "$output" != *"Cookies"* ]]
+    [[ "$output" != *"Local Storage"* ]]
+    [[ "$output" != *"Local State"* ]]
+}
+
+@test "clean_dev_agent_worktrees skips agent worktrees by default and reports size" {
+    mkdir -p "$HOME/code/proj/.claude/worktrees/wt-one"
+    mkdir -p "$HOME/code/proj/.claude/worktrees/wt-two"
+    echo "data" > "$HOME/code/proj/.claude/worktrees/wt-one/file"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        MOLE_AGENT_WORKTREE_PATHS="$HOME/code" \
+        bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+safe_clean() { echo "SHOULD_NOT_DELETE:$1"; }
+clean_dev_agent_worktrees
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"AI agent worktrees · skipped by default (2 in .claude/worktrees"* ]]
+    [[ "$output" == *"MOLE_AGENT_WORKTREES=1 mo clean"* ]]
+    [[ "$output" != *"SHOULD_NOT_DELETE"* ]]
+}
+
+@test "clean_dev_agent_worktrees removes clean worktrees but keeps dirty ones when opted in" {
+    local origin="$HOME/origin.git"
+    local proj="$HOME/code/proj"
+    git init --bare -q "$origin"
+    git -c init.defaultBranch=main init -q "$proj"
+    (
+        cd "$proj"
+        git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+        git remote add origin "$origin"
+        git push -q origin HEAD:main
+        git worktree add -q .claude/worktrees/clean-one HEAD
+        git worktree add -q .claude/worktrees/dirty-one HEAD
+        # Agents lock their worktrees; a plain prune would skip the stale entry.
+        git worktree lock .claude/worktrees/clean-one
+    )
+    echo "uncommitted" > "$proj/.claude/worktrees/dirty-one/scratch.txt"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        MOLE_AGENT_WORKTREES=1 MOLE_AGENT_WORKTREE_PATHS="$HOME/code" \
+        bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+safe_clean() { echo "REMOVED:$1"; rm -rf "$1"; }
+clean_dev_agent_worktrees
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"REMOVED:$proj/.claude/worktrees/clean-one"* ]]
+    [[ "$output" == *"Kept agent worktree (unsaved work)"* ]]
+    [[ "$output" == *"dirty-one"* ]]
+    [[ "$output" != *"REMOVED:$proj/.claude/worktrees/dirty-one"* ]]
+    [ ! -d "$proj/.claude/worktrees/clean-one" ]
+    [ -d "$proj/.claude/worktrees/dirty-one" ]
+    # The stale (locked) registry entry must be reaped, the dirty one kept.
+    run git -C "$proj" worktree list
+    [[ "$output" != *"clean-one"* ]]
+    [[ "$output" == *"dirty-one"* ]]
+}
+
+@test "clean_dev_agent_worktrees keeps worktrees with stashed work when opted in" {
+    local origin="$HOME/origin-stash.git"
+    local proj="$HOME/code/proj-stash"
+    git init --bare -q "$origin"
+    git -c init.defaultBranch=main init -q "$proj"
+    (
+        cd "$proj"
+        git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+        git remote add origin "$origin"
+        git push -q origin HEAD:main
+        git worktree add -q .claude/worktrees/stashed-one HEAD
+        cd .claude/worktrees/stashed-one
+        echo "stashed work" > scratch.txt
+        git add scratch.txt
+        git -c user.email=t@t -c user.name=t stash push -q -m "agent scratch"
+    )
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        MOLE_AGENT_WORKTREES=1 MOLE_AGENT_WORKTREE_PATHS="$HOME/code" \
+        bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+note_activity() { :; }
+run_with_timeout() { shift; "$@"; }
+safe_clean() { echo "REMOVED:$1"; rm -rf "$1"; }
+clean_dev_agent_worktrees
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Kept agent worktree (unsaved work)"* ]]
+    [[ "$output" == *"stashed-one"* ]]
+    [[ "$output" != *"REMOVED:$proj/.claude/worktrees/stashed-one"* ]]
+    [ -d "$proj/.claude/worktrees/stashed-one" ]
+    run git -C "$proj/.claude/worktrees/stashed-one" stash list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"agent scratch"* ]]
 }
