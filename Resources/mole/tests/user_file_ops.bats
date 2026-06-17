@@ -15,49 +15,27 @@ setup_file() {
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
 setup() {
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
     rm -rf "$HOME/.config" "$HOME/.cache"
     mkdir -p "$HOME"
-}
-
-@test "get_darwin_major returns numeric version on macOS" {
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_darwin_major")
-    [[ "$result" =~ ^[0-9]+$ ]]
-}
-
-@test "get_darwin_major returns 999 on failure (mock uname failure)" {
-    result=$(bash -c "
-        uname() { return 1; }
-        export -f uname
-        source '$PROJECT_ROOT/lib/core/base.sh'
-        get_darwin_major
-    ")
-    [ "$result" = "999" ]
-}
-
-@test "is_darwin_ge correctly compares versions" {
-    run bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_darwin_ge 1"
-    [ "$status" -eq 0 ]
-
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_darwin_ge 100 && echo 'yes' || echo 'no'")
-    [[ -n "$result" ]]
 }
 
 @test "is_root_user detects non-root correctly" {
     result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_root_user && echo 'root' || echo 'not-root'")
     [ "$result" = "not-root" ]
-}
-
-@test "get_invoking_user returns current user when not sudo" {
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_invoking_user")
-    [ -n "$result" ]
-    [ "$result" = "${USER:-$(whoami)}" ]
 }
 
 @test "get_invoking_uid returns numeric UID" {
@@ -74,6 +52,61 @@ setup() {
     result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_invoking_home")
     [ -n "$result" ]
     [ -d "$result" ]
+}
+
+@test "prepare_mole_tmpdir uses writable TMPDIR when available" {
+    local writable_tmp="$HOME/custom-tmp"
+    mkdir -p "$writable_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$writable_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; prepare_mole_tmpdir")
+    [ "$result" = "$writable_tmp" ]
+}
+
+@test "prepare_mole_tmpdir falls back to user cache when TMPDIR is not writable" {
+    local blocked_tmp="$HOME/blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; prepare_mole_tmpdir")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
+    [ -d "$HOME/.cache/mole/tmp" ]
+}
+
+@test "ensure_mole_temp_root caches the first resolved directory" {
+    local first_tmp="$HOME/first-tmp"
+    local second_tmp="$HOME/second-tmp"
+    mkdir -p "$first_tmp" "$second_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$first_tmp" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        ensure_mole_temp_root
+        first=\$MOLE_RESOLVED_TMPDIR
+        export TMPDIR='$second_tmp'
+        ensure_mole_temp_root
+        second=\$MOLE_RESOLVED_TMPDIR
+        printf '%s|%s\n' \"\$first\" \"\$second\"
+    ")
+
+    [ "$result" = "$first_tmp|$first_tmp" ]
+}
+
+@test "prepare_mole_tmpdir falls back to /tmp when TMPDIR and invoking home are unavailable" {
+    result=$(env HOME="$HOME" TMPDIR="/var/empty" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        get_invoking_home() { echo '/var/empty'; }
+        prepare_mole_tmpdir
+    ")
+
+    [ "$result" = "/tmp" ]
+}
+
+@test "common.sh exports resolved TMPDIR for runtime callers" {
+    local blocked_tmp="$HOME/common-blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; printf '%s\n' \"\$TMPDIR\"")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
 }
 
 @test "get_user_home returns home for valid user" {

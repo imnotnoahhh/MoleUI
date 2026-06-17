@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     name: Unit & Integration Tests
@@ -14,17 +17,19 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
 
       - name: Install tools
-        run: brew install bats-core shellcheck
+        run: brew install bats-core shellcheck coreutils parallel
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v5
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
         with:
-          go-version: "1.24.6"
+          go-version-file: go.mod
 
       - name: Run test script
         env:
           MOLE_PERF_BYTES_TO_HUMAN_LIMIT_MS: "6000"
           MOLE_PERF_GET_FILE_SIZE_LIMIT_MS: "3000"
+          MOLE_PERF_NORMALIZE_PATHS_LIMIT_MS: "10000"
+          MOLE_TEST_JOBS: "6"
           BATS_FORMATTER: tap
           LANG: en_US.UTF-8
           LC_ALL: en_US.UTF-8
@@ -39,24 +44,56 @@ jobs:
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
 
-      - name: Test on ${{ matrix.os }}
+      - name: Install bats
+        run: brew install bats-core coreutils
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Smoke load on ${{ matrix.os }}
         run: |
           echo "Testing on ${{ matrix.os }}..."
           bash -n mole
           source lib/core/common.sh
           echo "✓ Successfully loaded on ${{ matrix.os }}"
 
+      - name: Run core bats subset
+        env:
+          MOLE_TEST_NO_AUTH: "1"
+          MOLE_PERF_NORMALIZE_PATHS_LIMIT_MS: "10000"
+          BATS_FORMATTER: tap
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
+        run: |
+          bats tests/core_safe_functions.bats \
+               tests/core_common.bats \
+               tests/core_timeout.bats \
+               tests/regression.bats \
+               tests/cli.bats
+
   security:
     name: Security Checks
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: brew install bats-core coreutils
 
       - name: Check for unsafe rm usage
         run: |
           echo "Checking for unsafe rm patterns..."
-          if grep -r "rm -rf" --include="*.sh" lib/ | grep -v "safe_remove\|validate_path\|# "; then
-            echo "✗ Unsafe rm -rf usage found"
+          # Filters in order:
+          #   safe_remove / validate_path: known safe wrapper helpers in file_ops.sh
+          #   # SAFE: explicit annotation that a direct rm is gated by narrow checks
+          #   ^path:line:[ws]#: pure comment lines that mention rm -rf in docs
+          #   echo : help text or messages that print rm -rf as documentation
+          if grep -rn "rm -rf" --include="*.sh" lib/ | grep -v -E "safe_remove|validate_path|# SAFE|^[^:]+:[0-9]+:[[:space:]]*#|echo "; then
+            echo "✗ Unsafe rm -rf usage found (annotate gated calls with '# SAFE: <reason>' or route through safe_remove)"
             exit 1
           fi
           echo "✓ No unsafe rm usage found"
@@ -74,15 +111,16 @@ jobs:
           fi
           '
 
-      - name: Check for secrets
-        run: |
-          echo "Checking for hardcoded secrets..."
-          matches=$(grep -r "password\|secret\|api_key" --include="*.sh" . \
-            | grep -v "# \|test" \
-            | grep -v -E "lib/core/sudo\.sh|lib/core/app_protection\.sh|lib/clean/user\.sh|lib/clean/brew\.sh|bin/optimize\.sh|lib/clean/apps\.sh|lib/uninstall/batch\.sh" || true)
-          if [[ -n "$matches" ]]; then
-            echo "$matches"
-            echo "✗ Potential secrets found"
-            exit 1
-          fi
-          echo "✓ No secrets found"
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+      - name: Run high-risk path regression tests
+        env:
+          MOLE_TEST_NO_AUTH: "1"
+          BATS_FORMATTER: tap
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
+        run: bats tests/core_safe_functions.bats tests/purge.bats tests/installer.bats

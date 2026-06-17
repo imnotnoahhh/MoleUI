@@ -20,7 +20,9 @@ setup_file() {
 }
 
 teardown_file() {
-	rm -rf "$HOME"
+	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		rm -rf "$HOME"
+	fi
 	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
 		export HOME="$ORIGINAL_HOME"
 	fi
@@ -30,6 +32,11 @@ teardown_file() {
 }
 
 setup() {
+	# Safety: refuse to operate on a real home directory.
+	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+		return 1
+	fi
 	rm -rf "$HOME/.config"
 	rm -rf "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"
 	mkdir -p "$HOME"
@@ -67,6 +74,7 @@ setup() {
 	[[ "$output" == *"uninstall"* ]]
 	[[ "$output" == *"analyze"* ]]
 	[[ "$output" == *"status"* ]]
+	[[ "$output" == *"history"* ]]
 	[[ "$output" == *"purge"* ]]
 	[[ "$output" == *"touchid"* ]]
 	[[ "$output" == *"completion"* ]]
@@ -76,6 +84,18 @@ setup() {
 	run "$PROJECT_ROOT/bin/completion.sh" bash
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"complete -F _mole_completions mole mo"* ]]
+}
+
+@test "completion bash includes current clean, analyze, history, and purge options only" {
+	run "$PROJECT_ROOT/bin/completion.sh" bash
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"--dry-run -n --external --whitelist --debug --help -h"* ]]
+	[[ "$output" == *"--json --help -h"* ]]
+	[[ "$output" == *"--json --limit --help -h"* ]]
+	[[ "$output" == *"--paths --dry-run -n --include-empty --debug --help -h"* ]]
+	[[ "$output" != *"--select"* ]]
+	[[ "$output" != *"--categories"* ]]
+	[[ "$output" != *"--exclude-paths"* ]]
 }
 
 @test "completion bash can be loaded in bash" {
@@ -94,24 +114,53 @@ setup() {
 @test "completion zsh includes command descriptions" {
 	run "$PROJECT_ROOT/bin/completion.sh" zsh
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"optimize:Check and maintain system"* ]]
+	[[ "$output" == *"optimize:Refresh caches and services"* ]]
 	[[ "$output" == *"clean:Free up disk space"* ]]
+	[[ "$output" == *"history:Review cleanup activity"* ]]
+}
+
+@test "completion zsh includes current clean, analyze, history, and purge options only" {
+	run "$PROJECT_ROOT/bin/completion.sh" zsh
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"--dry-run"* ]]
+	[[ "$output" == *"--external"* ]]
+	[[ "$output" == *"--whitelist"* ]]
+	[[ "$output" == *"--json"* ]]
+	[[ "$output" == *"--limit"* ]]
+	[[ "$output" == *"--include-empty"* ]]
+	[[ "$output" != *"--select"* ]]
+	[[ "$output" != *"--categories"* ]]
+	[[ "$output" != *"--exclude-paths"* ]]
 }
 
 @test "completion fish generates valid fish script" {
 	run "$PROJECT_ROOT/bin/completion.sh" fish
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"complete -c mole"* ]]
-	[[ "$output" == *"complete -c mo"* ]]
+	[[ "$output" == *"complete -f -c mole"* ]]
+	[[ "$output" == *"complete -f -c mo"* ]]
 }
 
 @test "completion fish includes both mole and mo commands" {
 	output="$("$PROJECT_ROOT/bin/completion.sh" fish)"
-	mole_count=$(echo "$output" | grep -c "complete -c mole")
-	mo_count=$(echo "$output" | grep -c "complete -c mo")
+	mole_count=$(echo "$output" | grep -c "complete -f -c mole")
+	mo_count=$(echo "$output" | grep -c "complete -f -c mo")
 
 	[ "$mole_count" -gt 0 ]
 	[ "$mo_count" -gt 0 ]
+}
+
+@test "completion fish includes current clean, analyze, history, and purge options only" {
+	run "$PROJECT_ROOT/bin/completion.sh" fish
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"-l dry-run"* ]]
+	[[ "$output" == *"-l external"* ]]
+	[[ "$output" == *"-l whitelist"* ]]
+	[[ "$output" == *"-l json"* ]]
+	[[ "$output" == *"-l limit"* ]]
+	[[ "$output" == *"-l include-empty"* ]]
+	[[ "$output" != *"-l select"* ]]
+	[[ "$output" != *"-l categories"* ]]
+	[[ "$output" != *"-l exclude-paths"* ]]
 }
 
 @test "completion auto-install detects zsh" {

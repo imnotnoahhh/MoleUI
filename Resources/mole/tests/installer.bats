@@ -14,13 +14,20 @@ setup_file() {
 }
 
 teardown_file() {
-	rm -rf "$HOME"
+	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		rm -rf "$HOME"
+	fi
 	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
 		export HOME="$ORIGINAL_HOME"
 	fi
 }
 
 setup() {
+	# Safety: refuse to operate on a real home directory.
+	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+		return 1
+	fi
 	export TERM="xterm-256color"
 	export MO_DEBUG=0
 
@@ -243,4 +250,189 @@ setup() {
 	[[ "$output" == *"real.dmg"* ]]
 	[[ "$output" != *"symlink.dmg"* ]]
 	[[ "$output" != *"dangling.lnk"* ]]
+}
+
+@test "delete_selected_installers removes selected files and records successes" {
+	local first="$HOME/Downloads/First.dmg"
+	local second="$HOME/Downloads/Second.pkg"
+	printf 'one' > "$first"
+	printf 'two' > "$second"
+
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        export MOLE_TEST_NO_AUTH=1
+        export MOLE_DELETE_LOG="$HOME/deletions.log"
+        source "$1"
+
+        INSTALLER_PATHS=("$2" "$3")
+        INSTALLER_SIZES=(3 3)
+        MOLE_SELECTION_RESULT="0,1"
+
+        delete_selected_installers < <(printf "\n")
+        printf "deleted=%s failed=%s freed=%s\n" "$total_deleted" "${total_delete_failed:-0}" "$total_size_freed_kb"
+        [[ ! -e "$2" ]]
+        [[ ! -e "$3" ]]
+        grep -F "[installer] REMOVED $2" "$HOME/Library/Logs/mole/operations.log" > /dev/null
+    ' bash "$PROJECT_ROOT/bin/installer.sh" "$first" "$second"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"deleted=2 failed=0"* ]]
+}
+
+@test "delete_selected_installers records protected-path failures" {
+	local removable="$HOME/Downloads/Good.dmg"
+	printf 'good' > "$removable"
+
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        export MOLE_TEST_NO_AUTH=1
+        export MOLE_DELETE_LOG="$HOME/deletions.log"
+        source "$1"
+
+        system_size=$(get_file_size "/System")
+        INSTALLER_PATHS=("$2" "/System")
+        INSTALLER_SIZES=(4 "$system_size")
+        MOLE_SELECTION_RESULT="0,1"
+
+        set +e
+        delete_selected_installers < <(printf "\n")
+        rc=$?
+        set -e
+        printf "rc=%s deleted=%s failed=%s\n" "$rc" "$total_deleted" "${total_delete_failed:-0}"
+        if [[ ${total_delete_failed:-0} -gt 0 ]]; then
+            printf "failure=%s\n" "${INSTALLER_DELETE_FAILURES[0]}"
+        fi
+        [[ ! -e "$2" ]]
+    ' bash "$PROJECT_ROOT/bin/installer.sh" "$removable"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"rc=3 deleted=1 failed=1"* ]]
+	[[ "$output" == *"failure=/System (delete failed)"* ]]
+}
+
+@test "execute_installer_delete_plan refuses replaced files" {
+	local target="$HOME/Downloads/Replaced.dmg"
+	local replacement="$HOME/Downloads/Replacement.dmg"
+	printf 'one' > "$target"
+	printf 'one' > "$replacement"
+
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        export MOLE_TEST_NO_AUTH=1
+        source "$1"
+
+        INSTALLER_PATHS=("$2")
+        INSTALLER_SIZES=("$(get_file_size "$2")")
+        build_installer_delete_plan 0
+        mv "$2" "$2.old"
+        mv "$3" "$2"
+
+        set +e
+        execute_installer_delete_plan
+        rc=$?
+        set -e
+
+        printf "rc=%s deleted=%s failed=%s failure=%s\n" "$rc" "$total_deleted" "$total_delete_failed" "${INSTALLER_DELETE_FAILURES[0]}"
+        [[ -e "$2" ]]
+        [[ -e "$2.old" ]]
+    ' bash "$PROJECT_ROOT/bin/installer.sh" "$target" "$replacement"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"rc=3 deleted=0 failed=1"* ]]
+	[[ "$output" == *"Replaced.dmg (changed since scan)"* ]]
+}
+
+@test "execute_installer_delete_plan refuses size drift" {
+	local target="$HOME/Downloads/Grew.dmg"
+	printf 'one' > "$target"
+
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        export MOLE_TEST_NO_AUTH=1
+        source "$1"
+
+        INSTALLER_PATHS=("$2")
+        INSTALLER_SIZES=("$(get_file_size "$2")")
+        build_installer_delete_plan 0
+        printf "two" >> "$2"
+
+        set +e
+        execute_installer_delete_plan
+        rc=$?
+        set -e
+
+        printf "rc=%s deleted=%s failed=%s failure=%s\n" "$rc" "$total_deleted" "$total_delete_failed" "${INSTALLER_DELETE_FAILURES[0]}"
+        [[ -e "$2" ]]
+    ' bash "$PROJECT_ROOT/bin/installer.sh" "$target"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"rc=3 deleted=0 failed=1"* ]]
+	[[ "$output" == *"Grew.dmg (changed since scan)"* ]]
+}
+
+@test "show_summary reports installer delete failures" {
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        source "$1"
+
+        total_deleted=1
+        total_size_freed_kb=1
+        total_delete_failed=2
+        INSTALLER_DELETE_FAILURES=("$HOME/Downloads/Blocked.dmg (protected path)" "$HOME/Downloads/Stale.pkg (still exists)")
+
+        show_summary
+    ' bash "$PROJECT_ROOT/bin/installer.sh"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Installer cleanup incomplete"* ]]
+	[[ "$output" == *"Failed to remove"* ]]
+	[[ "$output" == *"Blocked.dmg"* ]]
+	[[ "$output" == *"protected path"* ]]
+	[[ "$output" == *"Stale.pkg"* ]]
+	[[ "$output" == *"still exists"* ]]
+	[[ "$output" != *"Your Mac is cleaner now!"* ]]
+}
+
+@test "main exits nonzero after real incomplete installer cleanup" {
+	local removable="$HOME/Downloads/MainGood.dmg"
+	printf 'good' > "$removable"
+
+	# shellcheck disable=SC2016
+	run env HOME="$HOME" TERM="$TERM" bash -euo pipefail -c '
+        export MOLE_TEST_MODE=1
+        export MOLE_TEST_NO_AUTH=1
+        export MOLE_DELETE_LOG="$HOME/deletions.log"
+        source "$1"
+        test_removable="$2"
+
+        collect_installers() {
+            local system_size
+            system_size=$(get_file_size "/System")
+            INSTALLER_PATHS=("$test_removable" "/System")
+            INSTALLER_SIZES=(4 "$system_size")
+            DISPLAY_NAMES=("MainGood.dmg" "System")
+            return 0
+        }
+
+        show_installer_menu() {
+            MOLE_SELECTION_RESULT="0,1"
+            return 0
+        }
+
+        set +e
+        main < <(printf "\n")
+        rc=$?
+        set -e
+        printf "rc=%s removed=%s\n" "$rc" "$([[ ! -e "$test_removable" ]] && echo yes || echo no)"
+    ' bash "$PROJECT_ROOT/bin/installer.sh" "$removable"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Installer cleanup incomplete"* ]]
+	[[ "$output" == *"rc=1"* ]]
+	[[ "$output" == *"removed=yes"* ]]
 }
