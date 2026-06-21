@@ -1,0 +1,102 @@
+#!/bin/bash
+# Mole - Bundle ID resolution.
+# Resolves whether a bundle ID belongs to an installed application on this system.
+# Spotlight (mdfind) is unreliable: indexing can be off for /Applications, Homebrew
+# installs sometimes skip metadata importers, and Spotlight rarely indexes helpers
+# embedded inside .app bundles. This resolver falls back to a direct filesystem
+# scan that reads each app's Info.plist and checks SMJobBless-registered helpers.
+
+if [[ -n "${_MOLE_BUNDLE_RESOLVER_LOADED:-}" ]]; then
+    return 0
+fi
+readonly _MOLE_BUNDLE_RESOLVER_LOADED=1
+
+# Standard locations for installed apps on macOS. Overridable from tests.
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=(
+    "/Applications"
+    "/Applications/Setapp"
+    "/Applications/Utilities"
+    "$HOME/Applications"
+)
+
+# Return 0 if some installed app either has the given CFBundleIdentifier, or
+# registers a privileged helper with that ID via SMJobBless
+# (Contents/Library/LaunchServices/<id>). Return 1 otherwise.
+#
+# Intended for orphan/stale detection: answering "is this launchagent or
+# privileged helper associated with an app that still exists on disk?"
+bundle_has_installed_app() {
+    local bundle_id="$1"
+    [[ -z "$bundle_id" ]] && return 1
+
+    # Reject malformed IDs to avoid feeding junk into mdfind/find.
+    mole_is_reverse_dns_bundle_id "$bundle_id" || return 1
+
+    # Fast path: Spotlight. Gated with a timeout because mdfind has been known
+    # to wedge on misconfigured indexes.
+    if command -v mdfind > /dev/null 2>&1; then
+        # `|| true` guards against two failure modes under `set -e` + `pipefail`:
+        # run_with_timeout returning 124 on timeout, and mdfind itself exiting
+        # non-zero. Both must fall through to the filesystem scan below.
+        local hit=""
+        if declare -f run_with_timeout > /dev/null 2>&1; then
+            hit=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null | head -1) || true
+        else
+            hit=$(mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null | head -1) || true
+        fi
+        [[ -n "$hit" ]] && return 0
+    fi
+
+    # Slow path: walk known app roots. Reads each Info.plist CFBundleIdentifier
+    # and checks for an SMJobBless helper registered under this bundle ID. This
+    # covers the two classes of false positive we saw:
+    #   - App-owned launch agents whose bundle ID Spotlight failed to index
+    #     (e.g. org.keepassxc.KeePassXC from Homebrew) -- issue #732
+    #   - Privileged helpers embedded in a parent .app under
+    #     Contents/Library/LaunchServices/<helper-bundle-id> (e.g. the Adobe
+    #     ARMDC helpers shipped inside Adobe Acrobat DC.app) -- issue #733
+    local parent_id=""
+    local suffix
+    for suffix in ".helper" ".daemon" ".agent" ".xpc"; do
+        if [[ "$bundle_id" == *"$suffix" ]]; then
+            parent_id="${bundle_id%"$suffix"}"
+            break
+        fi
+    done
+
+    local -a mapped_app_bundles=()
+    case "$bundle_id" in
+        com.microsoft.autoupdate.helper | com.microsoft.office.licensingV2.helper)
+            mapped_app_bundles=(
+                "com.microsoft.Word"
+                "com.microsoft.Excel"
+                "com.microsoft.Powerpoint"
+                "com.microsoft.Outlook"
+                "com.microsoft.OneNote"
+            )
+            ;;
+    esac
+
+    local app_root app info app_bundle
+    for app_root in "${_MOLE_BUNDLE_RESOLVER_APP_ROOTS[@]}"; do
+        [[ -d "$app_root" ]] || continue
+        while IFS= read -r -d '' app; do
+            if [[ -e "$app/Contents/Library/LaunchServices/$bundle_id" ]]; then
+                return 0
+            fi
+            info="$app/Contents/Info.plist"
+            [[ -f "$info" ]] || continue
+            app_bundle=$(plutil -extract CFBundleIdentifier raw "$info" 2> /dev/null || echo "")
+            [[ "$app_bundle" == "$bundle_id" ]] && return 0
+            [[ -n "$parent_id" && "$app_bundle" == "$parent_id" ]] && return 0
+            if ((${#mapped_app_bundles[@]} > 0)); then
+                local mapped_bundle
+                for mapped_bundle in "${mapped_app_bundles[@]}"; do
+                    [[ "$app_bundle" == "$mapped_bundle" ]] && return 0
+                done
+            fi
+        done < <(find "$app_root" -maxdepth 1 -name "*.app" -print0 2> /dev/null)
+    done
+
+    return 1
+}

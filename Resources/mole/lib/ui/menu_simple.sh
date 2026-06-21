@@ -212,7 +212,7 @@ paginated_multi_select() {
 
         # Clear any remaining lines at bottom
         printf "${clear_line}\n" >&2
-        printf "${clear_line}${GRAY}${ICON_NAV_UP}${ICON_NAV_DOWN} | Space | Enter | Q Exit${NC}\n" >&2
+        printf "${clear_line}${GRAY}${ICON_NAV_UP}${ICON_NAV_DOWN} | Space | Enter Save | Q Cancel${NC}\n" >&2
 
         # Clear one more line to ensure no artifacts
         printf "${clear_line}" >&2
@@ -278,6 +278,13 @@ paginated_multi_select() {
                 for ((i = 0; i < total_items; i++)); do
                     selected[i]=false
                 done
+                ;;
+            "LEFT" | "RIGHT")
+                # menu_simple is non-paginated; LEFT/RIGHT (h/l) have no
+                # navigation meaning here. Swallow them silently so set -e in
+                # callers doesn't trip and so a stray Vim user doesn't see a
+                # spurious cursor jump.
+                :
                 ;;
             "ENTER")
                 # Store result in global variable instead of returning via stdout

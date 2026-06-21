@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
@@ -71,7 +72,7 @@ func TestCollectIOCountersSafelyRecoversPanic(t *testing.T) {
 	}
 	t.Cleanup(func() { ioCountersFunc = original })
 
-	stats, err := collectIOCountersSafely(true)
+	stats, err := collectIOCountersSafely()
 	if err == nil {
 		t.Fatalf("expected error from panic recovery")
 	}
@@ -93,11 +94,91 @@ func TestCollectIOCountersSafelyReturnsData(t *testing.T) {
 	}
 	t.Cleanup(func() { ioCountersFunc = original })
 
-	got, err := collectIOCountersSafely(true)
+	got, err := collectIOCountersSafely()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "en0" {
 		t.Fatalf("unexpected stats: %+v", got)
+	}
+}
+
+func TestCollectNetworkFirstSampleReturnsZeroRateInterfaces(t *testing.T) {
+	original := ioCountersFunc
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		return []gopsutilnet.IOCountersStat{
+			{Name: "en0", BytesRecv: 1000, BytesSent: 2000},
+		}, nil
+	}
+	t.Cleanup(func() { ioCountersFunc = original })
+
+	c := &Collector{}
+	got := c.collectNetwork(time.Now())
+	if len(got) != 1 {
+		t.Fatalf("expected first sample to render one interface, got %+v", got)
+	}
+	if got[0].RxRateMBs != 0 || got[0].TxRateMBs != 0 {
+		t.Fatalf("expected first sample zero rates, got %+v", got[0])
+	}
+	if len(c.rxHistoryBuf.Slice()) != 1 || len(c.txHistoryBuf.Slice()) != 1 {
+		t.Fatalf("expected history to be seeded on first sample")
+	}
+}
+
+func TestCollectNetworkUsesPrimedCountersForInitialRates(t *testing.T) {
+	original := ioCountersFunc
+	calls := 0
+	samples := [][]gopsutilnet.IOCountersStat{
+		{{Name: "en0", BytesRecv: 1024 * 1024, BytesSent: 0}},
+		{{Name: "en0", BytesRecv: 2 * 1024 * 1024, BytesSent: 512 * 1024}},
+	}
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		if calls >= len(samples) {
+			return samples[len(samples)-1], nil
+		}
+		got := samples[calls]
+		calls++
+		return got, nil
+	}
+	t.Cleanup(func() { ioCountersFunc = original })
+
+	c := NewCollector(ProcessWatchOptions{})
+	got := c.collectNetwork(c.lastNetAt.Add(time.Second))
+	if len(got) != 1 {
+		t.Fatalf("expected one interface, got %+v", got)
+	}
+	if got[0].RxRateMBs != 1.0 {
+		t.Fatalf("expected 1 MB/s down, got %v", got[0].RxRateMBs)
+	}
+	if got[0].TxRateMBs != 0.5 {
+		t.Fatalf("expected 0.5 MB/s up, got %v", got[0].TxRateMBs)
+	}
+}
+
+func TestCollectNetworkClampsCounterReset(t *testing.T) {
+	original := ioCountersFunc
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		return []gopsutilnet.IOCountersStat{
+			{Name: "en0", BytesRecv: 10, BytesSent: 20},
+		}, nil
+	}
+	t.Cleanup(func() { ioCountersFunc = original })
+
+	base := time.Now()
+	c := &Collector{
+		prevNet: map[string]gopsutilnet.IOCountersStat{
+			"en0": {Name: "en0", BytesRecv: 1024 * 1024, BytesSent: 1024 * 1024},
+		},
+		lastNetAt:    base,
+		rxHistoryBuf: NewRingBuffer(NetworkHistorySize),
+		txHistoryBuf: NewRingBuffer(NetworkHistorySize),
+	}
+
+	got := c.collectNetwork(base.Add(time.Second))
+	if len(got) != 1 {
+		t.Fatalf("expected one interface, got %+v", got)
+	}
+	if got[0].RxRateMBs != 0 || got[0].TxRateMBs != 0 {
+		t.Fatalf("expected reset counters to clamp to zero, got %+v", got[0])
 	}
 }

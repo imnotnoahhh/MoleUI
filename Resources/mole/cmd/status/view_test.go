@@ -164,126 +164,23 @@ func TestShorten(t *testing.T) {
 	}
 }
 
+// Core byte-format coverage lives in internal/units; these are wiring sanity
+// checks to ensure the cmd/status helpers still delegate to that package.
 func TestHumanBytesShort(t *testing.T) {
-	tests := []struct {
-		name  string
-		input uint64
-		want  string
-	}{
-		// Zero and small values.
-		{"zero", 0, "0"},
-		{"one byte", 1, "1"},
-		{"999 bytes", 999, "999"},
-
-		// Kilobyte boundaries.
-		{"exactly 1KB", 1 << 10, "1K"},
-		{"just under 1KB", (1 << 10) - 1, "1023"},
-		{"1.5KB rounds to 2K", 1536, "2K"},
-		{"999KB", 999 << 10, "999K"},
-
-		// Megabyte boundaries.
-		{"exactly 1MB", 1 << 20, "1M"},
-		{"just under 1MB", (1 << 20) - 1, "1024K"},
-		{"500MB", 500 << 20, "500M"},
-
-		// Gigabyte boundaries.
-		{"exactly 1GB", 1 << 30, "1G"},
-		{"just under 1GB", (1 << 30) - 1, "1024M"},
-		{"100GB", 100 << 30, "100G"},
-
-		// Terabyte boundaries.
-		{"exactly 1TB", 1 << 40, "1T"},
-		{"just under 1TB", (1 << 40) - 1, "1024G"},
-		{"2TB", 2 << 40, "2T"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := humanBytesShort(tt.input)
-			if got != tt.want {
-				t.Errorf("humanBytesShort(%d) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
+	if got := humanBytesShort(100 << 30); got != "100G" {
+		t.Errorf("humanBytesShort(100<<30) = %q, want %q", got, "100G")
 	}
 }
 
 func TestHumanBytes(t *testing.T) {
-	tests := []struct {
-		name  string
-		input uint64
-		want  string
-	}{
-		// Zero and small values.
-		{"zero", 0, "0 B"},
-		{"one byte", 1, "1 B"},
-		{"1023 bytes", 1023, "1023 B"},
-
-		// Kilobyte boundaries (uses > not >=).
-		{"exactly 1KB", 1 << 10, "1024 B"},
-		{"just over 1KB", (1 << 10) + 1, "1.0 KB"},
-		{"1.5KB", 1536, "1.5 KB"},
-
-		// Megabyte boundaries (uses > not >=).
-		{"exactly 1MB", 1 << 20, "1024.0 KB"},
-		{"just over 1MB", (1 << 20) + 1, "1.0 MB"},
-		{"500MB", 500 << 20, "500.0 MB"},
-
-		// Gigabyte boundaries (uses > not >=).
-		{"exactly 1GB", 1 << 30, "1024.0 MB"},
-		{"just over 1GB", (1 << 30) + 1, "1.0 GB"},
-		{"100GB", 100 << 30, "100.0 GB"},
-
-		// Terabyte boundaries (uses > not >=).
-		{"exactly 1TB", 1 << 40, "1024.0 GB"},
-		{"just over 1TB", (1 << 40) + 1, "1.0 TB"},
-		{"2TB", 2 << 40, "2.0 TB"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := humanBytes(tt.input)
-			if got != tt.want {
-				t.Errorf("humanBytes(%d) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
+	if got := humanBytes((1 << 20) + 1); got != "1.0 MB" {
+		t.Errorf("humanBytes(1MB+1) = %q, want %q", got, "1.0 MB")
 	}
 }
 
 func TestHumanBytesCompact(t *testing.T) {
-	tests := []struct {
-		name  string
-		input uint64
-		want  string
-	}{
-		// Zero and small values.
-		{"zero", 0, "0"},
-		{"one byte", 1, "1"},
-		{"1023 bytes", 1023, "1023"},
-
-		// Kilobyte boundaries (uses >= not >).
-		{"exactly 1KB", 1 << 10, "1.0K"},
-		{"1.5KB", 1536, "1.5K"},
-
-		// Megabyte boundaries.
-		{"exactly 1MB", 1 << 20, "1.0M"},
-		{"500MB", 500 << 20, "500.0M"},
-
-		// Gigabyte boundaries.
-		{"exactly 1GB", 1 << 30, "1.0G"},
-		{"100GB", 100 << 30, "100.0G"},
-
-		// Terabyte boundaries.
-		{"exactly 1TB", 1 << 40, "1.0T"},
-		{"2TB", 2 << 40, "2.0T"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := humanBytesCompact(tt.input)
-			if got != tt.want {
-				t.Errorf("humanBytesCompact(%d) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
+	if got := humanBytesCompact(1536); got != "1.5K" {
+		t.Errorf("humanBytesCompact(1536) = %q, want %q", got, "1.5K")
 	}
 }
 
@@ -658,6 +555,40 @@ func TestBatteryProgressBar(t *testing.T) {
 	}
 }
 
+func TestRenderBatteryCardShowsAdapterInputOnly(t *testing.T) {
+	card := renderBatteryCard([]BatteryStatus{{
+		Percent:    80,
+		Status:     "AC",
+		Capacity:   100,
+		CycleCount: 4,
+	}}, ThermalStatus{
+		BatteryTemp:  30.7,
+		AdapterPower: 94,
+	})
+
+	var joined []string
+	for _, line := range card.lines {
+		joined = append(joined, stripANSI(line))
+	}
+	got := strings.Join(joined, "\n")
+
+	if !strings.Contains(got, "Input") || !strings.Contains(got, "94W max") {
+		t.Fatalf("expected input line with adapter max watts, got:\n%s", got)
+	}
+	if strings.Contains(got, "Draw") || strings.Contains(got, "Charge") {
+		t.Fatalf("expected no live draw or charge watt row, got:\n%s", got)
+	}
+	if !strings.Contains(got, "AC · 94W adapter") {
+		t.Fatalf("expected AC adapter status, got:\n%s", got)
+	}
+	if strings.Contains(got, "Ac") {
+		t.Fatalf("expected AC to stay uppercase, got:\n%s", got)
+	}
+	if strings.Contains(got, "⚡") {
+		t.Fatalf("expected no charging glyph, got:\n%s", got)
+	}
+}
+
 func TestColorizeTemp(t *testing.T) {
 	tests := []struct {
 		name string
@@ -665,12 +596,12 @@ func TestColorizeTemp(t *testing.T) {
 	}{
 		{"very low", 20.0},
 		{"low", 40.0},
-		{"normal threshold", 55.9},
-		{"at warn threshold", 56.0},
-		{"warn range", 65.0},
-		{"just below danger", 75.9},
-		{"at danger threshold", 76.0},
-		{"high", 85.0},
+		{"normal range", 55.0},
+		{"at warn threshold", 65.0},
+		{"warn range", 75.0},
+		{"just below danger", 84.9},
+		{"at danger threshold", 85.0},
+		{"high", 92.0},
 		{"very high", 95.0},
 	}
 
@@ -749,29 +680,52 @@ func TestMiniBar(t *testing.T) {
 
 func TestFormatDiskLine(t *testing.T) {
 	tests := []struct {
-		name  string
-		label string
-		disk  DiskStatus
+		name         string
+		label        string
+		disk         DiskStatus
+		wantUsed     string
+		wantFree     string
+		wantNoSubstr string
 	}{
 		{
-			name:  "empty label defaults to DISK",
-			label: "",
-			disk:  DiskStatus{UsedPercent: 50.5, Used: 100 << 30, Total: 200 << 30},
+			name:         "empty label defaults to DISK",
+			label:        "",
+			disk:         DiskStatus{UsedPercent: 50.5, Used: 100 << 30, Total: 200 << 30},
+			wantUsed:     "100G used",
+			wantFree:     "100G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "internal disk",
-			label: "INTR",
-			disk:  DiskStatus{UsedPercent: 67.2, Used: 336 << 30, Total: 500 << 30},
+			name:         "internal disk",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 67.2, Used: 336 << 30, Total: 500 << 30},
+			wantUsed:     "336G used",
+			wantFree:     "164G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "external disk",
-			label: "EXTR1",
-			disk:  DiskStatus{UsedPercent: 85.0, Used: 850 << 30, Total: 1000 << 30},
+			name:         "external disk",
+			label:        "EXTR1",
+			disk:         DiskStatus{UsedPercent: 85.0, Used: 850 << 30, Total: 1000 << 30},
+			wantUsed:     "850G used",
+			wantFree:     "150G free",
+			wantNoSubstr: "%",
 		},
 		{
-			name:  "low usage",
-			label: "INTR",
-			disk:  DiskStatus{UsedPercent: 15.3, Used: 15 << 30, Total: 100 << 30},
+			name:         "low usage",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 15.3, Used: 15 << 30, Total: 100 << 30},
+			wantUsed:     "15G used",
+			wantFree:     "85G free",
+			wantNoSubstr: "%",
+		},
+		{
+			name:         "used exceeds total clamps free to zero",
+			label:        "INTR",
+			disk:         DiskStatus{UsedPercent: 110.0, Used: 110 << 30, Total: 100 << 30},
+			wantUsed:     "110G used",
+			wantFree:     "0 free",
+			wantNoSubstr: "%",
 		},
 	}
 
@@ -786,8 +740,84 @@ func TestFormatDiskLine(t *testing.T) {
 			if expectedLabel == "" {
 				expectedLabel = "DISK"
 			}
-			if !contains(got, expectedLabel) {
+			if !strings.Contains(got, expectedLabel) {
 				t.Errorf("formatDiskLine(%q, ...) = %q, should contain label %q", tt.label, got, expectedLabel)
+			}
+			if !strings.Contains(got, tt.wantUsed) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should contain used value %q", tt.label, got, tt.wantUsed)
+			}
+			if !strings.Contains(got, tt.wantFree) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should contain free value %q", tt.label, got, tt.wantFree)
+			}
+			if tt.wantNoSubstr != "" && strings.Contains(got, tt.wantNoSubstr) {
+				t.Errorf("formatDiskLine(%q, ...) = %q, should not contain %q", tt.label, got, tt.wantNoSubstr)
+			}
+		})
+	}
+}
+
+func TestRenderDiskCardAddsMetaLineForSingleDisk(t *testing.T) {
+	card := renderDiskCard([]DiskStatus{{
+		UsedPercent: 28.4,
+		Used:        263 << 30,
+		Total:       926 << 30,
+		Fstype:      "apfs",
+	}}, DiskIOStatus{ReadRate: 0, WriteRate: 0.1}, 0, false)
+
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() single disk expected 4 lines, got %d", len(card.lines))
+	}
+
+	meta := stripANSI(card.lines[1])
+	if meta != "Total  926G · APFS" {
+		t.Fatalf("renderDiskCard() single disk meta line = %q, want %q", meta, "Total  926G · APFS")
+	}
+}
+
+func TestRenderDiskCardDoesNotAddMetaLineForMultipleDisks(t *testing.T) {
+	card := renderDiskCard([]DiskStatus{
+		{UsedPercent: 28.4, Used: 263 << 30, Total: 926 << 30, Fstype: "apfs"},
+		{UsedPercent: 50.0, Used: 500 << 30, Total: 1000 << 30, Fstype: "apfs"},
+	}, DiskIOStatus{}, 0, false)
+
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() multiple disks expected 4 lines, got %d", len(card.lines))
+	}
+
+	for _, line := range card.lines {
+		if stripANSI(line) == "Total  926G · APFS" || stripANSI(line) == "Total  1000G · APFS" {
+			t.Fatalf("renderDiskCard() multiple disks should not add meta line, got %q", line)
+		}
+	}
+}
+
+func TestRenderDiskCardTrashLine(t *testing.T) {
+	disk := DiskStatus{UsedPercent: 50, Used: 500 << 30, Total: 1000 << 30, Fstype: "apfs"}
+	tests := []struct {
+		name      string
+		trashSize uint64
+		approx    bool
+		wantLine  string
+	}{
+		{"no trash", 0, false, ""},
+		{"1.5 GB exact", 1536 << 20, false, "Trash  2G"},
+		{"approx 12 GB", 12 << 30, true, "Trash  ~12G"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			card := renderDiskCard([]DiskStatus{disk}, DiskIOStatus{}, tt.trashSize, tt.approx)
+			found := ""
+			for _, line := range card.lines {
+				if s := stripANSI(line); len(s) > 5 && s[:5] == "Trash" {
+					found = s
+					break
+				}
+			}
+			if tt.wantLine == "" && found != "" {
+				t.Fatalf("expected no trash line, got %q", found)
+			}
+			if tt.wantLine != "" && found != tt.wantLine {
+				t.Fatalf("trash line = %q, want %q", found, tt.wantLine)
 			}
 		})
 	}
@@ -936,6 +966,99 @@ func TestRenderHeaderErrorReturnsMoleOnce(t *testing.T) {
 	}
 }
 
+func TestStatusDiagnosisLineUsesTopCPUProcess(t *testing.T) {
+	m := MetricsSnapshot{
+		CPU: CPUStatus{Usage: 95},
+		TopProcesses: []ProcessInfo{
+			{Name: "Safari", CPU: 12},
+			{Name: "Xcode", CPU: 82},
+		},
+	}
+
+	got := statusDiagnosisLine(m)
+	if got != "Xcode high CPU" {
+		t.Fatalf("statusDiagnosisLine() = %q, want top CPU process", got)
+	}
+}
+
+func TestStatusDiagnosisLineUsesMemoryContributorWhenCPUIsCalm(t *testing.T) {
+	m := MetricsSnapshot{
+		CPU: CPUStatus{Usage: 20},
+		Memory: MemoryStatus{
+			UsedPercent: 86,
+			Pressure:    "warn",
+		},
+		TopProcesses: []ProcessInfo{
+			{Name: "Chrome", Memory: 31},
+			{Name: "Finder", Memory: 2},
+		},
+	}
+
+	got := statusDiagnosisLine(m)
+	if got != "Chrome memory pressure" {
+		t.Fatalf("statusDiagnosisLine() = %q, want memory contributor", got)
+	}
+}
+
+func TestStatusDiagnosisLineFallsBackToAllClear(t *testing.T) {
+	m := MetricsSnapshot{
+		CPU:            CPUStatus{Usage: 10},
+		Memory:         MemoryStatus{UsedPercent: 20, Pressure: "normal"},
+		HealthScoreMsg: "Excellent",
+	}
+
+	got := statusDiagnosisLine(m)
+	if got != "All clear" {
+		t.Fatalf("statusDiagnosisLine() = %q, want All clear", got)
+	}
+}
+
+func TestRenderProcessCardAddsInlineHintWithoutExtraRows(t *testing.T) {
+	card := renderProcessCard([]ProcessInfo{
+		{Name: "Chrome", CPU: 12, Memory: 22, MemoryBytes: 2 * 1024 * 1024 * 1024},
+		{Name: "Xcode", CPU: 95, Memory: 8, MemoryBytes: 512 * 1024 * 1024},
+	})
+
+	if len(card.lines) != 2 {
+		t.Fatalf("renderProcessCard() lines = %d, want 2", len(card.lines))
+	}
+	plain := stripANSI(strings.Join(card.lines, "\n"))
+	if !strings.Contains(plain, "2.0G") {
+		t.Fatalf("renderProcessCard() missing resident memory hint, got %q", plain)
+	}
+	if !strings.Contains(plain, "hot") {
+		t.Fatalf("renderProcessCard() missing cpu hint, got %q", plain)
+	}
+}
+
+func TestRenderProcessCardFallsBackToMemoryPercent(t *testing.T) {
+	card := renderProcessCard([]ProcessInfo{
+		{Name: "Chrome", CPU: 12, Memory: 22},
+	})
+
+	plain := stripANSI(strings.Join(card.lines, "\n"))
+	if !strings.Contains(plain, "M22%") {
+		t.Fatalf("renderProcessCard() missing memory percent fallback, got %q", plain)
+	}
+}
+
+func TestRenderHeaderUsesFastMetricSpecFallbacks(t *testing.T) {
+	const ram = uint64(16 * 1024 * 1024 * 1024)
+	const diskSize = uint64(512 * 1024 * 1024 * 1024)
+	m := MetricsSnapshot{
+		HealthScore: 90,
+		Memory:      MemoryStatus{Total: ram},
+		Disks:       []DiskStatus{{Mount: "/", Total: diskSize}},
+	}
+
+	header, _ := renderHeader(m, "", 0, 120, true)
+	plain := stripANSI(header)
+	want := humanBytes(ram) + "/" + humanBytes(diskSize)
+	if !strings.Contains(plain, want) {
+		t.Fatalf("renderHeader() should use fast metric specs %q, got %q", want, plain)
+	}
+}
+
 func TestRenderHeaderWrapsOnNarrowWidth(t *testing.T) {
 	m := MetricsSnapshot{
 		HealthScore: 91,
@@ -1032,6 +1155,7 @@ func TestRenderMemoryCardHidesSwapSizeOnNarrowWidth(t *testing.T) {
 	card := renderMemoryCard(MemoryStatus{
 		Used:        8 << 30,
 		Total:       16 << 30,
+		Available:   8 << 30,
 		UsedPercent: 50.0,
 		SwapUsed:    482,
 		SwapTotal:   1000,
@@ -1051,6 +1175,7 @@ func TestRenderMemoryCardShowsSwapSizeOnWideWidth(t *testing.T) {
 	card := renderMemoryCard(MemoryStatus{
 		Used:        8 << 30,
 		Total:       16 << 30,
+		Available:   8 << 30,
 		UsedPercent: 50.0,
 		SwapUsed:    482,
 		SwapTotal:   1000,
@@ -1063,6 +1188,54 @@ func TestRenderMemoryCardShowsSwapSizeOnWideWidth(t *testing.T) {
 	swapLine := stripANSI(card.lines[2])
 	if !strings.Contains(swapLine, "/") {
 		t.Fatalf("renderMemoryCard() wide width should include swap size, got %q", swapLine)
+	}
+}
+
+func TestRenderMemoryCardUsesCollectedAvailableMemory(t *testing.T) {
+	card := renderMemoryCard(MemoryStatus{
+		Used:        12 << 30,
+		Total:       16 << 30,
+		Available:   9 << 30,
+		UsedPercent: 75.0,
+	}, 60)
+
+	plain := stripANSI(strings.Join(card.lines, "\n"))
+	if !strings.Contains(plain, "Free") || !strings.Contains(plain, "56.2%") {
+		t.Fatalf("renderMemoryCard() should derive free percent from Available, got %q", plain)
+	}
+	if !strings.Contains(plain, "Avail  9.0 GB") {
+		t.Fatalf("renderMemoryCard() should render collected Available memory, got %q", plain)
+	}
+}
+
+func TestModelViewPadsToTerminalHeight(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"narrow terminal", 60, 40},
+		{"wide terminal", 120, 40},
+		{"tall terminal", 120, 80},
+		{"short terminal", 120, 10},
+		{"zero height", 120, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{
+				width:   tt.width,
+				height:  tt.height,
+				ready:   true,
+				metrics: MetricsSnapshot{},
+			}
+
+			view := m.View()
+			got := lipgloss.Height(view)
+			if got < tt.height {
+				t.Errorf("View() height = %d, want >= %d (terminal height)", got, tt.height)
+			}
+		})
 	}
 }
 
@@ -1101,17 +1274,4 @@ func stripANSI(s string) string {
 		}
 	}
 	return result.String()
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsMiddle(s, substr)))
-}
-
-func containsMiddle(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
