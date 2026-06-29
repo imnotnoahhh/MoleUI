@@ -74,7 +74,7 @@ setup() {
     bash -c "
         set +e
         source '$PROJECT_ROOT/lib/core/timeout.sh'
-        run_with_timeout 1 sleep 10
+        run_with_timeout 1 sleep 3
         exit \$?
     "
     exit_code=$?
@@ -88,7 +88,7 @@ setup() {
     bash -c "
         set +e
         source '$PROJECT_ROOT/lib/core/timeout.sh'
-        run_with_timeout 2 sleep 30
+        run_with_timeout 2 sleep 5
     " >/dev/null 2>&1
     set -e
     end_time=$(date +%s)
@@ -185,4 +185,87 @@ setup() {
         echo \"\$MOLE_TIMEOUT_LOADED\"
     ")
     [[ "$result" == "1" ]]
+}
+
+@test "run_with_timeout: perl fallback preserves command exit code (#1003)" {
+    if ! command -v perl > /dev/null 2>&1; then
+        skip "perl not available"
+    fi
+    set +e
+    bash -c "
+        set +e
+        source '$PROJECT_ROOT/lib/core/timeout.sh'
+        MO_TIMEOUT_BIN=''
+        MO_TIMEOUT_PERL_BIN=\"\$(command -v perl)\"
+        run_with_timeout 5 sh -c 'exit 7'
+        exit \$?
+    "
+    exit_code=$?
+    set -e
+    [[ $exit_code -eq 7 ]]
+}
+
+@test "run_with_timeout: perl fallback kills long-running command (#1003)" {
+    if ! command -v perl > /dev/null 2>&1; then
+        skip "perl not available"
+    fi
+    start_time=$(date +%s)
+    set +e
+    bash -c "
+        set +e
+        source '$PROJECT_ROOT/lib/core/timeout.sh'
+        MO_TIMEOUT_BIN=''
+        MO_TIMEOUT_PERL_BIN=\"\$(command -v perl)\"
+        run_with_timeout 2 sleep 8
+    " > /dev/null 2>&1
+    set -e
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+    [[ $duration -lt 7 ]]
+}
+
+# setsid() in the perl fallback strips the controlling terminal, which breaks
+# nested sudo inside brew cask uninstall scripts (issue #1003). The fallback must
+# use setpgid to keep the tty while still enabling process-group kill. This guards
+# against a regression that is otherwise only observable on a real terminal.
+@test "timeout.sh: perl fallback must not detach the controlling tty (#1003)" {
+    # Match call statements at line start, not the comments that explain why
+    # setsid is avoided (those mention "setsid()" mid-line and would false-positive).
+    run grep -nE '^[[:space:]]*setsid[[:space:]]*\(' "$PROJECT_ROOT/lib/core/timeout.sh"
+    [ "$status" -ne 0 ]
+    run grep -nE '^[[:space:]]*setpgid[[:space:]]*\(' "$PROJECT_ROOT/lib/core/timeout.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "run_with_timeout: shell fallback preserves caller INT trap" {
+    result=$(bash -c "
+        set -euo pipefail
+        source '$PROJECT_ROOT/lib/core/timeout.sh'
+        MO_TIMEOUT_BIN=''
+        MO_TIMEOUT_PERL_BIN=''
+        trap 'echo caller-trap' INT
+        run_with_timeout 2 true
+        trap -p INT
+    ")
+    [[ "$result" == *"caller-trap"* ]]
+}
+
+@test "run_with_timeout: shell fallback cleans up watchdog sleep" {
+    bash -c "
+        set -euo pipefail
+        source '$PROJECT_ROOT/lib/core/timeout.sh'
+        MO_TIMEOUT_BIN=''
+        MO_TIMEOUT_PERL_BIN=''
+        run_with_timeout 287 true
+        sleep 0.1
+        leaked=''
+        for pid in \$(pgrep -x sleep 2>/dev/null || true); do
+            command_line=\$(ps -p \"\$pid\" -o command= 2>/dev/null || true)
+            if [[ \"\$command_line\" == 'sleep 287' ]]; then
+                leaked=\"\$pid\"
+                kill \"\$pid\" 2>/dev/null || true
+            fi
+        done
+        [[ -z \"\$leaked\" ]]
+    "
 }

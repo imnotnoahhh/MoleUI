@@ -1,15 +1,46 @@
 #!/bin/bash
-# Clean Homebrew caches and remove orphaned dependencies
+# Clean Homebrew caches and report orphaned dependencies
 # Env: DRY_RUN
-# Skips if run within 7 days, runs cleanup/autoremove in parallel with 120s timeout
+# Skips if run within 7 days, runs cleanup with package-manager timeouts
+brew_autoremove_preview_has_items() {
+    local preview_file="$1"
+    [[ -s "$preview_file" ]] || return 1
+    grep -Eq '^(==> )?Would autoremove [0-9]+ unneeded formula' "$preview_file"
+}
+
+show_brew_autoremove_preview() {
+    local preview_file="$1"
+    echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew autoremove would remove:"
+    sed 's/^/    /' "$preview_file"
+}
+
+run_brew_autoremove_preview() {
+    local timeout_seconds="$1"
+    local preview_file="$2"
+
+    HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_COLOR=1 NONINTERACTIVE=1 \
+        run_with_timeout "$timeout_seconds" brew autoremove --dry-run > "$preview_file" 2>&1
+}
+
 clean_homebrew() {
     command -v brew > /dev/null 2>&1 || return 0
+    local cleanup_timeout="${MOLE_TIMEOUT_PKG_CLEANUP_SEC:-20}"
+    local autoremove_preview_timeout="${MOLE_TIMEOUT_PKG_LIST_SEC:-10}"
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
         # Check if Homebrew cache is whitelisted
         if is_path_whitelisted "$HOME/Library/Caches/Homebrew"; then
             echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew · skipped whitelist"
         else
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup and autoremove"
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup"
+            local dry_run_autoremove_file
+            dry_run_autoremove_file=$(create_temp_file)
+            local dry_run_autoremove_exit=0
+            run_brew_autoremove_preview "$autoremove_preview_timeout" "$dry_run_autoremove_file" || dry_run_autoremove_exit=$?
+            if [[ $dry_run_autoremove_exit -eq 0 ]] && brew_autoremove_preview_has_items "$dry_run_autoremove_file"; then
+                show_brew_autoremove_preview "$dry_run_autoremove_file"
+            elif [[ $dry_run_autoremove_exit -eq 124 ]]; then
+                echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview timed out · run ${GRAY}brew autoremove --dry-run${NC} manually"
+            fi
         fi
         return 0
     fi
@@ -35,53 +66,31 @@ clean_homebrew() {
         fi
     fi
     [[ "$should_skip" == "true" ]] && return 0
-    # Skip cleanup if cache is small; still run autoremove.
+    # Skip cleanup if cache is small; autoremove is previewed separately.
     local skip_cleanup=false
     local brew_cache_size=0
     if [[ -d ~/Library/Caches/Homebrew ]]; then
-        brew_cache_size=$(run_with_timeout 3 du -skP ~/Library/Caches/Homebrew 2> /dev/null | awk '{print $1}')
+        brew_cache_size=$(run_with_timeout "$MOLE_TIMEOUT_SHORT_QUERY_SEC" du -skP ~/Library/Caches/Homebrew 2> /dev/null | awk '{print $1}')
         local du_exit=$?
         if [[ $du_exit -eq 0 && -n "$brew_cache_size" && "$brew_cache_size" -lt 51200 ]]; then
             skip_cleanup=true
         fi
     fi
-    # Spinner reflects whether cleanup is skipped.
-    if [[ -t 1 ]]; then
-        if [[ "$skip_cleanup" == "true" ]]; then
-            MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew autoremove (cleanup skipped)..."
-        else
-            MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew cleanup and autoremove..."
-        fi
-    fi
-    # Run cleanup/autoremove in parallel with timeout guard per command.
-    local timeout_seconds=120
-    local brew_tmp_file autoremove_tmp_file
-    local brew_pid autoremove_pid
+    local brew_tmp_file
     local brew_exit=0
-    local autoremove_exit=0
     if [[ "$skip_cleanup" == "false" ]]; then
         brew_tmp_file=$(create_temp_file)
-        run_with_timeout "$timeout_seconds" brew cleanup > "$brew_tmp_file" 2>&1 &
-        brew_pid=$!
+        if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew cleanup..."; fi
+        HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_AUTOREMOVE=1 NONINTERACTIVE=1 \
+            run_with_timeout "$cleanup_timeout" brew cleanup --prune=30 > "$brew_tmp_file" 2>&1 || brew_exit=$?
+        if [[ -t 1 ]]; then stop_inline_spinner; fi
     fi
-    autoremove_tmp_file=$(create_temp_file)
-    run_with_timeout "$timeout_seconds" brew autoremove > "$autoremove_tmp_file" 2>&1 &
-    autoremove_pid=$!
-
-    if [[ -n "$brew_pid" ]]; then
-        wait "$brew_pid" 2> /dev/null || brew_exit=$?
-    fi
-    wait "$autoremove_pid" 2> /dev/null || autoremove_exit=$?
 
     local brew_success=false
     if [[ "$skip_cleanup" == "false" && $brew_exit -eq 0 ]]; then
         brew_success=true
     fi
-    local autoremove_success=false
-    if [[ $autoremove_exit -eq 0 ]]; then
-        autoremove_success=true
-    fi
-    if [[ -t 1 ]]; then stop_inline_spinner; fi
+
     # Process cleanup output and extract metrics
     # Summarize cleanup results.
     if [[ "$skip_cleanup" == "true" ]]; then
@@ -104,23 +113,22 @@ clean_homebrew() {
     elif [[ $brew_exit -eq 124 ]]; then
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew cleanup timed out · run ${GRAY}brew cleanup${NC} manually"
     fi
-    # Process autoremove output - only show if packages were removed
-    # Only surface autoremove output when packages were removed.
-    if [[ "$autoremove_success" == "true" && -f "$autoremove_tmp_file" ]]; then
-        local autoremove_output
-        autoremove_output=$(cat "$autoremove_tmp_file" 2> /dev/null || echo "")
-        local removed_packages
-        removed_packages=$(printf '%s\n' "$autoremove_output" | grep -c "^Uninstalling" 2> /dev/null || true)
-        if [[ $removed_packages -gt 0 ]]; then
-            echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Removed orphaned dependencies, ${removed_packages} packages"
-        fi
-    elif [[ $autoremove_exit -eq 124 ]]; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove timed out · run ${GRAY}brew autoremove${NC} manually"
+    local autoremove_preview_file
+    autoremove_preview_file=$(create_temp_file)
+    local autoremove_preview_exit=0
+    run_brew_autoremove_preview "$autoremove_preview_timeout" "$autoremove_preview_file" || autoremove_preview_exit=$?
+    if [[ $autoremove_preview_exit -eq 124 ]]; then
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview timed out · run ${GRAY}brew autoremove --dry-run${NC} manually"
+    elif [[ $autoremove_preview_exit -ne 0 ]]; then
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview failed · run ${GRAY}brew autoremove --dry-run${NC} manually"
+    elif brew_autoremove_preview_has_items "$autoremove_preview_file"; then
+        show_brew_autoremove_preview "$autoremove_preview_file"
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew autoremove skipped · run ${GRAY}brew autoremove${NC} manually"
     fi
     # Update cache timestamp on successful completion or when cleanup was intelligently skipped
     # This prevents repeated cache size checks within the 7-day window
     # Update cache timestamp when any work succeeded or was intentionally skipped.
-    if [[ "$skip_cleanup" == "true" ]] || [[ "$brew_success" == "true" ]] || [[ "$autoremove_success" == "true" ]]; then
+    if [[ "$skip_cleanup" == "true" ]] || [[ "$brew_success" == "true" ]]; then
         ensure_user_file "$brew_cache_file"
         get_epoch_seconds > "$brew_cache_file"
     fi

@@ -14,14 +14,22 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const refreshInterval = time.Second
+const (
+	refreshInterval      = time.Second
+	processWatchInterval = refreshInterval
+	slowRefreshInterval  = 30 * time.Second
+)
 
 var (
-	Version   = "dev"
-	BuildTime = ""
-
 	// Command-line flags
-	jsonOutput = flag.Bool("json", false, "output metrics as JSON instead of TUI")
+	jsonOutput       = flag.Bool("json", false, "output metrics as JSON instead of TUI")
+	procCPUThreshold = flag.Float64("proc-cpu-threshold", 100, "alert when a process stays above this CPU percent")
+	procCPUWindow    = flag.Duration("proc-cpu-window", 5*time.Minute, "continuous duration a process must exceed the CPU threshold")
+	procCPUAlerts    = flag.Bool("proc-cpu-alerts", true, "enable persistent high-CPU process alerts")
+
+	// Watch mode: stream NDJSON (one snapshot per line) from a single warm collector.
+	watchMode     = flag.Bool("watch", false, "stream metrics continuously as newline-delimited JSON instead of the one-shot TUI/JSON")
+	watchInterval = flag.String("interval", "", "with --watch, collection interval (e.g. 1s, 2s); defaults to 1s")
 )
 
 func shouldUseJSONOutput(forceJSON bool, stdout *os.File) bool {
@@ -41,22 +49,48 @@ func shouldUseJSONOutput(forceJSON bool, stdout *os.File) bool {
 type tickMsg struct{}
 type animTickMsg struct{}
 
+type collectionMode int
+
+const (
+	collectionFast collectionMode = iota
+	collectionProcess
+	collectionFull
+)
+
 type metricsMsg struct {
 	data MetricsSnapshot
 	err  error
+	mode collectionMode
 }
 
 type model struct {
-	collector   *Collector
-	width       int
-	height      int
-	metrics     MetricsSnapshot
-	errMessage  string
-	ready       bool
-	lastUpdated time.Time
-	collecting  bool
-	animFrame   int
-	catHidden   bool // true = hidden, false = visible
+	collector     *Collector
+	width         int
+	height        int
+	metrics       MetricsSnapshot
+	errMessage    string
+	ready         bool
+	lastUpdated   time.Time
+	lastFullAt    time.Time
+	lastProcessAt time.Time
+	collecting    bool
+	animFrame     int
+	catHidden     bool // true = hidden, false = visible
+}
+
+// padViewToHeight ensures the rendered frame always overwrites the full
+// terminal region by padding with empty lines up to the current height.
+func padViewToHeight(view string, height int) string {
+	if height <= 0 {
+		return view
+	}
+
+	contentHeight := lipgloss.Height(view)
+	if contentHeight >= height {
+		return view
+	}
+
+	return view + strings.Repeat("\n", height-contentHeight)
 }
 
 // getConfigPath returns the path to the status preferences file.
@@ -101,9 +135,27 @@ func saveCatHidden(hidden bool) {
 
 func newModel() model {
 	return model{
-		collector: NewCollector(),
+		collector: NewCollector(processWatchOptionsFromFlags()),
 		catHidden: loadCatHidden(),
 	}
+}
+
+func processWatchOptionsFromFlags() ProcessWatchOptions {
+	return ProcessWatchOptions{
+		Enabled:      *procCPUAlerts,
+		CPUThreshold: *procCPUThreshold,
+		Window:       *procCPUWindow,
+	}
+}
+
+func validateFlags() error {
+	if *procCPUThreshold < 0 {
+		return fmt.Errorf("--proc-cpu-threshold must be >= 0")
+	}
+	if *procCPUWindow <= 0 {
+		return fmt.Errorf("--proc-cpu-window must be > 0")
+	}
+	return nil
 }
 
 func (m model) Init() tea.Cmd {
@@ -131,8 +183,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.collecting = true
-		return m, m.collectCmd()
+		return m, m.collectCmd(m.nextCollectionMode(time.Now()))
 	case metricsMsg:
+		wasReady := m.ready
 		if msg.err != nil {
 			m.errMessage = msg.err.Error()
 		} else {
@@ -140,12 +193,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.metrics = msg.data
 		m.lastUpdated = msg.data.CollectedAt
+		if msg.err == nil {
+			recordCollectionFreshness(msg.mode, msg.data.CollectedAt, &m.lastFullAt, &m.lastProcessAt)
+		}
 		m.collecting = false
 		// Mark ready after first successful data collection.
 		if !m.ready {
 			m.ready = true
 		}
-		return m, tickAfter(refreshInterval)
+		delay := refreshInterval
+		if !wasReady {
+			delay = 0
+		}
+		return m, tickAfter(delay)
 	case animTickMsg:
 		m.animFrame++
 		return m, animTickWithSpeed(m.metrics.CPU.Usage)
@@ -164,7 +224,9 @@ func (m model) View() string {
 	}
 
 	header, mole := renderHeader(m.metrics, m.errMessage, m.animFrame, termWidth, m.catHidden)
+	alertBar := renderProcessAlertBar(m.metrics.ProcessAlerts, termWidth)
 
+	var cardContent string
 	if termWidth <= 80 {
 		cardWidth := termWidth
 		if cardWidth > 2 {
@@ -179,33 +241,67 @@ func (m model) View() string {
 			}
 			rendered = append(rendered, renderCard(c, cardWidth, 0))
 		}
-		// Combine header, mole, and cards with consistent spacing
-		var content []string
-		content = append(content, header)
-		if mole != "" {
-			content = append(content, mole)
-		}
-		content = append(content, lipgloss.JoinVertical(lipgloss.Left, rendered...))
-		return lipgloss.JoinVertical(lipgloss.Left, content...)
+		cardContent = lipgloss.JoinVertical(lipgloss.Left, rendered...)
+	} else {
+		cardWidth := max(24, termWidth/2-4)
+		cards := buildCards(m.metrics, cardWidth)
+		cardContent = renderTwoColumns(cards, termWidth)
 	}
 
-	cardWidth := max(24, termWidth/2-4)
-	cards := buildCards(m.metrics, cardWidth)
-	twoCol := renderTwoColumns(cards, termWidth)
 	// Combine header, mole, and cards with consistent spacing
-	var content []string
-	content = append(content, header)
-	if mole != "" {
-		content = append(content, mole)
+	parts := []string{header}
+	if alertBar != "" {
+		parts = append(parts, alertBar)
 	}
-	content = append(content, twoCol)
-	return lipgloss.JoinVertical(lipgloss.Left, content...)
+	if mole != "" {
+		parts = append(parts, mole)
+	}
+	parts = append(parts, cardContent)
+	output := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return padViewToHeight(output, m.height)
 }
 
-func (m model) collectCmd() tea.Cmd {
+func (m model) nextCollectionMode(now time.Time) collectionMode {
+	return nextCollectionMode(m.ready, m.lastFullAt, m.lastProcessAt, now)
+}
+
+func nextCollectionMode(ready bool, lastFullAt, lastProcessAt, now time.Time) collectionMode {
+	if !ready {
+		return collectionFast
+	}
+	if lastFullAt.IsZero() || now.Sub(lastFullAt) >= slowRefreshInterval {
+		return collectionFull
+	}
+	if lastProcessAt.IsZero() || now.Sub(lastProcessAt) >= processWatchInterval {
+		return collectionProcess
+	}
+	return collectionFast
+}
+
+func recordCollectionFreshness(mode collectionMode, collectedAt time.Time, lastFullAt, lastProcessAt *time.Time) {
+	if mode == collectionFull {
+		*lastFullAt = collectedAt
+	}
+	if mode == collectionProcess || mode == collectionFull {
+		*lastProcessAt = collectedAt
+	}
+}
+
+func (m model) collectCmd(mode collectionMode) tea.Cmd {
 	return func() tea.Msg {
-		data, err := m.collector.Collect()
-		return metricsMsg{data: data, err: err}
+		var (
+			data MetricsSnapshot
+			err  error
+		)
+		switch mode {
+		case collectionFull:
+			data, err = m.collector.Collect()
+		case collectionProcess:
+			data, err = m.collector.CollectProcesses()
+		default:
+			data, err = m.collector.CollectFast()
+		}
+		return metricsMsg{data: data, err: err, mode: mode}
 	}
 }
 
@@ -225,15 +321,8 @@ func animTickWithSpeed(cpuUsage float64) tea.Cmd {
 
 // runJSONMode collects metrics once and outputs as JSON.
 func runJSONMode() {
-	collector := NewCollector()
+	collector := NewCollector(processWatchOptionsFromFlags())
 
-	// First collection initializes network state (returns nil for network)
-	_, _ = collector.Collect()
-
-	// Wait 1 second for network rate calculation
-	time.Sleep(1 * time.Second)
-
-	// Second collection has actual network data
 	data, err := collector.Collect()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error collecting metrics: %v\n", err)
@@ -257,12 +346,51 @@ func runTUIMode() {
 	}
 }
 
+func parseWatchInterval(raw string) (time.Duration, error) {
+	if raw == "" {
+		return refreshInterval, nil
+	}
+
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --interval %q (want e.g. 1s, 2s): %w", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid --interval %q (must be > 0)", raw)
+	}
+	return d, nil
+}
+
 func main() {
 	flag.Parse()
+	if err := validateFlags(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(2)
+	}
+
+	if *watchMode {
+		interval, err := parseWatchInterval(*watchInterval)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(2)
+		}
+		runWatchMode(interval)
+		return
+	}
 
 	if shouldUseJSONOutput(*jsonOutput, os.Stdout) {
 		runJSONMode()
 	} else {
 		runTUIMode()
 	}
+}
+
+func activeAlerts(alerts []ProcessAlert) []ProcessAlert {
+	var active []ProcessAlert
+	for _, alert := range alerts {
+		if alert.Status == "active" {
+			active = append(active, alert)
+		}
+	}
+	return active
 }
