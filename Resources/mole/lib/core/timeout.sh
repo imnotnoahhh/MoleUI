@@ -34,9 +34,9 @@ if [[ -z "${MO_TIMEOUT_INITIALIZED:-}" ]]; then
     MO_TIMEOUT_PERL_BIN=""
     for candidate in gtimeout timeout; do
         if command -v "$candidate" > /dev/null 2>&1; then
-            MO_TIMEOUT_BIN="$candidate"
+            MO_TIMEOUT_BIN="$(command -v "$candidate")"
             if [[ "${MO_DEBUG:-0}" == "1" ]]; then
-                echo "[TIMEOUT] Using command: $candidate" >&2
+                echo "[TIMEOUT] Using command: $MO_TIMEOUT_BIN" >&2
             fi
             break
         fi
@@ -55,12 +55,39 @@ if [[ -z "${MO_TIMEOUT_INITIALIZED:-}" ]]; then
         echo "[TIMEOUT] Install coreutils for better reliability: brew install coreutils" >&2
     fi
 
+    # Export so child processes inherit detected values and skip re-detection.
+    # Without this, children that inherit MO_TIMEOUT_INITIALIZED=1 skip the init
+    # block but have empty bin vars, forcing the slow shell fallback.
+    export MO_TIMEOUT_BIN
+    export MO_TIMEOUT_PERL_BIN
     export MO_TIMEOUT_INITIALIZED=1
 fi
 
 # ============================================================================
 # Timeout Execution
 # ============================================================================
+
+_mole_cleanup_timeout_killer() {
+    local killer_pid="${1:-}"
+    [[ "$killer_pid" =~ ^[0-9]+$ ]] || return 0
+
+    local child_pids=""
+    if command -v pgrep > /dev/null 2>&1; then
+        child_pids=$(pgrep -P "$killer_pid" 2> /dev/null || true)
+    fi
+
+    kill "$killer_pid" 2> /dev/null || true
+
+    if [[ -n "$child_pids" ]]; then
+        local child_pid
+        while IFS= read -r child_pid; do
+            [[ "$child_pid" =~ ^[0-9]+$ ]] || continue
+            kill "$child_pid" 2> /dev/null || true
+        done <<< "$child_pids"
+    fi
+
+    wait "$killer_pid" 2> /dev/null || true
+}
 
 # Run command with timeout
 # Uses gtimeout/timeout if available, falls back to shell-based implementation
@@ -93,18 +120,29 @@ run_with_timeout() {
     local duration="${1:-0}"
     shift || true
 
-    # No timeout if duration is invalid or zero
-    if [[ ! "$duration" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ $(echo "$duration <= 0" | bc -l 2> /dev/null) -eq 1 ]]; then
+    # No timeout if duration is invalid or zero. The regex already forbids a
+    # leading sign, so "<= 0" reduces to "is zero"; match that in pure bash
+    # rather than shelling out to bc, which is not guaranteed on macOS.
+    if [[ ! "$duration" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$duration" =~ ^0+(\.0+)?$ ]]; then
         "$@"
         return $?
     fi
 
     # Use timeout command if available (preferred path)
     if [[ -n "${MO_TIMEOUT_BIN:-}" ]]; then
+        local timeout_bin="$MO_TIMEOUT_BIN"
+        if [[ "$timeout_bin" != */* ]]; then
+            timeout_bin=$(command -v "$timeout_bin" 2> /dev/null || true)
+        fi
+        if [[ -z "$timeout_bin" || ! -x "$timeout_bin" ]]; then
+            timeout_bin=""
+        fi
+    fi
+    if [[ -n "${timeout_bin:-}" ]]; then
         if [[ "${MO_DEBUG:-0}" == "1" ]]; then
             echo "[TIMEOUT] Running with ${duration}s timeout: $*" >&2
         fi
-        "$MO_TIMEOUT_BIN" "$duration" "$@"
+        "$timeout_bin" "$duration" "$@"
         return $?
     fi
 
@@ -117,7 +155,7 @@ run_with_timeout() {
         "$MO_TIMEOUT_PERL_BIN" -e '
             use strict;
             use warnings;
-            use POSIX qw(:sys_wait_h setsid);
+            use POSIX qw(:sys_wait_h setpgid);
             use Time::HiRes qw(time sleep);
 
             my $duration = 0 + shift @ARGV;
@@ -127,7 +165,13 @@ run_with_timeout() {
             defined $pid or exit 125;
 
             if ($pid == 0) {
-                setsid() or exit 125;
+                # New process group, NOT a new session: keep the controlling
+                # terminal so nested sudo inside the wrapped command can reuse
+                # the cached credential. setsid() would detach the tty and break
+                # brew cask uninstall scripts that call sudo (issue #1003).
+                # setpgid returns 0 on success (falsy in Perl), so it must not be
+                # guarded with `or exit`; a rare failure only degrades group-kill.
+                setpgid(0, 0);
                 exec @ARGV;
                 exit 127;
             }
@@ -181,7 +225,10 @@ run_with_timeout() {
     "$@" &
     local cmd_pid=$!
 
-    # Start timeout killer in background
+    # Start timeout killer in background.
+    # Redirect all FDs to /dev/null so orphaned child processes (e.g. sleep $duration)
+    # do not inherit open file descriptors from the caller and block output pipes
+    # (notably bats output capture pipes that wait for all writers to close).
     (
         # Wait for timeout duration
         sleep "$duration"
@@ -200,8 +247,15 @@ run_with_timeout() {
                 kill -KILL -"$cmd_pid" 2> /dev/null || kill -KILL "$cmd_pid" 2> /dev/null || true
             fi
         fi
-    ) &
+    ) < /dev/null > /dev/null 2>&1 &
     local killer_pid=$!
+
+    local interrupted=0
+    local previous_int_trap
+    previous_int_trap=$(trap -p INT || true)
+
+    # Forward SIGINT to the command while preserving the caller's trap.
+    trap 'interrupted=1; kill -INT "$cmd_pid" 2>/dev/null || true; _mole_cleanup_timeout_killer "$killer_pid"' INT
 
     # Wait for command to complete
     local exit_code=0
@@ -210,10 +264,17 @@ run_with_timeout() {
     exit_code=$?
     set -e
 
-    # Clean up killer process
-    if kill -0 "$killer_pid" 2> /dev/null; then
-        kill "$killer_pid" 2> /dev/null || true
-        wait "$killer_pid" 2> /dev/null || true
+    if [[ -n "$previous_int_trap" ]]; then
+        # eval: restore previous trap captured by $(trap -p INT)
+        eval "$previous_int_trap"
+    else
+        trap - INT
+    fi
+
+    _mole_cleanup_timeout_killer "$killer_pid"
+
+    if [[ $interrupted -eq 1 ]]; then
+        return 130
     fi
 
     # Check if command was killed by timeout (exit codes 143=SIGTERM, 137=SIGKILL)
