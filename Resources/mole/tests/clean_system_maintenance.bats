@@ -10,11 +10,17 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-system-clean.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
@@ -29,6 +35,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/system.sh"
 
 sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
     if [[ "$1" == "test" ]]; then
         return 0
     fi
@@ -56,7 +63,6 @@ safe_sudo_remove() {
 log_success() { :; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 get_file_mtime() { echo 0; }
 get_path_size_kb() { echo 0; }
 find() { return 0; }
@@ -109,6 +115,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/system.sh"
 
 sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
     if [[ "$1" == "test" ]]; then
         return 0
     fi
@@ -137,7 +144,6 @@ safe_sudo_remove() {
 log_success() { :; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 get_file_mtime() { echo 0; }
 get_path_size_kb() { echo 0; }
 find() { return 0; }
@@ -162,6 +168,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/system.sh"
 
 sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
     if [[ "$1" == "test" ]]; then
         return 0
     fi
@@ -185,7 +192,6 @@ safe_sudo_remove() {
 log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 get_file_mtime() { echo 0; }
 get_path_size_kb() { echo 0; }
 find() { return 0; }
@@ -218,6 +224,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/system.sh"
 
 sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
     if [[ "$1" == "test" ]]; then
         return 0
     fi
@@ -246,7 +253,6 @@ safe_sudo_remove() {
 log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 get_file_mtime() { echo 0; }
 get_path_size_kb() { echo 0; }
 find() { return 0; }
@@ -291,7 +297,9 @@ clean_time_machine_failed_backups
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"No incomplete backups found"* ]]
+    # The no-destinations path is silent now (debug-only); an idle Time
+    # Machine section collapses instead of printing a reassurance row.
+    [ -z "$output" ]
 }
 
 @test "clean_local_snapshots reports snapshot count" {
@@ -317,7 +325,7 @@ clean_local_snapshots
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Time Machine local snapshots:"* ]]
+    [[ "$output" == *"Time Machine local snapshots ·"* ]]
     [[ "$output" == *"tmutil listlocalsnapshots /"* ]]
 }
 
@@ -406,293 +414,109 @@ EOF
     [[ "$output" == *"Homebrew cleanup"* ]]
 }
 
-@test "check_appstore_updates is skipped for performance" {
+@test "clean_homebrew prevents cleanup from implicitly autoremoving formulae" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
+source "$PROJECT_ROOT/lib/clean/brew.sh"
 
-check_appstore_updates
-echo "COUNT=$APPSTORE_UPDATE_COUNT"
-EOF
+mkdir -p "$HOME/.cache/mole" "$HOME/Library/Caches/Homebrew"
+rm -f "$HOME/.cache/mole/brew_last_cleanup"
+calls="$HOME/brew_calls.log"
+: > "$calls"
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"COUNT=0"* ]]
-}
-
-@test "check_homebrew_updates reports counts and exports update variables" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
+start_inline_spinner(){ :; }
+stop_inline_spinner(){ :; }
+note_activity(){ :; }
 run_with_timeout() {
-    local timeout="${1:-}"
+    local duration="$1"
     shift
+    printf 'CALL:%s env_no_autoremove=%s\n' "$*" "${HOMEBREW_NO_AUTOREMOVE:-}" >> "$calls"
+    if [[ "$1" == "du" ]]; then
+        echo "51201 $3"
+        return 0
+    fi
     "$@"
 }
 
 brew() {
-    if [[ "$1" == "outdated" && "$2" == "--formula" && "$3" == "--quiet" ]]; then
-        printf "wget\njq\n"
-        return 0
-    fi
-    if [[ "$1" == "outdated" && "$2" == "--cask" && "$3" == "--quiet" ]]; then
-        printf "iterm2\n"
-        return 0
-    fi
-    return 0
+    case "$*" in
+        "cleanup --prune=30")
+            echo "Removing: package"
+            return 0
+            ;;
+        "autoremove --dry-run")
+            echo "==> Would autoremove 1 unneeded formula:"
+            echo "python@3.14"
+            return 0
+            ;;
+        "autoremove")
+            echo "REAL_AUTOREMOVE"
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
 }
 
-check_homebrew_updates
-echo "COUNTS=${BREW_OUTDATED_COUNT}:${BREW_FORMULA_OUTDATED_COUNT}:${BREW_CASK_OUTDATED_COUNT}"
+clean_homebrew
+cat "$calls"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Homebrew"* ]]
-    [[ "$output" == *"2 formula, 1 cask available"* ]]
-    [[ "$output" == *"COUNTS=3:2:1"* ]]
+    [[ "$output" == *"CALL:brew cleanup --prune=30 env_no_autoremove=1"* ]]
+    [[ "$output" == *"Homebrew autoremove would remove"* ]]
+    [[ "$output" == *"python@3.14"* ]]
+    [[ "$output" == *"Homebrew autoremove skipped"* ]]
+    [[ "$output" == *"CALL:brew autoremove --dry-run"* ]]
+    [[ "$output" != *"REAL_AUTOREMOVE"* ]]
 }
 
-@test "check_homebrew_updates shows timeout warning when brew query times out" {
+@test "clean_homebrew dry-run shows brew autoremove preview without removing formulae" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
+source "$PROJECT_ROOT/lib/clean/brew.sh"
 
-run_with_timeout() { return 124; }
-brew() { return 0; }
-rm -f "$HOME/.cache/mole/brew_updates"
+calls="$HOME/brew_dry_run_calls.log"
+: > "$calls"
 
-check_homebrew_updates
-echo "COUNTS=${BREW_OUTDATED_COUNT}:${BREW_FORMULA_OUTDATED_COUNT}:${BREW_CASK_OUTDATED_COUNT}"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Homebrew"* ]]
-    [[ "$output" == *"Check timed out"* ]]
-    [[ "$output" == *"COUNTS=0:0:0"* ]]
-}
-
-@test "check_homebrew_updates shows failure warning when brew query fails" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-run_with_timeout() { return 1; }
-brew() { return 0; }
-rm -f "$HOME/.cache/mole/brew_updates"
-
-check_homebrew_updates
-echo "COUNTS=${BREW_OUTDATED_COUNT}:${BREW_FORMULA_OUTDATED_COUNT}:${BREW_CASK_OUTDATED_COUNT}"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Homebrew"* ]]
-    [[ "$output" == *"Check failed"* ]]
-    [[ "$output" == *"COUNTS=0:0:0"* ]]
-}
-
-@test "check_macos_update avoids slow softwareupdate scans" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
+DRY_RUN=true
 run_with_timeout() {
-    local timeout="${1:-}"
+    local duration="$1"
     shift
-    if [[ "$timeout" != "10" ]]; then
-        echo "BAD_TIMEOUT:$timeout"
-        return 124
-    fi
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        cat <<'OUT'
-Software Update Tool
-
-Software Update found the following new or updated software:
-* Label: macOS 99
-OUT
-        return 0
-    fi
-    return 124
+    printf 'CALL:%s\n' "$*" >> "$calls"
+    "$@"
+}
+brew() {
+    case "$*" in
+        "autoremove --dry-run")
+            echo "==> Would autoremove 1 unneeded formula:"
+            echo "python@3.14"
+            return 0
+            ;;
+        "autoremove")
+            echo "REAL_AUTOREMOVE"
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
 }
 
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
+clean_homebrew
+cat "$calls"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
-    [[ "$output" != *"BAD_TIMEOUT:"* ]]
-}
-
-@test "check_macos_update clears update flag when softwareupdate reports no updates" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
-run_with_timeout() {
-    local timeout="${1:-}"
-    shift
-    if [[ "$timeout" != "10" ]]; then
-        echo "BAD_TIMEOUT:$timeout"
-        return 124
-    fi
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        cat <<'OUT'
-Software Update Tool
-
-Finding available software
-No new software available.
-OUT
-        return 0
-    fi
-    return 124
-}
-
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"System up to date"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=false"* ]]
-    [[ "$output" != *"BAD_TIMEOUT:"* ]]
-}
-
-@test "check_macos_update keeps update flag when softwareupdate times out" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
-run_with_timeout() {
-    local timeout="${1:-}"
-    shift
-    if [[ "$timeout" != "10" ]]; then
-        echo "BAD_TIMEOUT:$timeout"
-        return 124
-    fi
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        return 124
-    fi
-    return 124
-}
-
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
-    [[ "$output" != *"BAD_TIMEOUT:"* ]]
-}
-
-@test "check_macos_update keeps update flag when softwareupdate returns empty output" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
-run_with_timeout() {
-    local timeout="${1:-}"
-    shift
-    if [[ "$timeout" != "10" ]]; then
-        echo "BAD_TIMEOUT:$timeout"
-        return 124
-    fi
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        return 0
-    fi
-    return 124
-}
-
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Update available"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=true"* ]]
-    [[ "$output" != *"BAD_TIMEOUT:"* ]]
-}
-
-@test "check_macos_update skips softwareupdate when defaults shows no updates" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "0"; }
-
-run_with_timeout() {
-    echo "SHOULD_NOT_CALL_SOFTWAREUPDATE"
-    return 0
-}
-
-check_macos_update
-echo "MACOS_UPDATE_AVAILABLE=$MACOS_UPDATE_AVAILABLE"
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"System up to date"* ]]
-    [[ "$output" == *"MACOS_UPDATE_AVAILABLE=false"* ]]
-    [[ "$output" != *"SHOULD_NOT_CALL_SOFTWAREUPDATE"* ]]
-}
-
-@test "check_macos_update outputs debug info when MO_DEBUG set" {
-    run bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/check/all.sh"
-
-defaults() { echo "1"; }
-
-export MO_DEBUG=1
-
-run_with_timeout() {
-    local timeout="${1:-}"
-    shift
-    if [[ "${1:-}" == "softwareupdate" && "${2:-}" == "-l" && "${3:-}" == "--no-scan" ]]; then
-        echo "No new software available."
-        return 0
-    fi
-    return 124
-}
-
-start_inline_spinner(){ :; }
-stop_inline_spinner(){ :; }
-
-check_macos_update 2>&1
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"[DEBUG] softwareupdate exit status:"* ]]
+    [[ "$output" == *"Homebrew · would cleanup"* ]]
+    [[ "$output" == *"Homebrew autoremove would remove"* ]]
+    [[ "$output" == *"python@3.14"* ]]
+    [[ "$output" == *"CALL:brew autoremove --dry-run"* ]]
+    [[ "$output" != *"CALL:brew cleanup --prune=30"* ]]
+    [[ "$output" != *"REAL_AUTOREMOVE"* ]]
 }
 
 @test "run_with_timeout succeeds without GNU timeout" {
@@ -712,7 +536,7 @@ EOF
         PATH="/usr/bin:/bin"
         unset MO_TIMEOUT_INITIALIZED MO_TIMEOUT_BIN
         source "'"$PROJECT_ROOT"'/lib/core/common.sh"
-        run_with_timeout 1 sleep 5
+        run_with_timeout 1 sleep 3
     '
     [ "$status" -eq 124 ]
 }
@@ -881,7 +705,6 @@ safe_sudo_find_delete() {
 }
 safe_sudo_remove() { return 0; }
 log_success() { :; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() { shift; "$@"; }
 
@@ -927,7 +750,6 @@ safe_sudo_find_delete() {
 safe_sudo_remove() { return 0; }
 log_success() { :; }
 log_info() { echo "$*"; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() { shift; "$@"; }
 
@@ -968,7 +790,6 @@ safe_sudo_find_delete() {
 }
 safe_sudo_remove() { return 0; }
 log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() { shift; "$@"; }
 
@@ -1014,7 +835,6 @@ safe_sudo_remove() {
 log_success() { :; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() { shift; "$@"; }
 
@@ -1053,7 +873,6 @@ safe_sudo_remove() {
 log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() {
     local _timeout="$1"
@@ -1099,7 +918,6 @@ safe_sudo_remove() {
 log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
-is_sip_enabled() { return 1; }
 find() { return 0; }
 run_with_timeout() {
     local _timeout="$1"
@@ -1118,6 +936,245 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/X/demo.code_sign_clone"* ]]
     [[ "$output" != *"SUCCESS:Browser code signature caches"* ]]
+}
+
+@test "clean_deep_system skips EDR code_sign clones (CrowdStrike Falcon tamper)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+CALL_LOG="$HOME/edr_code_sign_calls.log"
+> "$CALL_LOG"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+sudo() {
+    if [[ "$1" == "test" ]]; then
+        return 1
+    fi
+    if [[ "$1" == "find" ]]; then
+        return 0
+    fi
+    return 0
+}
+safe_sudo_find_delete() { return 0; }
+safe_sudo_remove() {
+    echo "safe_sudo_remove:$1" >> "$CALL_LOG"
+    return 0
+}
+log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+find() { return 0; }
+run_with_timeout() {
+    local _timeout="$1"
+    shift
+    if [[ "${1:-}" == "command" && "${2:-}" == "find" && "${3:-}" == "/private/var/folders" ]]; then
+        printf '%s\0' \
+            "/private/var/folders/test/a/X/com.crowdstrike.falcon.App.code_sign_clone" \
+            "/private/var/folders/test/a/X/demo.code_sign_clone"
+        return 0
+    fi
+    "$@"
+}
+
+clean_deep_system
+cat "$CALL_LOG"
+EOF
+
+    [ "$status" -eq 0 ]
+    # A normal (browser-style) code-sign clone is still reclaimed.
+    [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/X/demo.code_sign_clone"* ]] || return 1
+    # The EDR agent's code-sign clone must never be deleted.
+    [[ "$output" != *"com.crowdstrike"* ]] || return 1
+}
+
+@test "clean_deep_system cleans CleanMyMac-observed rebuildable system caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+CALL_LOG="$HOME/rebuildable_cache_calls.log"
+> "$CALL_LOG"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+sudo() {
+    if [[ "$1" == "test" ]]; then
+        case "$3" in
+            /Library/Caches/com.apple.iconservices.store)
+                return 0
+                ;;
+        esac
+        return 1
+    fi
+    if [[ "$1" == "find" ]]; then
+        return 0
+    fi
+    return 0
+}
+safe_sudo_find_delete() { return 0; }
+safe_sudo_remove() {
+    echo "safe_sudo_remove:$1" >> "$CALL_LOG"
+    return 0
+}
+log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+find() { return 0; }
+run_with_timeout() { shift; "$@"; }
+
+clean_deep_system
+cat "$CALL_LOG"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"safe_sudo_remove:/Library/Caches/com.apple.iconservices.store"* ]]
+    [[ "$output" == *"SUCCESS:Rebuildable system caches, 1 item"* ]]
+}
+
+@test "is_rebuildable_gpu_cache_dir only allows C GPU cache shards" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+is_rebuildable_gpu_cache_dir "/private/var/folders/test/a/C/com.example.App/com.apple.metal"
+is_rebuildable_gpu_cache_dir "/private/var/folders/test/a/C/com.example.App/com.apple.metalfe"
+is_rebuildable_gpu_cache_dir "/private/var/folders/test/a/C/com.example.App/com.apple.gpuarchiver"
+! is_rebuildable_gpu_cache_dir "/private/var/folders/test/a/T/com.example.App/com.apple.metal"
+! is_rebuildable_gpu_cache_dir "/private/var/folders/test/a/C/com.example.App/not-a-gpu-cache"
+! is_rebuildable_gpu_cache_dir "/Library/Extensions/com.example.driver/com.apple.metal"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "gpu_cache_dir_is_stale uses contained file mtimes" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+stale_dir="$HOME/gpu-stale"
+active_dir="$HOME/gpu-active"
+mkdir -p "$stale_dir" "$active_dir"
+touch "$stale_dir/functions.data" "$active_dir/functions.data"
+touch -t 202001010000 "$stale_dir/functions.data"
+
+gpu_cache_dir_is_stale "$stale_dir" 1
+! gpu_cache_dir_is_stale "$active_dir" 1
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "clean_deep_system cleans only narrow private var GPU cache shards" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+CALL_LOG="$HOME/gpu_cache_calls.log"
+> "$CALL_LOG"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+sudo() {
+    if [[ "$1" == "test" ]]; then
+        return 1
+    fi
+    if [[ "$1" == "find" ]]; then
+        return 0
+    fi
+    return 0
+}
+safe_sudo_find_delete() { return 0; }
+safe_sudo_remove() {
+    echo "safe_sudo_remove:$1" >> "$CALL_LOG"
+    return 0
+}
+log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+find() { return 0; }
+gpu_cache_dir_is_stale() { return 0; }
+run_with_timeout() {
+    local _timeout="$1"
+    shift
+    if [[ "${1:-}" == "command" && "${2:-}" == "find" && "${3:-}" == "/private/var/folders" ]]; then
+        printf 'find_args:%s\n' "$*" >> "$CALL_LOG"
+        printf '%s\0' \
+            "/private/var/folders/test/a/C/com.example.App/com.apple.metal" \
+            "/private/var/folders/test/a/C/com.example.App/com.apple.metalfe" \
+            "/private/var/folders/test/a/C/com.example.App/com.apple.gpuarchiver" \
+            "/private/var/folders/test/a/T/com.example.App/com.apple.metal" \
+            "/private/var/folders/test/a/C/com.example.App/not-a-gpu-cache"
+        return 0
+    fi
+    "$@"
+}
+
+clean_deep_system
+cat "$CALL_LOG"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/C/com.example.App/com.apple.metal"* ]]
+    [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/C/com.example.App/com.apple.metalfe"* ]]
+    [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/C/com.example.App/com.apple.gpuarchiver"* ]]
+    [[ "$output" != *"/private/var/folders/test/a/T/com.example.App/com.apple.metal"* ]]
+    [[ "$output" != *"not-a-gpu-cache"* ]]
+    [[ "$output" != *"-mtime +1"* ]]
+    [[ "$output" == *"SUCCESS:Accessible rebuildable GPU caches, 3 items"* ]]
+}
+
+@test "clean_deep_system skips EDR/security-agent GPU caches (CrowdStrike Falcon tamper)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+CALL_LOG="$HOME/gpu_cache_edr_calls.log"
+> "$CALL_LOG"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/system.sh"
+
+sudo() {
+    if [[ "$1" == "test" ]]; then
+        return 1
+    fi
+    return 0
+}
+safe_sudo_find_delete() { return 0; }
+safe_sudo_remove() {
+    echo "safe_sudo_remove:$1" >> "$CALL_LOG"
+    return 0
+}
+log_success() { echo "SUCCESS:$1" >> "$CALL_LOG"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+find() { return 0; }
+gpu_cache_dir_is_stale() { return 0; }
+run_with_timeout() {
+    local _timeout="$1"
+    shift
+    # The GPU-cache sweep is the deep walk (maxdepth 8); feed candidates only to
+    # it and let every other find scan return nothing so this exercises just it.
+    if [[ "${1:-}" == "command" && "${2:-}" == "find" && "${5:-}" == "8" ]]; then
+        printf '%s\0' \
+            "/private/var/folders/test/a/C/com.crowdstrike.falcon.App/com.apple.metalfe" \
+            "/private/var/folders/test/a/C/com.sentinelone.agent/com.apple.metal" \
+            "/private/var/folders/test/a/C/com.example.App/com.apple.metalfe"
+        return 0
+    fi
+    if [[ "${1:-}" == "command" && "${2:-}" == "find" ]]; then
+        return 0
+    fi
+    "$@"
+}
+
+clean_deep_system
+cat "$CALL_LOG"
+EOF
+
+    [ "$status" -eq 0 ]
+    # The normal third-party GPU cache is still reclaimed.
+    [[ "$output" == *"safe_sudo_remove:/private/var/folders/test/a/C/com.example.App/com.apple.metalfe"* ]] || return 1
+    # EDR agent caches must never be touched (tamper alert -> corporate malware report).
+    [[ "$output" != *"com.crowdstrike"* ]] || return 1
+    [[ "$output" != *"com.sentinelone"* ]] || return 1
+    [[ "$output" == *"SUCCESS:Accessible rebuildable GPU caches, 1 item"* ]] || return 1
 }
 
 @test "opt_memory_pressure_relief skips when pressure is normal" {
@@ -1160,6 +1217,9 @@ sudo() {
 }
 export -f sudo
 
+# Sudo is mocked above; explicitly opt out of the test-mode short-circuit
+# in optimize_sudo_available so this success-path test reaches the mock.
+unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 opt_memory_pressure_relief
 EOF
 
@@ -1169,7 +1229,7 @@ EOF
 }
 
 @test "opt_network_stack_optimize skips when network is healthy" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_ASSUME_VPN_ACTIVE=0 bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/tasks.sh"
@@ -1192,8 +1252,35 @@ EOF
     [[ "$output" == *"Network stack already optimal"* ]]
 }
 
+@test "opt_network_stack_optimize skips when VPN is active" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_ASSUME_VPN_ACTIVE=1 bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+
+route() {
+    echo "unexpected-route"
+    return 0
+}
+export -f route
+
+sudo() {
+    echo "unexpected-sudo"
+    return 0
+}
+export -f sudo
+
+opt_network_stack_optimize
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Network stack refresh skipped, active VPN detected"* ]]
+    [[ "$output" != *"unexpected-route"* ]]
+    [[ "$output" != *"unexpected-sudo"* ]]
+}
+
 @test "opt_network_stack_optimize flushes when network has issues" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_ASSUME_VPN_ACTIVE=0 bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/tasks.sh"
@@ -1231,6 +1318,9 @@ dscacheutil() {
 }
 export -f dscacheutil
 
+# Sudo is mocked above; explicitly opt out of the test-mode short-circuit
+# in optimize_sudo_available so this success-path test reaches the mock.
+unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 opt_network_stack_optimize
 EOF
 
@@ -1302,161 +1392,14 @@ start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
 export -f start_inline_spinner stop_inline_spinner
 
+# Sudo is mocked above; explicitly opt out of the test-mode short-circuit
+# in optimize_sudo_available so this success-path test reaches the mock.
+unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 opt_disk_permissions_repair
 EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"User directory permissions repaired"* ]]
-}
-
-@test "opt_bluetooth_reset skips when HID device is connected" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-
-system_profiler() {
-    cat << 'PROFILER_OUT'
-Bluetooth:
-  Apple Magic Keyboard:
-    Connected: Yes
-    Type: Keyboard
-PROFILER_OUT
-    return 0
-}
-export -f system_profiler
-
-opt_bluetooth_reset
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Bluetooth already optimal"* ]]
-}
-
-@test "opt_bluetooth_reset skips when media apps are running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-
-system_profiler() {
-    cat << 'PROFILER_OUT'
-Bluetooth:
-  AirPods Pro:
-    Connected: Yes
-    Type: Headphones
-PROFILER_OUT
-    return 0
-}
-export -f system_profiler
-
-pgrep() {
-    if [[ "$2" == "Spotify" ]]; then
-        echo "12345"
-        return 0
-    fi
-    return 1
-}
-export -f pgrep
-
-opt_bluetooth_reset
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Bluetooth already optimal"* ]]
-}
-
-@test "opt_bluetooth_reset skips when Bluetooth audio output is active" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-
-system_profiler() {
-    if [[ "$1" == "SPAudioDataType" ]]; then
-        cat << 'AUDIO_OUT'
-Audio:
-    Devices:
-        AirPods Pro:
-          Default Output Device: Yes
-          Manufacturer: Apple Inc.
-          Output Channels: 2
-          Transport: Bluetooth
-          Output Source: AirPods Pro
-AUDIO_OUT
-        return 0
-    elif [[ "$1" == "SPBluetoothDataType" ]]; then
-        echo "Bluetooth:"
-        return 0
-    fi
-    return 1
-}
-export -f system_profiler
-
-awk() {
-    if [[ "${*}" == *"Default Output Device"* ]]; then
-        cat << 'AWK_OUT'
-          Default Output Device: Yes
-          Manufacturer: Apple Inc.
-          Output Channels: 2
-          Transport: Bluetooth
-          Output Source: AirPods Pro
-AWK_OUT
-        return 0
-    fi
-    command awk "$@"
-}
-export -f awk
-
-opt_bluetooth_reset
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Bluetooth already optimal"* ]]
-}
-
-@test "opt_bluetooth_reset restarts when safe" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-
-system_profiler() {
-    cat << 'PROFILER_OUT'
-Bluetooth:
-  AirPods:
-    Connected: Yes
-    Type: Audio
-PROFILER_OUT
-    return 0
-}
-export -f system_profiler
-
-pgrep() {
-    if [[ "$2" == "bluetoothd" ]]; then
-        return 1  # bluetoothd not running after TERM
-    fi
-    return 1
-}
-export -f pgrep
-
-sudo() {
-    if [[ "$1" == "pkill" ]]; then
-        echo "pkill:bluetoothd:$2"
-        return 0
-    fi
-    return 1
-}
-export -f sudo
-
-sleep() { :; }
-export -f sleep
-
-opt_bluetooth_reset
-EOF
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Bluetooth module restarted"* ]]
 }
 
 @test "opt_spotlight_index_optimize skips when search is fast" {

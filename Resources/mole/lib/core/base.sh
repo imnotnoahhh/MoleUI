@@ -12,17 +12,31 @@ readonly MOLE_BASE_LOADED=1
 
 # ============================================================================
 # Color Definitions
+# Honor https://no-color.org: any non-empty NO_COLOR disables ANSI escapes.
 # ============================================================================
-readonly ESC=$'\033'
-readonly GREEN="${ESC}[0;32m"
-readonly BLUE="${ESC}[1;34m"
-readonly CYAN="${ESC}[0;36m"
-readonly YELLOW="${ESC}[0;33m"
-readonly PURPLE="${ESC}[0;35m"
-readonly PURPLE_BOLD="${ESC}[1;35m"
-readonly RED="${ESC}[0;31m"
-readonly GRAY="${ESC}[0;90m"
-readonly NC="${ESC}[0m"
+if [[ -n "${NO_COLOR:-}" ]]; then
+    readonly ESC=""
+    readonly GREEN=""
+    readonly BLUE=""
+    readonly CYAN=""
+    readonly YELLOW=""
+    readonly PURPLE=""
+    readonly PURPLE_BOLD=""
+    readonly RED=""
+    readonly GRAY=""
+    readonly NC=""
+else
+    readonly ESC=$'\033'
+    readonly GREEN="${ESC}[0;32m"
+    readonly BLUE="${ESC}[1;34m"
+    readonly CYAN="${ESC}[0;36m"
+    readonly YELLOW="${ESC}[0;33m"
+    readonly PURPLE="${ESC}[0;35m"
+    readonly PURPLE_BOLD="${ESC}[1;35m"
+    readonly RED="${ESC}[0;31m"
+    readonly GRAY="${ESC}[0;90m"
+    readonly NC="${ESC}[0m"
+fi
 
 # ============================================================================
 # Icon Definitions
@@ -69,15 +83,19 @@ get_lsregister_path() {
 # ============================================================================
 readonly MOLE_TEMP_FILE_AGE_DAYS=7       # Temp file retention (days)
 readonly MOLE_ORPHAN_AGE_DAYS=30         # Orphaned data retention (days)
+readonly MOLE_DOTDIR_ORPHAN_AGE_DAYS=60  # Orphan dotfile hint threshold (days)
 readonly MOLE_MAX_PARALLEL_JOBS=15       # Parallel job limit
 readonly MOLE_MAIL_DOWNLOADS_MIN_KB=5120 # Mail attachment size threshold
 readonly MOLE_MAIL_AGE_DAYS=30           # Mail attachment retention (days)
 readonly MOLE_LOG_AGE_DAYS=7             # Log retention (days)
 readonly MOLE_CRASH_REPORT_AGE_DAYS=7    # Crash report retention (days)
 readonly MOLE_SAVED_STATE_AGE_DAYS=30    # Saved state retention (days) - increased for safety
+readonly MOLE_GPU_CACHE_AGE_DAYS=1       # Rebuildable GPU cache retention (days)
 readonly MOLE_TM_BACKUP_SAFE_HOURS=48    # TM backup safety window (hours)
 readonly MOLE_MAX_DS_STORE_FILES=500     # Max .DS_Store files to clean per scan
 readonly MOLE_MAX_ORPHAN_ITERATIONS=100  # Max iterations for orphaned app data scan
+readonly MOLE_ONE_GIB_KB=$((1024 * 1024))
+readonly MOLE_ONE_GB_BYTES=1000000000
 
 # ============================================================================
 # Whitelist Configuration
@@ -96,6 +114,7 @@ declare -a DEFAULT_WHITELIST_PATTERNS=(
     "$HOME/Library/Caches/pypoetry/virtualenvs*"
     "$HOME/Library/Caches/JetBrains*"
     "$HOME/Library/Caches/com.jetbrains.toolbox*"
+    "$HOME/Library/Caches/tealdeer/tldr-pages"
     "$HOME/Library/Application Support/JetBrains*"
     "$HOME/Library/Caches/com.apple.finder"
     "$HOME/Library/Mobile Documents*"
@@ -109,9 +128,6 @@ declare -a DEFAULT_WHITELIST_PATTERNS=(
 )
 
 declare -a DEFAULT_OPTIMIZE_WHITELIST_PATTERNS=(
-    "check_brew_health"
-    "check_touchid"
-    "check_git_config"
 )
 
 # ============================================================================
@@ -171,23 +187,6 @@ get_file_owner() {
 # System Utilities
 # ============================================================================
 
-# Check if System Integrity Protection is enabled
-# Returns: 0 if SIP is enabled, 1 if disabled or cannot determine
-is_sip_enabled() {
-    if ! command -v csrutil > /dev/null 2>&1; then
-        return 0
-    fi
-
-    local sip_status
-    sip_status=$(csrutil status 2> /dev/null || echo "")
-
-    if echo "$sip_status" | grep -qi "enabled"; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 # Detect CPU architecture
 # Returns: "Apple Silicon" or "Intel"
 detect_architecture() {
@@ -204,42 +203,50 @@ detect_architecture() {
     echo "$MOLE_ARCH_CACHE"
 }
 
-# Get free disk space on root volume
-# Returns: human-readable string (e.g., "100G")
-get_free_space() {
+get_free_space_target() {
     local target="/"
     if [[ -d "/System/Volumes/Data" ]]; then
         target="/System/Volumes/Data"
     fi
 
-    df -h "$target" | awk 'NR==2 {print $4}'
+    printf '%s\n' "$target"
 }
 
-# Get Darwin kernel major version (e.g., 24 for 24.2.0)
-# Returns 999 on failure to adopt conservative behavior (assume modern system)
-get_darwin_major() {
-    if [[ -n "${MOLE_DARWIN_MAJOR_CACHE:-}" ]]; then
-        echo "$MOLE_DARWIN_MAJOR_CACHE"
+# Get free disk space on root volume in 1K blocks.
+get_free_space_kb() {
+    local target
+    target=$(get_free_space_target)
+
+    local available_kb
+    available_kb=$(command df -Pk "$target" 2> /dev/null | awk 'NR==2 {print $4}' || true)
+    if [[ "$available_kb" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$available_kb"
         return 0
     fi
 
-    local kernel
-    kernel=$(uname -r 2> /dev/null || true)
-    local major="${kernel%%.*}"
-    if [[ ! "$major" =~ ^[0-9]+$ ]]; then
-        # Return high number to skip potentially dangerous operations on unknown systems
-        major=999
-    fi
-    export MOLE_DARWIN_MAJOR_CACHE="$major"
-    echo "$major"
+    return 1
 }
 
-# Check if Darwin kernel major version meets minimum
-is_darwin_ge() {
-    local minimum="$1"
-    local major
-    major=$(get_darwin_major)
-    [[ "$major" -ge "$minimum" ]]
+format_free_space_kb() {
+    local free_kb="${1:-}"
+    if [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+        bytes_to_human_kb "$free_kb"
+        return 0
+    fi
+
+    echo "Unknown"
+}
+
+# Get free disk space on root volume.
+# Returns: human-readable decimal string (e.g., "100.00GB")
+get_free_space() {
+    local free_kb
+    if free_kb=$(get_free_space_kb) && [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+        format_free_space_kb "$free_kb"
+        return $?
+    fi
+
+    echo "Unknown"
 }
 
 # Get optimal parallel jobs for operation type (scan|io|compute|default)
@@ -268,23 +275,6 @@ get_optimal_parallel_jobs() {
 
 is_root_user() {
     [[ "$(id -u)" == "0" ]]
-}
-
-get_invoking_user() {
-    if [[ -n "${_MOLE_INVOKING_USER_CACHE:-}" ]]; then
-        echo "$_MOLE_INVOKING_USER_CACHE"
-        return 0
-    fi
-
-    local user
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" ]]; then
-        user="$SUDO_USER"
-    else
-        user="${USER:-}"
-    fi
-
-    export _MOLE_INVOKING_USER_CACHE="$user"
-    echo "$user"
 }
 
 get_invoking_uid() {
@@ -459,62 +449,6 @@ ensure_user_file() {
 # Formatting Utilities
 # ============================================================================
 
-# Get brand-friendly localized name for an application
-get_brand_name() {
-    local name="$1"
-
-    # Detect if system primary language is Chinese (Cached)
-    if [[ -z "${MOLE_IS_CHINESE_SYSTEM:-}" ]]; then
-        local sys_lang
-        sys_lang=$(defaults read -g AppleLanguages 2> /dev/null | grep -o 'zh-Hans\|zh-Hant\|zh' | head -1 || echo "")
-        if [[ -n "$sys_lang" ]]; then
-            export MOLE_IS_CHINESE_SYSTEM="true"
-        else
-            export MOLE_IS_CHINESE_SYSTEM="false"
-        fi
-    fi
-
-    local is_chinese="${MOLE_IS_CHINESE_SYSTEM}"
-
-    # Return localized names based on system language
-    if [[ "$is_chinese" == true ]]; then
-        # Chinese system - prefer Chinese names
-        case "$name" in
-            "qiyimac" | "iQiyi") echo "爱奇艺" ;;
-            "wechat" | "WeChat") echo "微信" ;;
-            "QQ") echo "QQ" ;;
-            "VooV Meeting") echo "腾讯会议" ;;
-            "dingtalk" | "DingTalk") echo "钉钉" ;;
-            "NeteaseMusic" | "NetEase Music") echo "网易云音乐" ;;
-            "BaiduNetdisk" | "Baidu NetDisk") echo "百度网盘" ;;
-            "alipay" | "Alipay") echo "支付宝" ;;
-            "taobao" | "Taobao") echo "淘宝" ;;
-            "futunn" | "Futu NiuNiu") echo "富途牛牛" ;;
-            "tencent lemon" | "Tencent Lemon Cleaner" | "Tencent Lemon") echo "腾讯柠檬清理" ;;
-            *) echo "$name" ;;
-        esac
-    else
-        # Non-Chinese system - use English names
-        case "$name" in
-            "qiyimac" | "爱奇艺") echo "iQiyi" ;;
-            "wechat" | "微信") echo "WeChat" ;;
-            "QQ") echo "QQ" ;;
-            "腾讯会议") echo "VooV Meeting" ;;
-            "dingtalk" | "钉钉") echo "DingTalk" ;;
-            "网易云音乐") echo "NetEase Music" ;;
-            "百度网盘") echo "Baidu NetDisk" ;;
-            "alipay" | "支付宝") echo "Alipay" ;;
-            "taobao" | "淘宝") echo "Taobao" ;;
-            "富途牛牛") echo "Futu NiuNiu" ;;
-            "腾讯柠檬清理" | "Tencent Lemon Cleaner") echo "Tencent Lemon" ;;
-            "keynote" | "Keynote") echo "Keynote" ;;
-            "pages" | "Pages") echo "Pages" ;;
-            "numbers" | "Numbers") echo "Numbers" ;;
-            *) echo "$name" ;;
-        esac
-    fi
-}
-
 # Convert bytes to human-readable format (e.g., 1.5GB)
 # macOS (since Snow Leopard) uses Base-10 calculation (1 KB = 1000 bytes)
 bytes_to_human() {
@@ -547,6 +481,111 @@ bytes_to_human_kb() {
     bytes_to_human "$((${1:-0} * 1024))"
 }
 
+format_free_space_delta_kb() {
+    local delta_kb="${1:-0}"
+    [[ "$delta_kb" =~ ^-?[0-9]+$ ]] || delta_kb=0
+
+    local sign=""
+    local abs_kb="$delta_kb"
+    if ((delta_kb > 0)); then
+        sign="+"
+    elif ((delta_kb < 0)); then
+        sign="-"
+        abs_kb=$((-delta_kb))
+    fi
+
+    printf '%s%s\n' "$sign" "$(bytes_to_human_kb "$abs_kb")"
+}
+
+mole_is_reverse_dns_bundle_id() {
+    local bundle_id="${1:-}"
+
+    [[ -n "$bundle_id" && "$bundle_id" != "unknown" ]] || return 1
+    [[ "$bundle_id" =~ ^[A-Za-z0-9][-A-Za-z0-9]*(\.[A-Za-z0-9][-A-Za-z0-9]*)+$ ]]
+}
+
+mole_name_starts_with_bundle_id_boundary() {
+    local name="${1##*/}"
+    local bundle_id="${2:-}"
+
+    mole_is_reverse_dns_bundle_id "$bundle_id" || return 1
+    [[ "$name" == "$bundle_id" ||
+        "$name" == "$bundle_id".* ]]
+}
+
+mole_name_has_bundle_id_boundary() {
+    local name="${1##*/}"
+    local bundle_id="${2:-}"
+
+    mole_name_starts_with_bundle_id_boundary "$name" "$bundle_id" && return 0
+    mole_is_reverse_dns_bundle_id "$bundle_id" || return 1
+    [[ "$name" == *."$bundle_id" ||
+        "$name" == *."$bundle_id".* ]]
+}
+
+# Colorize an already-formatted human size string by unit.
+colorize_human_size() {
+    local size_human="$1"
+
+    local size_color=""
+    case "$size_human" in
+        *GB) size_color="$RED" ;;
+        *MB) size_color="$YELLOW" ;;
+        *KB) size_color="$GREEN" ;;
+        *B) size_color="$GRAY" ;;
+        *)
+            printf '%s' "$size_human"
+            return 0
+            ;;
+    esac
+
+    printf '%s%s%s' "$size_color" "$size_human" "$NC"
+}
+
+# Cleanup result lines are always shown in green. Kept as a function (callers
+# still pass a size in KB) so per-size coloring can be reintroduced in one place
+# if ever wanted.
+cleanup_result_color_kb() {
+    printf '%s' "$GREEN"
+}
+
+# Percent-encode a filesystem path for use in a file:// URL. Byte-wise loop
+# under LC_ALL=C so multibyte characters are encoded per byte (bash 3.2 has
+# no built-in encoder).
+percent_encode_path() {
+    local LC_ALL=C
+    local input="$1"
+    local out="" ch i val
+    for ((i = 0; i < ${#input}; i++)); do
+        ch="${input:i:1}"
+        case "$ch" in
+            [a-zA-Z0-9/._~-]) out+="$ch" ;;
+            *)
+                # bash 3.2 returns negative values for bytes >= 128; mask to a byte.
+                val=$(printf '%d' "'$ch")
+                out+=$(printf '%%%02X' $((val & 255)))
+                ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Print a path as an OSC 8 file:// hyperlink so terminals keep it clickable
+# even when it contains spaces (auto-detection breaks on whitespace). Shows
+# the ~-abbreviated path; piped output and non-ANSI terminals get plain text.
+format_path_link() {
+    local path="$1"
+    local display="${path/#$HOME/~}"
+    if ! is_ansi_supported 2> /dev/null; then
+        printf '%s' "$display"
+        return 0
+    fi
+    # ESC-backslash is the OSC 8 string terminator; kept in a variable since
+    # a single-quoted printf format ending in \\ trips ShellCheck SC1003.
+    local st=$'\033\\'
+    printf '\033]8;;file://%s%s%s\033]8;;%s' "$(percent_encode_path "$path")" "$st" "$display" "$st"
+}
+
 # ============================================================================
 # Temporary File Management
 # ============================================================================
@@ -555,10 +594,88 @@ bytes_to_human_kb() {
 declare -a MOLE_TEMP_FILES=()
 declare -a MOLE_TEMP_DIRS=()
 
+normalize_temp_root() {
+    local path="${1:-}"
+    [[ -z "$path" ]] && return 1
+
+    if [[ "$path" == "~"* ]]; then
+        path="${path/#\~/$HOME}"
+    fi
+
+    while [[ "$path" != "/" && "$path" == */ ]]; do
+        path="${path%/}"
+    done
+
+    [[ -n "$path" ]] || return 1
+    printf '%s\n' "$path"
+}
+
+probe_temp_root() {
+    local raw_path="$1"
+    local allow_create="${2:-false}"
+    local path
+    local probe=""
+
+    path=$(normalize_temp_root "$raw_path") || return 1
+
+    if [[ "$allow_create" == "true" ]]; then
+        ensure_user_dir "$path"
+    fi
+
+    [[ -d "$path" ]] || return 1
+
+    probe=$(mktemp "$path/mole.probe.XXXXXX" 2> /dev/null) || return 1
+    rm -f "$probe" 2> /dev/null || true
+
+    printf '%s\n' "$path"
+}
+
+ensure_mole_temp_root() {
+    if [[ -n "${MOLE_RESOLVED_TMPDIR:-}" ]]; then
+        return 0
+    fi
+
+    local resolved=""
+    local candidate="${TMPDIR:-}"
+    local invoking_home=""
+
+    if [[ -n "$candidate" ]]; then
+        resolved=$(probe_temp_root "$candidate" false || true)
+    fi
+
+    if [[ -z "$resolved" ]]; then
+        invoking_home=$(get_invoking_home)
+        if [[ -n "$invoking_home" ]]; then
+            resolved=$(probe_temp_root "$invoking_home/.cache/mole/tmp" true || true)
+        fi
+    fi
+
+    if [[ -z "$resolved" ]]; then
+        resolved=$(probe_temp_root "/tmp" false || true)
+    fi
+
+    [[ -n "$resolved" ]] || resolved="/tmp"
+    MOLE_RESOLVED_TMPDIR="$resolved"
+    export MOLE_RESOLVED_TMPDIR
+}
+
+prepare_mole_tmpdir() {
+    ensure_mole_temp_root
+    export TMPDIR="$MOLE_RESOLVED_TMPDIR"
+    printf '%s\n' "$MOLE_RESOLVED_TMPDIR"
+}
+
+mole_temp_path_template() {
+    local prefix="${1:-mole}"
+    ensure_mole_temp_root
+    printf '%s/%s.XXXXXX\n' "$MOLE_RESOLVED_TMPDIR" "$prefix"
+}
+
 # Create tracked temporary file
 create_temp_file() {
     local temp
-    temp=$(mktemp) || return 1
+    ensure_mole_temp_root
+    temp=$(mktemp "$MOLE_RESOLVED_TMPDIR/mole.XXXXXX") || return 1
     register_temp_file "$temp"
     echo "$temp"
 }
@@ -566,7 +683,8 @@ create_temp_file() {
 # Create tracked temporary directory
 create_temp_dir() {
     local temp
-    temp=$(mktemp -d) || return 1
+    ensure_mole_temp_root
+    temp=$(mktemp -d "$MOLE_RESOLVED_TMPDIR/mole.XXXXXX") || return 1
     register_temp_dir "$temp"
     echo "$temp"
 }
@@ -587,9 +705,8 @@ mktemp_file() {
     local prefix="${1:-mole}"
     local temp
     local error_msg
-    # Use TMPDIR if set, otherwise /tmp
     # Add .XXXXXX suffix to work with both BSD and GNU mktemp
-    if ! error_msg=$(mktemp "${TMPDIR:-/tmp}/${prefix}.XXXXXX" 2>&1); then
+    if ! error_msg=$(mktemp "$(mole_temp_path_template "$prefix")" 2>&1); then
         echo "Error: Failed to create temporary file: $error_msg" >&2
         return 1
     fi
@@ -600,7 +717,9 @@ mktemp_file() {
 
 # Cleanup all tracked temp files and directories
 cleanup_temp_files() {
-    stop_inline_spinner || true
+    if declare -F stop_inline_spinner > /dev/null 2>&1; then
+        stop_inline_spinner || true
+    fi
     local file
     if [[ ${#MOLE_TEMP_FILES[@]} -gt 0 ]]; then
         for file in "${MOLE_TEMP_FILES[@]}"; do
@@ -625,6 +744,26 @@ cleanup_temp_files() {
 # Global section tracking variables
 TRACK_SECTION=0
 SECTION_ACTIVITY=0
+
+# IMPORTANT: There are intentionally three start_section / end_section /
+# note_activity implementations across the codebase. The one that wins is the
+# one loaded last, and each variant has product-level differences (color,
+# fallback wording, dry-run export behavior). Before changing any of them,
+# read the cross references first:
+#
+#   - lib/core/base.sh   (this file): purple arrow header, "Nothing to tidy"
+#                                     fallback, no dry-run export.
+#   - bin/clean.sh:      purple arrow header, erases the header of idle
+#                        sections on ANSI TTYs ("Nothing to clean" fallback
+#                        when piped or under MO_DEBUG), appends '=== title ==='
+#                        to EXPORT_LIST_FILE under DRY_RUN, stops the section
+#                        spinner on close.
+#   - bin/purge.sh:      blue ━━━ box header, no fallback message, writes
+#                        each note_activity line directly to EXPORT_LIST_FILE.
+#
+# Treat this file's version as the default for everything outside the clean
+# and purge entry points. Do not unify the three blindly; the wording and
+# export semantics are user-visible.
 
 # Start a new section
 # Args: $1 - section title
@@ -721,6 +860,7 @@ update_progress_if_needed() {
 
     # Get last update time from variable
     local last_time
+    # eval: indirect read by name; bash 3.2 has no nameref (declare -n)
     eval "last_time=\${$last_update_var:-0}"
     [[ "$last_time" =~ ^[0-9]+$ ]] || last_time=0
 
@@ -731,6 +871,7 @@ update_progress_if_needed() {
         start_section_spinner "Scanning items... $completed/$total"
 
         # Update the last_update_time variable
+        # eval: indirect write by name; bash 3.2 has no nameref
         eval "$last_update_var=$current_time"
         return 0
     fi
