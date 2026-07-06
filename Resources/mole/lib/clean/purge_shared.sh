@@ -42,6 +42,7 @@ readonly MOLE_PURGE_TARGETS=(
     "Pods"          # CocoaPods
     ".cxx"          # React Native Android NDK build cache
     ".expo"         # Expo
+    ".build"        # Swift Package Manager
 )
 
 readonly MOLE_PURGE_DEFAULT_SEARCH_PATHS=(
@@ -53,6 +54,7 @@ readonly MOLE_PURGE_DEFAULT_SEARCH_PATHS=(
     "$HOME/Workspace"
     "$HOME/Repos"
     "$HOME/Development"
+    "$HOME/Library/CloudStorage"
 )
 
 readonly MOLE_PURGE_MONOREPO_INDICATORS=(
@@ -73,11 +75,15 @@ readonly MOLE_PURGE_PROJECT_INDICATORS=(
     "Gemfile"
     "composer.json"
     "pubspec.yaml"
+    "Package.swift" # Swift Package Manager
     "Makefile"
     "build.zig"
     "build.zig.zon"
     ".git"
 )
+
+readonly MOLE_CACHEDIR_TAG_NAME="CACHEDIR.TAG"
+readonly MOLE_CACHEDIR_TAG_SIGNATURE="Signature: 8a477f597d28d172789f06886806bc55"
 
 # High-noise targets intentionally excluded from quick hint scans in mo clean.
 readonly MOLE_PURGE_QUICK_HINT_EXCLUDED_TARGETS=(
@@ -104,6 +110,16 @@ mole_purge_is_project_root() {
     return 1
 }
 
+mole_dir_has_cachedir_tag() {
+    local dir="$1"
+    local tag="$dir/$MOLE_CACHEDIR_TAG_NAME"
+    [[ -f "$tag" && ! -L "$tag" ]] || return 1
+
+    local signature
+    signature=$(LC_ALL=C dd bs=${#MOLE_CACHEDIR_TAG_SIGNATURE} count=1 < "$tag" 2> /dev/null || true)
+    [[ "$signature" == "$MOLE_CACHEDIR_TAG_SIGNATURE" ]]
+}
+
 mole_purge_quick_hint_target_names() {
     local target
     local excluded
@@ -122,6 +138,19 @@ mole_purge_quick_hint_target_names() {
     done
 }
 
+# Resolve a directory path to its canonical filesystem casing.
+# On case-insensitive macOS (APFS), ~/Code and ~/code point to the same
+# directory but with different display names.  This function returns the
+# real (on-disk) path so that string comparisons work correctly for dedup.
+mole_purge_resolve_path_case() {
+    local path="$1"
+    if [[ -d "$path" ]]; then
+        (cd "$path" 2> /dev/null && pwd -P) || printf '%s\n' "$path"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
 mole_purge_read_paths_config() {
     local config_file="${1:-$HOME/.config/mole/purge_paths}"
     [[ -f "$config_file" ]] || return 0
@@ -132,6 +161,7 @@ mole_purge_read_paths_config() {
         line="${line%"${line##*[![:space:]]}"}"
         [[ -z "$line" || "$line" =~ ^# ]] && continue
         line="${line/#\~/$HOME}"
+        line=$(mole_purge_resolve_path_case "$line")
         printf '%s\n' "$line"
     done < "$config_file"
 }

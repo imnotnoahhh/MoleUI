@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 import (
@@ -20,7 +22,7 @@ func TestRuneWidth(t *testing.T) {
 		{"CJK ideograph", '語', 2},
 		{"Full-width number", '１', 2},
 		{"ASCII space", ' ', 1},
-		{"Tab", '\t', 1},
+		{"Tab", '	', 1},
 	}
 
 	for _, tt := range tests {
@@ -55,30 +57,14 @@ func TestDisplayWidth(t *testing.T) {
 	}
 }
 
+// Core byte-format coverage lives in internal/units; this is a wiring sanity
+// check to ensure humanizeBytes still delegates to BytesSI.
 func TestHumanizeBytes(t *testing.T) {
-	tests := []struct {
-		input int64
-		want  string
-	}{
-		{-100, "0 B"},
-		{0, "0 B"},
-		{512, "512 B"},
-		{999, "999 B"},
-		{1000, "1.0 kB"},
-		{1500, "1.5 kB"},
-		{10000, "10.0 kB"},
-		{1000000, "1.0 MB"},
-		{1500000, "1.5 MB"},
-		{1000000000, "1.0 GB"},
-		{1000000000000, "1.0 TB"},
-		{1000000000000000, "1.0 PB"},
+	if got := humanizeBytes(1500); got != "1.5 kB" {
+		t.Errorf("humanizeBytes(1500) = %q, want %q", got, "1.5 kB")
 	}
-
-	for _, tt := range tests {
-		got := humanizeBytes(tt.input)
-		if got != tt.want {
-			t.Errorf("humanizeBytes(%d) = %q, want %q", tt.input, got, tt.want)
-		}
+	if got := humanizeBytes(-1); got != "0 B" {
+		t.Errorf("humanizeBytes(-1) = %q, want %q", got, "0 B")
 	}
 }
 
