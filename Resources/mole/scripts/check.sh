@@ -44,11 +44,20 @@ done
 
 cd "$PROJECT_ROOT"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Honor https://no-color.org: any non-empty NO_COLOR disables ANSI escapes.
+if [[ -n "${NO_COLOR:-}" ]]; then
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+fi
 
 readonly ICON_SUCCESS="✓"
 readonly ICON_ERROR="☻"
@@ -76,11 +85,11 @@ if [[ "$MODE" == "format" ]]; then
 
     if command -v goimports > /dev/null 2>&1; then
         echo -e "${YELLOW}Formatting Go code, goimports...${NC}"
-        goimports -w -local github.com/tw93/Mole ./cmd
+        goimports -w -local github.com/tw93/mole ./cmd ./internal
         echo -e "${GREEN}${ICON_SUCCESS} Go formatting complete${NC}\n"
     elif command -v go > /dev/null 2>&1; then
         echo -e "${YELLOW}Formatting Go code, gofmt...${NC}"
-        gofmt -w ./cmd
+        gofmt -w ./cmd ./internal
         echo -e "${GREEN}${ICON_SUCCESS} Go formatting complete${NC}\n"
     else
         echo -e "${YELLOW}${ICON_WARNING} go not installed, skipping gofmt${NC}\n"
@@ -101,11 +110,11 @@ if [[ "$MODE" != "check" ]]; then
 
     if command -v goimports > /dev/null 2>&1; then
         echo -e "${YELLOW}2. Formatting Go code, goimports...${NC}"
-        goimports -w -local github.com/tw93/Mole ./cmd
+        goimports -w -local github.com/tw93/mole ./cmd ./internal
         echo -e "${GREEN}${ICON_SUCCESS} Go formatting applied${NC}\n"
     elif command -v go > /dev/null 2>&1; then
         echo -e "${YELLOW}2. Formatting Go code, gofmt...${NC}"
-        gofmt -w ./cmd
+        gofmt -w ./cmd ./internal
         echo -e "${GREEN}${ICON_SUCCESS} Go formatting applied${NC}\n"
     fi
 fi
@@ -116,15 +125,17 @@ if command -v golangci-lint > /dev/null 2>&1; then
         echo -e "${RED}${ICON_ERROR} golangci-lint config invalid${NC}\n"
         exit 1
     fi
-    if golangci-lint run ./cmd/...; then
+    if golangci-lint run ./...; then
         echo -e "${GREEN}${ICON_SUCCESS} golangci-lint passed${NC}\n"
     else
         echo -e "${RED}${ICON_ERROR} golangci-lint failed${NC}\n"
+        echo -e "${YELLOW}If the output points to deleted temporary worktrees or non-existent paths, run:${NC}"
+        echo -e "${YELLOW}  golangci-lint cache clean && golangci-lint run ./...${NC}\n"
         exit 1
     fi
 elif command -v go > /dev/null 2>&1; then
     echo -e "${YELLOW}${ICON_WARNING} golangci-lint not installed, falling back to go vet${NC}"
-    if go vet ./cmd/...; then
+    if go vet ./...; then
         echo -e "${GREEN}${ICON_SUCCESS} go vet passed${NC}\n"
     else
         echo -e "${RED}${ICON_ERROR} go vet failed${NC}\n"
@@ -136,7 +147,7 @@ fi
 
 echo -e "${YELLOW}4. Running ShellCheck...${NC}"
 if command -v shellcheck > /dev/null 2>&1; then
-    if shellcheck mole bin/*.sh lib/*/*.sh scripts/*.sh; then
+    if shellcheck mole install.sh bin/*.sh lib/*/*.sh scripts/*.sh; then
         echo -e "${GREEN}${ICON_SUCCESS} ShellCheck passed${NC}\n"
     else
         echo -e "${RED}${ICON_ERROR} ShellCheck failed${NC}\n"
@@ -151,7 +162,17 @@ if ! bash -n mole; then
     echo -e "${RED}${ICON_ERROR} Syntax check failed, mole${NC}\n"
     exit 1
 fi
+if ! bash -n install.sh; then
+    echo -e "${RED}${ICON_ERROR} Syntax check failed, install.sh${NC}\n"
+    exit 1
+fi
 for script in bin/*.sh; do
+    if ! bash -n "$script"; then
+        echo -e "${RED}${ICON_ERROR} Syntax check failed, $script${NC}\n"
+        exit 1
+    fi
+done
+for script in scripts/*.sh; do
     if ! bash -n "$script"; then
         echo -e "${RED}${ICON_ERROR} Syntax check failed, $script${NC}\n"
         exit 1
@@ -165,57 +186,4 @@ find lib -name "*.sh" | while read -r script; do
 done
 echo -e "${GREEN}${ICON_SUCCESS} Syntax check passed${NC}\n"
 
-echo -e "${YELLOW}6. Checking optimizations...${NC}"
-OPTIMIZATION_SCORE=0
-TOTAL_CHECKS=0
-
-((TOTAL_CHECKS++))
-if grep -q "read -r -s -n 1 -t 1" lib/core/ui.sh; then
-    echo -e "${GREEN}  ${ICON_SUCCESS} Keyboard timeout configured${NC}"
-    ((OPTIMIZATION_SCORE++))
-else
-    echo -e "${YELLOW}  ${ICON_WARNING} Keyboard timeout may be misconfigured${NC}"
-fi
-
-((TOTAL_CHECKS++))
-DRAIN_PASSES=$(grep -c "while IFS= read -r -s -n 1" lib/core/ui.sh 2> /dev/null || true)
-DRAIN_PASSES=${DRAIN_PASSES:-0}
-if [[ $DRAIN_PASSES -eq 1 ]]; then
-    echo -e "${GREEN}  ${ICON_SUCCESS} drain_pending_input optimized${NC}"
-    ((OPTIMIZATION_SCORE++))
-else
-    echo -e "${YELLOW}  ${ICON_WARNING} drain_pending_input has multiple passes${NC}"
-fi
-
-((TOTAL_CHECKS++))
-if grep -q "rotate_log_once" lib/core/log.sh; then
-    echo -e "${GREEN}  ${ICON_SUCCESS} Log rotation optimized${NC}"
-    ((OPTIMIZATION_SCORE++))
-else
-    echo -e "${YELLOW}  ${ICON_WARNING} Log rotation not optimized${NC}"
-fi
-
-((TOTAL_CHECKS++))
-if ! grep -q "cache_meta\|cache_dir_mtime" bin/uninstall.sh; then
-    echo -e "${GREEN}  ${ICON_SUCCESS} Cache validation simplified${NC}"
-    ((OPTIMIZATION_SCORE++))
-else
-    echo -e "${YELLOW}  ${ICON_WARNING} Cache still uses redundant metadata${NC}"
-fi
-
-((TOTAL_CHECKS++))
-if grep -q "Consecutive slashes" bin/clean.sh; then
-    echo -e "${GREEN}  ${ICON_SUCCESS} Path validation enhanced${NC}"
-    ((OPTIMIZATION_SCORE++))
-else
-    echo -e "${YELLOW}  ${ICON_WARNING} Path validation not enhanced${NC}"
-fi
-
-echo -e "${BLUE}  Optimization score: $OPTIMIZATION_SCORE/$TOTAL_CHECKS${NC}\n"
-
 echo -e "${GREEN}=== Checks Completed ===${NC}"
-if [[ $OPTIMIZATION_SCORE -eq $TOTAL_CHECKS ]]; then
-    echo -e "${GREEN}${ICON_SUCCESS} All optimizations applied${NC}"
-else
-    echo -e "${YELLOW}${ICON_WARNING} Some optimizations missing${NC}"
-fi
