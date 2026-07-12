@@ -10,17 +10,28 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-clean-home.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
 setup() {
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
     export TERM="xterm-256color"
     rm -rf "${HOME:?}"/*
     rm -rf "$HOME/Library" "$HOME/.config"
@@ -72,11 +83,29 @@ run_clean_dry_run() {
     [[ "$output" != *"system preview included"* ]]
 }
 
-@test "mo clean --dry-run includes system preview when sudo is cached" {
+@test "mo clean --dry-run does not probe sudo in test mode" {
     set_mock_sudo_cached
+    cat > "$TEST_MOCK_BIN/sudo" << 'MOCK'
+#!/bin/bash
+echo "sudo should not be called" >&2
+exit 99
+MOCK
+    chmod +x "$TEST_MOCK_BIN/sudo"
+
     run_clean_dry_run
     [ "$status" -eq 0 ]
-    [[ "$output" == *"system preview included"* ]]
+    [[ "$output" == *"sudo -v && mo clean --dry-run"* ]]
+    [[ "$output" != *"sudo should not be called"* ]]
+}
+
+@test "mo clean rejects removed cleanup selection flags" {
+    local removed_flag
+    for removed_flag in "--select" "--categories" "--exclude"; do
+        run env HOME="$HOME" MOLE_TEST_MODE=1 "$PROJECT_ROOT/mole" clean "$removed_flag"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"was removed in this release"* ]]
+        [[ "$output" == *"mo clean --dry-run"* ]]
+    done
 }
 
 @test "mo clean --dry-run shows hint when sudo is not cached" {
@@ -85,6 +114,209 @@ run_clean_dry_run() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"sudo -v"* ]]
     [[ "$output" == *"full preview"* ]]
+}
+
+@test "mo clean adopts cached sudo before system cleanup (#1084)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+TRACE="$HOME/sudo-adopt.log"
+> "$TRACE"
+
+source "$PROJECT_ROOT/bin/clean.sh"
+
+DRY_RUN=false
+EXTERNAL_VOLUME_TARGET=""
+
+sudo() {
+    printf 'sudo %s\n' "$*" >> "$TRACE"
+    [[ "${1:-}" == "-n" && "${2:-}" == "-v" ]]
+}
+_start_sudo_keepalive() {
+    printf 'keepalive\n' >> "$TRACE"
+    echo "keepalive-pid"
+}
+_stop_sudo_keepalive() { :; }
+
+start_cleanup
+cat "$TRACE"
+printf 'SYSTEM_CLEAN=%s\n' "$SYSTEM_CLEAN"
+printf 'MOLE_SUDO_ESTABLISHED=%s\n' "$MOLE_SUDO_ESTABLISHED"
+printf 'MOLE_SUDO_KEEPALIVE_PID=%s\n' "$MOLE_SUDO_KEEPALIVE_PID"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sudo -n -v"* ]]
+    [[ "$output" == *"keepalive"* ]]
+    [[ "$output" == *"SYSTEM_CLEAN=true"* ]]
+    [[ "$output" == *"MOLE_SUDO_ESTABLISHED=true"* ]]
+    [[ "$output" == *"MOLE_SUDO_KEEPALIVE_PID=keepalive-pid"* ]]
+}
+
+@test "mo clean sudo prompt preserves a directly typed password (#1059)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+ensure_sudo_session() {
+    echo "ENSURE_PLAIN"
+    return 0
+}
+ensure_sudo_session_with_password() {
+    echo "ENSURE_PASSWORD=$1"
+    [[ "$1" == "secret" ]]
+}
+drain_pending_input() { :; }
+# A user who expects a password prompt may start typing immediately. The first
+# printable key and the rest of the line must reach authentication together.
+read_key() {
+    echo "CHAR:s"
+}
+read_clean_sudo_password_remainder() {
+    printf -v "$1" '%s' "ecret"
+}
+
+prompt_for_system_clean
+printf '\nSYSTEM_CLEAN=%s\n' "$SYSTEM_CLEAN"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"continue"* ]]
+    [[ "$output" != *"Enter"*"password"* ]]
+    [[ "$output" == *"ENSURE_PASSWORD=secret"* ]]
+    [[ "$output" != *"ENSURE_PLAIN"* ]]
+    [[ "$output" == *"SYSTEM_CLEAN=true"* ]]
+    [[ "$output" != *"Skipped"* ]]
+}
+
+@test "mo clean sudo prompt still skips on explicit Space (#1059)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+ensure_sudo_session() {
+    echo "ENSURE_SUDO"
+    return 0
+}
+drain_pending_input() { :; }
+read_key() {
+    echo "SPACE"
+}
+
+prompt_for_system_clean
+printf '\nSYSTEM_CLEAN=%s\n' "$SYSTEM_CLEAN"
+SCRIPT
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Skipped"* ]]
+    [[ "$output" != *"ENSURE_SUDO"* ]]
+    [[ "$output" == *"SYSTEM_CLEAN=false"* ]]
+}
+
+@test "cloud and office timeout path uses helper function instead of bash -c" {
+    run bash -c "grep -Eq 'run_with_shell_timeout 300 run_cloud_and_office_cleanup' '$PROJECT_ROOT/bin/clean.sh'"
+    [ "$status" -eq 0 ]
+
+    run bash -c "! grep -Eq 'run_with_timeout 300[[:space:]]+bash[[:space:]]+-c' '$PROJECT_ROOT/bin/clean.sh'"
+    [ "$status" -eq 0 ]
+}
+
+@test "mo clean summary separates tracked cleanup from free space change" {
+    local mock_bin="$HOME/bin"
+    mkdir -p "$mock_bin"
+    cat > "$mock_bin/df" <<'MOCK'
+#!/bin/bash
+count_file="${MOLE_DF_COUNT:?}"
+count=0
+if [[ -f "$count_file" ]]; then
+    count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+
+available=73400320
+if [[ "$count" -ge 2 ]]; then
+    available=74400320
+fi
+
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/disk1 200000000 126599680 %s 64%% /\n' "$available"
+MOCK
+    chmod +x "$mock_bin/df"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$mock_bin:$PATH" MOLE_DF_COUNT="$HOME/df.count" MOLE_TEST_MODE=0 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+DRY_RUN=false
+SYSTEM_CLEAN=false
+EXTERNAL_VOLUME_TARGET=""
+WHITELIST_PATTERNS=()
+WHITELIST_WARNINGS=()
+
+check_tcc_permissions() { :; }
+start_section() { :; }
+end_section() { :; }
+log_operation_session_end() { :; }
+run_with_shell_timeout() { shift; "$@"; }
+
+clean_user_essentials() {
+    total_size_cleaned=$((total_size_cleaned + 1000000))
+    files_cleaned=$((files_cleaned + 1))
+    total_items=$((total_items + 1))
+}
+clean_finder_metadata() { :; }
+clean_app_caches() { :; }
+clean_browsers() { :; }
+run_cloud_and_office_cleanup() { :; }
+clean_developer_tools() { :; }
+clean_user_gui_applications() { :; }
+clean_virtualization_tools() { :; }
+clean_application_support_logs() { :; }
+clean_orphaned_app_data() { :; }
+clean_orphaned_system_services() { :; }
+clean_orphaned_container_stubs() { :; }
+clean_stale_launch_services_registrations() { :; }
+show_user_launch_agent_hint_notice() { :; }
+show_orphan_dotdir_hint_notice() { :; }
+clean_apple_silicon_caches() { :; }
+clean_cached_device_firmware() { :; }
+clean_time_machine_failed_backups() { :; }
+check_large_file_candidates() { :; }
+show_system_data_hint_notice() { :; }
+show_project_artifact_hint_notice() { :; }
+
+perform_cleanup
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Free space: 75.16GB"* ]]
+    [[ "$output" == *"Tracked cleanup:"* ]]
+    [[ "$output" == *"1.02GB"* ]]
+    [[ "$output" == *"Free space: 76.19GB (+1.02GB)"* ]]
+    [[ "$output" != *"Space freed:"* ]]
+    [ "$(cat "$HOME/df.count")" = "2" ]
+}
+
+@test "mo clean --dry-run survives an unwritable TMPDIR" {
+    local blocked_tmp="$HOME/blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    set_mock_sudo_uncached
+    local test_path="$PATH"
+    if [[ -n "${TEST_MOCK_BIN:-}" ]]; then
+        test_path="$TEST_MOCK_BIN:$PATH"
+    fi
+
+    run env HOME="$HOME" TMPDIR="$blocked_tmp" MOLE_TEST_MODE=1 PATH="$test_path" \
+        "$PROJECT_ROOT/mole" clean --dry-run
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"mktemp:"* ]]
+    [[ "$output" != *"Failed to create temporary file"* ]]
+    [ -d "$HOME/.cache/mole/tmp" ]
 }
 
 @test "mo clean --dry-run reports user cache without deleting it" {
@@ -96,6 +328,44 @@ run_clean_dry_run() {
     [[ "$output" == *"User app cache"* ]]
     [[ "$output" == *"Potential space"* ]]
     [ -f "$HOME/Library/Caches/TestApp/cache.tmp" ]
+}
+
+@test "mo clean --dry-run reports stale login item without deleting it" {
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$HOME/Library/LaunchAgents/com.example.stale.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.stale</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Missing.app/Contents/MacOS/Missing</string>
+    </array>
+</dict>
+</plist>
+PLIST
+
+    # MOLE_TEST_MODE=1 short-circuits clean into a stub that never reaches
+    # the App leftovers section, so the report assertion needs the real
+    # sections to run. Dry-run keeps this side-effect free.
+    run env HOME="$HOME" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=1 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stale login item · com.example.stale.plist"* ]] || return 1
+    [ -f "$HOME/Library/LaunchAgents/com.example.stale.plist" ]
+}
+
+@test "mo clean --dry-run does not export duplicate targets across sections" {
+    mkdir -p "$HOME/Library/Application Support/Code/CachedData"
+    echo "cache" > "$HOME/Library/Application Support/Code/CachedData/data.bin"
+
+    run env HOME="$HOME" MOLE_TEST_MODE=0 "$PROJECT_ROOT/mole" clean --dry-run
+    [ "$status" -eq 0 ]
+
+    run grep -c "Application Support/Code/CachedData" "$HOME/.config/mole/clean-list.txt"
+    [ "$status" -eq 0 ]
+    [ "$output" -eq 1 ]
 }
 
 @test "mo clean honors whitelist entries" {
@@ -131,9 +401,12 @@ EOF
     echo "dependency" > "$HOME/.m2/repository/org/example/lib.jar"
 
     run env HOME="$HOME" MOLE_TEST_MODE=1 "$PROJECT_ROOT/mole" clean --dry-run
-    [ "$status" -eq 0 ]
-    [ -f "$HOME/.m2/repository/org/example/lib.jar" ]
-    [[ "$output" != *"Maven repository cache"* ]]
+    [ "$status" -eq 0 ] || return 1
+    # The jar must survive, and the dry-run must not offer the Maven repo as a
+    # cleanup target. The label is "Maven local repository" (maven.sh); the old
+    # assertion checked a string that never appears, so it passed vacuously.
+    [ -f "$HOME/.m2/repository/org/example/lib.jar" ] || return 1
+    [[ "$output" != *"Maven local repository"* ]] || return 1
 }
 
 @test "FINDER_METADATA_SENTINEL in whitelist protects .DS_Store files" {
@@ -216,7 +489,11 @@ EOF
     touch "$HOME/Library/Mail Downloads/old.pdf"
     touch -t 202301010000 "$HOME/Library/Mail Downloads/old.pdf"
 
-    dd if=/dev/zero of="$HOME/Library/Mail Downloads/dummy.dat" bs=1024 count=6000 2>/dev/null
+    if command -v mkfile > /dev/null 2>&1; then
+        mkfile -n 6000k "$HOME/Library/Mail Downloads/dummy.dat"
+    else
+        truncate -s 6000k "$HOME/Library/Mail Downloads/dummy.dat"
+    fi
 
     [ -f "$HOME/Library/Mail Downloads/old.pdf" ]
 
@@ -229,6 +506,25 @@ EOF
 
     [ "$status" -eq 0 ]
     [ ! -f "$HOME/Library/Mail Downloads/old.pdf" ]
+}
+
+@test "_clean_mail_downloads uses dry-run wording and keeps attachments" {
+    mkdir -p "$HOME/Library/Mail Downloads"
+    touch "$HOME/Library/Mail Downloads/old.pdf"
+    touch -t 202301010000 "$HOME/Library/Mail Downloads/old.pdf"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true MOLE_MAIL_DOWNLOADS_MIN_KB=1 bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+pgrep() { return 1; }
+_clean_mail_downloads
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Would clean 1 mail attachments"* ]]
+    [[ "$output" != *"Cleaned 1 mail attachments"* ]]
+    [ -f "$HOME/Library/Mail Downloads/old.pdf" ]
 }
 
 @test "clean_time_machine_failed_backups detects running backup correctly" {
@@ -274,7 +570,7 @@ clean_time_machine_failed_backups
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" != *"Time Machine backup in progress, skipping cleanup"* ]]
+    [[ "$output" != *"Time Machine cleanup · skipped (backup in progress)"* ]]
 }
 
 @test "clean_time_machine_failed_backups skips when backup is actually running" {
@@ -320,6 +616,129 @@ clean_time_machine_failed_backups
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Time Machine backup in progress, skipping cleanup"* ]]
+    [[ "$output" == *"Time Machine cleanup · skipped (backup in progress)"* ]]
 }
 
+@test "start_section recycles an idle section header in place on a TTY" {
+    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+        skip "script cannot allocate a TTY in this environment"
+    fi
+
+    raw="$HOME/section-recycle.raw"
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        MOLE_TEST_NO_AUTH=1 TERM=xterm-256color \
+        /usr/bin/script -q "$raw" /bin/bash --noprofile --norc -c '
+            source "$PROJECT_ROOT/bin/clean.sh"
+            start_section "Idle Alpha"
+            end_section
+            start_section "Active Beta"
+            note_activity
+            echo "  row output"
+            end_section
+        ' > /dev/null 2>&1
+
+    raw_content="$(cat "$raw")"
+    # Idle header painted, then the next header overwrites its line in place.
+    [[ "$raw_content" == *"Idle Alpha"* ]] || return 1
+    [[ "$raw_content" == *$'\033[1A\r\033[2K'*"Active Beta"* ]] || return 1
+    # TTY path must not fall back to the piped-output placeholder row.
+    [[ "$raw_content" != *"Nothing to clean"* ]] || return 1
+}
+
+@test "log_success rows mark section activity so headers keep their blank separator" {
+    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+        skip "script cannot allocate a TTY in this environment"
+    fi
+
+    raw="$HOME/section-log-activity.raw"
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        MOLE_TEST_NO_AUTH=1 TERM=xterm-256color \
+        /usr/bin/script -q "$raw" /bin/bash --noprofile --norc -c '
+            source "$PROJECT_ROOT/bin/clean.sh"
+            start_section "System"
+            log_success "System crash reports"
+            end_section
+            start_section "User essentials"
+            note_activity
+            end_section
+        ' > /dev/null 2>&1
+
+    raw_content="$(cat "$raw")"
+    # The log_success row counts as activity: the section is not idle, so the
+    # next header must not recycle (and eat) the row line.
+    [[ "$raw_content" == *"System crash reports"* ]] || return 1
+    [[ "$raw_content" != *$'\033[1A'* ]] || return 1
+    [[ "$raw_content" != *"Nothing to clean"* ]] || return 1
+}
+
+@test "sections whose rows come only from log_success are not marked idle in pipes" {
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        bash --noprofile --norc -c '
+            source "$PROJECT_ROOT/bin/clean.sh"
+            start_section "System"
+            log_success "System crash reports"
+            end_section
+        '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"System crash reports"* ]] || return 1
+    [[ "$output" != *"Nothing to clean"* ]] || return 1
+}
+
+@test "log rows do not trigger purge's export-only note_activity override" {
+    export_file="$HOME/purge-log-activity.txt"
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" EXPORT_LIST_FILE="$export_file" \
+        MOLE_SKIP_MAIN=1 MOLE_TEST_NO_AUTH=1 bash --noprofile --norc -c '
+            source "$PROJECT_ROOT/bin/purge.sh"
+            start_section "Project artifacts"
+            log_success "Project cache"
+            end_section
+            [[ ! -s "$EXPORT_LIST_FILE" ]]
+        '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Project cache"* ]] || return 1
+}
+
+@test "root preview staging is published through the invoking-user boundary" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+calls="$HOME/preview-user-boundary.calls"
+CLEAN_PREVIEW_STAGING_FILE="$HOME/root-owned-preview.stage"
+CLEAN_PREVIEW_FINAL_FILE="$HOME/user-config/clean-list.txt"
+EXPORT_LIST_FILE="$CLEAN_PREVIEW_STAGING_FILE"
+SUDO_USER="preview-user"
+printf 'preview content\n' > "$CLEAN_PREVIEW_STAGING_FILE"
+
+run_clean_preview_as_invoking_user() {
+    printf '%s\n' "$*" >> "$calls"
+    "$@"
+}
+
+publish_clean_preview_file
+[[ "$EXPORT_LIST_FILE" == "$CLEAN_PREVIEW_FINAL_FILE" ]]
+[[ "$(cat "$CLEAN_PREVIEW_FINAL_FILE")" == "preview content" ]]
+grep -q '^/bin/mkdir -p ' "$calls"
+grep -q '^/usr/bin/tee ' "$calls"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "end_section keeps the Nothing-to-clean fallback for piped output" {
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        bash --noprofile --norc -c '
+            source "$PROJECT_ROOT/bin/clean.sh"
+            start_section "Idle Alpha"
+            end_section
+        '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Idle Alpha"* ]] || return 1
+    [[ "$output" == *"Nothing to clean"* ]] || return 1
+}

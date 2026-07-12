@@ -14,18 +14,61 @@ _MOLE_CORE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load core modules
 source "$_MOLE_CORE_DIR/base.sh"
+prepare_mole_tmpdir > /dev/null
 source "$_MOLE_CORE_DIR/log.sh"
 
 source "$_MOLE_CORE_DIR/timeout.sh"
+source "$_MOLE_CORE_DIR/timeouts.sh"
 source "$_MOLE_CORE_DIR/file_ops.sh"
 source "$_MOLE_CORE_DIR/help.sh"
 source "$_MOLE_CORE_DIR/ui.sh"
 source "$_MOLE_CORE_DIR/app_protection.sh"
+source "$_MOLE_CORE_DIR/bundle_resolver.sh"
+source "$_MOLE_CORE_DIR/pkg_receipts.sh"
 
 # Load sudo management if available
 if [[ -f "$_MOLE_CORE_DIR/sudo.sh" ]]; then
     source "$_MOLE_CORE_DIR/sudo.sh"
 fi
+
+# Normalize a path for comparisons while preserving root.
+mole_normalize_path() {
+    local path="$1"
+    local normalized="${path%/}"
+    [[ -n "$normalized" ]] && printf '%s\n' "$normalized" || printf '%s\n' "$path"
+}
+
+# Return a stable identity for an existing path. Prefer dev+inode so aliased
+# paths on case-insensitive filesystems or symlinks collapse to one identity.
+mole_path_identity() {
+    local path="$1"
+    local normalized
+    normalized=$(mole_normalize_path "$path")
+
+    if [[ -e "$normalized" || -L "$normalized" ]]; then
+        if command -v stat > /dev/null 2>&1; then
+            local fs_id=""
+            fs_id=$(stat -L -f '%d:%i' "$normalized" 2> /dev/null || stat -f '%d:%i' "$normalized" 2> /dev/null || true)
+            if [[ "$fs_id" =~ ^[0-9]+:[0-9]+$ ]]; then
+                printf 'inode:%s\n' "$fs_id"
+                return 0
+            fi
+        fi
+    fi
+
+    printf 'path:%s\n' "$normalized"
+}
+
+mole_identity_in_list() {
+    local needle="$1"
+    shift
+
+    local existing
+    for existing in "$@"; do
+        [[ "$existing" == "$needle" ]] && return 0
+    done
+    return 1
+}
 
 # Update via Homebrew
 update_via_homebrew() {
@@ -44,9 +87,9 @@ update_via_homebrew() {
         echo "Updating Homebrew..."
     fi
 
-    brew update > "$temp_update" 2>&1 &
-    local update_pid=$!
-    wait $update_pid 2> /dev/null || true # Continue even if brew update fails
+    local brew_update_timeout="${MOLE_HOMEBREW_UPDATE_TIMEOUT:-120}"
+    HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+        run_with_timeout "$brew_update_timeout" brew update > "$temp_update" 2>&1 || true
 
     if [[ -t 1 ]]; then
         stop_inline_spinner
@@ -59,9 +102,9 @@ update_via_homebrew() {
         echo "Upgrading Mole..."
     fi
 
-    brew upgrade mole > "$temp_upgrade" 2>&1 &
-    local upgrade_pid=$!
-    wait $upgrade_pid 2> /dev/null || true # Continue even if brew upgrade fails
+    local brew_upgrade_timeout="${MOLE_HOMEBREW_UPGRADE_TIMEOUT:-120}"
+    HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+        run_with_timeout "$brew_upgrade_timeout" brew upgrade mole > "$temp_upgrade" 2>&1 || true
 
     local upgrade_output
     upgrade_output=$(cat "$temp_upgrade")
@@ -79,7 +122,8 @@ update_via_homebrew() {
 
     if echo "$upgrade_output" | grep -q "already installed"; then
         local installed_version
-        installed_version=$(brew list --versions mole 2> /dev/null | awk '{print $2}')
+        installed_version=$(HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 \
+            run_with_timeout "$MOLE_TIMEOUT_PKG_LIST_SEC" brew list --versions mole 2> /dev/null | awk '{print $2}')
         [[ -z "$installed_version" ]] && installed_version=$(mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}')
         echo ""
         echo -e "${GREEN}${ICON_SUCCESS}${NC} Already on latest version, ${installed_version:-$current_version}"
@@ -91,7 +135,8 @@ update_via_homebrew() {
     else
         echo "$upgrade_output" | grep -Ev "^(==>|Updating Homebrew|Warning:)" || true
         local new_version
-        new_version=$(brew list --versions mole 2> /dev/null | awk '{print $2}')
+        new_version=$(HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 \
+            run_with_timeout "$MOLE_TIMEOUT_PKG_LIST_SEC" brew list --versions mole 2> /dev/null | awk '{print $2}')
         [[ -z "$new_version" ]] && new_version=$(mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}')
         echo ""
         echo -e "${GREEN}${ICON_SUCCESS}${NC} Updated to latest version, ${new_version:-$current_version}"
@@ -128,7 +173,13 @@ remove_apps_from_dock() {
     local changed=false
     for target in "${targets[@]}"; do
         local app_path="$target"
+        local bundle_id=""
         local full_path=""
+
+        if [[ "$target" == *"|"* ]]; then
+            app_path="${target%%|*}"
+            bundle_id="${target#*|}"
+        fi
 
         if [[ "$app_path" =~ [[:cntrl:]] ]]; then
             debug_log "Skipping dock removal for path with control chars: $app_path"
@@ -152,30 +203,31 @@ remove_apps_from_dock() {
         [[ -z "$full_path" ]] && continue
 
         local encoded_path="${full_path// /%20}"
+        local raw_path="$full_path"
 
-        # Find the index of the app in persistent-apps
-        local i=0
-        while true; do
-            local label
-            label=$(/usr/libexec/PlistBuddy -c "Print :persistent-apps:$i:tile-data:file-label" "$plist" 2> /dev/null || echo "")
-            [[ -z "$label" ]] && break
+        local dock_array
+        for dock_array in persistent-apps persistent-others recent-apps; do
+            local i=0
+            while true; do
+                local tile_type
+                tile_type=$(/usr/libexec/PlistBuddy -c "Print :$dock_array:$i:tile-type" "$plist" 2> /dev/null || echo "")
+                [[ -z "$tile_type" ]] && break
 
-            local url
-            url=$(/usr/libexec/PlistBuddy -c "Print :persistent-apps:$i:tile-data:file-data:_CFURLString" "$plist" 2> /dev/null || echo "")
-            [[ -z "$url" ]] && {
-                i=$((i + 1))
-                continue
-            }
+                local url dock_bundle_id
+                url=$(/usr/libexec/PlistBuddy -c "Print :$dock_array:$i:tile-data:file-data:_CFURLString" "$plist" 2> /dev/null || echo "")
+                dock_bundle_id=$(/usr/libexec/PlistBuddy -c "Print :$dock_array:$i:tile-data:bundle-identifier" "$plist" 2> /dev/null || echo "")
 
-            # Match by URL-encoded path to handle spaces in app names
-            if [[ -n "$encoded_path" && "$url" == *"$encoded_path"* ]]; then
-                if /usr/libexec/PlistBuddy -c "Delete :persistent-apps:$i" "$plist" 2> /dev/null; then
-                    changed=true
-                    # After deletion, current index i now points to the next item
-                    continue
+                if { [[ -n "$bundle_id" && "$dock_bundle_id" == "$bundle_id" ]] ||
+                    [[ -n "$encoded_path" && "$url" == *"$encoded_path"* ]] ||
+                    [[ -n "$raw_path" && "$url" == *"$raw_path"* ]]; }; then
+                    if /usr/libexec/PlistBuddy -c "Delete :$dock_array:$i" "$plist" 2> /dev/null; then
+                        changed=true
+                        # After deletion, current index i now points to the next item.
+                        continue
+                    fi
                 fi
-            fi
-            i=$((i + 1))
+                i=$((i + 1))
+            done
         done
     done
 

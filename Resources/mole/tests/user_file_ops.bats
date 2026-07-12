@@ -15,49 +15,27 @@ setup_file() {
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
 }
 
 setup() {
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
     rm -rf "$HOME/.config" "$HOME/.cache"
     mkdir -p "$HOME"
-}
-
-@test "get_darwin_major returns numeric version on macOS" {
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_darwin_major")
-    [[ "$result" =~ ^[0-9]+$ ]]
-}
-
-@test "get_darwin_major returns 999 on failure (mock uname failure)" {
-    result=$(bash -c "
-        uname() { return 1; }
-        export -f uname
-        source '$PROJECT_ROOT/lib/core/base.sh'
-        get_darwin_major
-    ")
-    [ "$result" = "999" ]
-}
-
-@test "is_darwin_ge correctly compares versions" {
-    run bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_darwin_ge 1"
-    [ "$status" -eq 0 ]
-
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_darwin_ge 100 && echo 'yes' || echo 'no'")
-    [[ -n "$result" ]]
 }
 
 @test "is_root_user detects non-root correctly" {
     result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; is_root_user && echo 'root' || echo 'not-root'")
     [ "$result" = "not-root" ]
-}
-
-@test "get_invoking_user returns current user when not sudo" {
-    result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_invoking_user")
-    [ -n "$result" ]
-    [ "$result" = "${USER:-$(whoami)}" ]
 }
 
 @test "get_invoking_uid returns numeric UID" {
@@ -74,6 +52,137 @@ setup() {
     result=$(bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; get_invoking_home")
     [ -n "$result" ]
     [ -d "$result" ]
+}
+
+@test "prepare_mole_tmpdir uses writable TMPDIR when available" {
+    local writable_tmp="$HOME/custom-tmp"
+    mkdir -p "$writable_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$writable_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; prepare_mole_tmpdir")
+    [ "$result" = "$writable_tmp" ]
+}
+
+@test "prepare_mole_tmpdir falls back to user cache when TMPDIR is not writable" {
+    local blocked_tmp="$HOME/blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/base.sh'; prepare_mole_tmpdir")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
+    [ -d "$HOME/.cache/mole/tmp" ]
+}
+
+@test "ensure_mole_temp_root caches the first resolved directory" {
+    local first_tmp="$HOME/first-tmp"
+    local second_tmp="$HOME/second-tmp"
+    mkdir -p "$first_tmp" "$second_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$first_tmp" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        ensure_mole_temp_root
+        first=\$MOLE_RESOLVED_TMPDIR
+        export TMPDIR='$second_tmp'
+        ensure_mole_temp_root
+        second=\$MOLE_RESOLVED_TMPDIR
+        printf '%s|%s\n' \"\$first\" \"\$second\"
+    ")
+
+    [ "$result" = "$first_tmp|$first_tmp" ]
+}
+
+@test "cleanup_temp_files removes command-substitution temp files (#1203)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+
+MOLE_RESOLVED_TMPDIR="$HOME/.cache/mole/tmp"
+MOLE_TEMP_REGISTRY_FILE=""
+export MOLE_RESOLVED_TMPDIR MOLE_TEMP_REGISTRY_FILE
+mkdir -p "$MOLE_RESOLVED_TMPDIR"
+
+temp_file=$(mktemp_file "subshell")
+printf 'BEFORE:%s\n' "$([[ -f "$temp_file" ]] && echo exists || echo missing)"
+cleanup_temp_files
+printf 'AFTER:%s\n' "$([[ -f "$temp_file" ]] && echo leaked || echo cleaned)"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"BEFORE:exists"* ]]
+    [[ "$output" == *"AFTER:cleaned"* ]]
+}
+
+@test "cleanup_temp_files rejects registry paths outside the temp root (#1203)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+
+MOLE_RESOLVED_TMPDIR="$HOME/.cache/mole/tmp"
+MOLE_TEMP_REGISTRY_FILE="$MOLE_RESOLVED_TMPDIR/mole.registry.$$"
+export MOLE_RESOLVED_TMPDIR MOLE_TEMP_REGISTRY_FILE
+mkdir -p "$MOLE_RESOLVED_TMPDIR"
+
+persistent_file="$HOME/.cache/mole/installed_apps_cache"
+touch "$persistent_file"
+printf '%s\n' "$persistent_file" > "$MOLE_TEMP_REGISTRY_FILE"
+
+cleanup_temp_files
+[[ -e "$persistent_file" ]]
+
+invalid_registry="$HOME/.cache/mole/not-a-temp-registry"
+printf '%s\n' "$persistent_file" > "$invalid_registry"
+MOLE_TEMP_REGISTRY_FILE="$invalid_registry"
+cleanup_temp_files
+[[ -e "$invalid_registry" ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "prune_stale_mole_temp_files leaves persistent cache and fresh temps alone (#1203)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEMP_STALE_MINUTES=60 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+
+temp_root="$HOME/.cache/mole/tmp"
+old_temp="$temp_root/old-scan"
+fresh_temp="$temp_root/current-scan"
+old_spinner="$temp_root/.mole-spinner.old"
+fresh_spinner="$temp_root/.mole-spinner.fresh"
+persistent_cache="$HOME/.cache/mole/installed_apps_cache"
+mkdir -p "$old_spinner" "$fresh_spinner"
+touch "$old_temp" "$fresh_temp" "$persistent_cache"
+touch "$old_spinner/message" "$fresh_spinner/message"
+touch -t 202001010101 "$old_temp" "$old_spinner" "$persistent_cache"
+
+prune_stale_mole_temp_files "$temp_root"
+
+[[ ! -e "$old_temp" ]]
+[[ ! -e "$old_spinner" ]]
+[[ -e "$fresh_temp" ]]
+[[ -e "$fresh_spinner/message" ]]
+[[ -e "$persistent_cache" ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "prepare_mole_tmpdir falls back to /tmp when TMPDIR and invoking home are unavailable" {
+    result=$(env HOME="$HOME" TMPDIR="/var/empty" bash -c "
+        source '$PROJECT_ROOT/lib/core/base.sh'
+        get_invoking_home() { echo '/var/empty'; }
+        prepare_mole_tmpdir
+    ")
+
+    [ "$result" = "/tmp" ]
+}
+
+@test "common.sh exports resolved TMPDIR for runtime callers" {
+    local blocked_tmp="$HOME/common-blocked-tmp"
+    mkdir -p "$blocked_tmp"
+    chmod 500 "$blocked_tmp"
+
+    result=$(env HOME="$HOME" TMPDIR="$blocked_tmp" bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; printf '%s\n' \"\$TMPDIR\"")
+    [ "$result" = "$HOME/.cache/mole/tmp" ]
 }
 
 @test "get_user_home returns home for valid user" {
