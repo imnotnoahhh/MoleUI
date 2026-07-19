@@ -11,37 +11,39 @@ readonly MOLE_PURGE_SHARED_LOADED=1
 # Canonical purge targets (heavy project build artifacts).
 readonly MOLE_PURGE_TARGETS=(
     "node_modules"
-    "target"        # Rust, Maven
-    "build"         # Gradle, various
-    "dist"          # JS builds
-    "venv"          # Python
-    ".venv"         # Python
-    ".pytest_cache" # Python (pytest)
-    ".mypy_cache"   # Python (mypy)
-    ".tox"          # Python (tox virtualenvs)
-    ".nox"          # Python (nox virtualenvs)
-    ".ruff_cache"   # Python (ruff)
-    ".gradle"       # Gradle local
-    "__pycache__"   # Python
-    ".next"         # Next.js
-    ".nuxt"         # Nuxt.js
-    ".output"       # Nuxt.js
-    "vendor"        # PHP Composer
-    "bin"           # .NET build output (guarded; see is_protected_purge_artifact)
-    "obj"           # C# / Unity
-    ".turbo"        # Turborepo cache
-    ".parcel-cache" # Parcel bundler
-    ".dart_tool"    # Flutter/Dart build cache
-    ".zig-cache"    # Zig
-    "zig-out"       # Zig
-    ".angular"      # Angular
-    ".svelte-kit"   # SvelteKit
-    ".astro"        # Astro
-    "coverage"      # Code coverage reports
-    "DerivedData"   # Xcode
-    "Pods"          # CocoaPods
-    ".cxx"          # React Native Android NDK build cache
-    ".expo"         # Expo
+    "target"            # Rust, Maven
+    "build"             # Gradle, various
+    "dist"              # JS builds
+    "venv"              # Python
+    ".venv"             # Python
+    ".pytest_cache"     # Python (pytest)
+    ".mypy_cache"       # Python (mypy)
+    ".tox"              # Python (tox virtualenvs)
+    ".nox"              # Python (nox virtualenvs)
+    ".ruff_cache"       # Python (ruff)
+    ".gradle"           # Gradle local
+    ".terragrunt-cache" # Terragrunt downloaded modules/providers
+    "__pycache__"       # Python
+    ".next"             # Next.js
+    ".nuxt"             # Nuxt.js
+    ".output"           # Nuxt.js
+    "vendor"            # PHP Composer
+    "bin"               # .NET build output (guarded; see is_protected_purge_artifact)
+    "obj"               # C# / Unity
+    ".turbo"            # Turborepo cache
+    ".parcel-cache"     # Parcel bundler
+    ".dart_tool"        # Flutter/Dart build cache
+    ".zig-cache"        # Zig
+    "zig-out"           # Zig
+    ".angular"          # Angular
+    ".svelte-kit"       # SvelteKit
+    ".astro"            # Astro
+    "coverage"          # Code coverage reports
+    "DerivedData"       # Xcode
+    "Pods"              # CocoaPods
+    ".cxx"              # React Native Android NDK build cache
+    ".expo"             # Expo
+    ".build"            # Swift Package Manager
 )
 
 readonly MOLE_PURGE_DEFAULT_SEARCH_PATHS=(
@@ -53,6 +55,7 @@ readonly MOLE_PURGE_DEFAULT_SEARCH_PATHS=(
     "$HOME/Workspace"
     "$HOME/Repos"
     "$HOME/Development"
+    "$HOME/Library/CloudStorage"
 )
 
 readonly MOLE_PURGE_MONOREPO_INDICATORS=(
@@ -70,14 +73,19 @@ readonly MOLE_PURGE_PROJECT_INDICATORS=(
     "requirements.txt"
     "pom.xml"
     "build.gradle"
+    "terragrunt.hcl"
     "Gemfile"
     "composer.json"
     "pubspec.yaml"
+    "Package.swift" # Swift Package Manager
     "Makefile"
     "build.zig"
     "build.zig.zon"
     ".git"
 )
+
+readonly MOLE_CACHEDIR_TAG_NAME="CACHEDIR.TAG"
+readonly MOLE_CACHEDIR_TAG_SIGNATURE="Signature: 8a477f597d28d172789f06886806bc55"
 
 # High-noise targets intentionally excluded from quick hint scans in mo clean.
 readonly MOLE_PURGE_QUICK_HINT_EXCLUDED_TARGETS=(
@@ -104,6 +112,16 @@ mole_purge_is_project_root() {
     return 1
 }
 
+mole_dir_has_cachedir_tag() {
+    local dir="$1"
+    local tag="$dir/$MOLE_CACHEDIR_TAG_NAME"
+    [[ -f "$tag" && ! -L "$tag" ]] || return 1
+
+    local signature
+    signature=$(LC_ALL=C dd bs=${#MOLE_CACHEDIR_TAG_SIGNATURE} count=1 < "$tag" 2> /dev/null || true)
+    [[ "$signature" == "$MOLE_CACHEDIR_TAG_SIGNATURE" ]]
+}
+
 mole_purge_quick_hint_target_names() {
     local target
     local excluded
@@ -122,6 +140,19 @@ mole_purge_quick_hint_target_names() {
     done
 }
 
+# Resolve a directory path to its canonical filesystem casing.
+# On case-insensitive macOS (APFS), ~/Code and ~/code point to the same
+# directory but with different display names.  This function returns the
+# real (on-disk) path so that string comparisons work correctly for dedup.
+mole_purge_resolve_path_case() {
+    local path="$1"
+    if [[ -d "$path" ]]; then
+        (cd "$path" 2> /dev/null && pwd -P) || printf '%s\n' "$path"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
 mole_purge_read_paths_config() {
     local config_file="${1:-$HOME/.config/mole/purge_paths}"
     [[ -f "$config_file" ]] || return 0
@@ -132,6 +163,7 @@ mole_purge_read_paths_config() {
         line="${line%"${line##*[![:space:]]}"}"
         [[ -z "$line" || "$line" =~ ^# ]] && continue
         line="${line/#\~/$HOME}"
+        line=$(mole_purge_resolve_path_case "$line")
         printf '%s\n' "$line"
     done < "$config_file"
 }

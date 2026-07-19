@@ -1,10 +1,15 @@
+//go:build darwin
+
 package main
 
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/tw93/mole/internal/units"
 )
 
 func displayPath(path string) string {
@@ -54,8 +59,8 @@ func truncateMiddle(s string, maxWidth int) string {
 
 	tailWidth := 0
 	tailIdx := len(runes)
-	for i := len(runes) - 1; i >= 0; i-- {
-		w := runeWidth(runes[i])
+	for i, r := range slices.Backward(runes) {
+		w := runeWidth(r)
 		if tailWidth+w > targetTailWidth {
 			break
 		}
@@ -77,25 +82,25 @@ func formatNumber(n int64) string {
 }
 
 func humanizeBytes(size int64) string {
-	if size < 0 {
-		return "0 B"
+	return units.BytesSI(size)
+}
+
+func formatPercent(percent float64, known bool) string {
+	const width = 6
+	if !known {
+		return "  --  "
 	}
-	const unit = 1000
-	if size < unit {
-		return fmt.Sprintf("%d B", size)
+
+	label := fmt.Sprintf("%.1f%%", percent)
+	if percent > 0 && percent < 0.1 {
+		label = "< 0.1%"
 	}
-	div, exp := int64(unit), 0
-	for n := size / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	value := float64(size) / float64(div)
-	return fmt.Sprintf("%.1f %cB", value, "kMGTPE"[exp])
+	return fmt.Sprintf("%*s", width, label)
 }
 
 func coloredProgressBar(value, maxValue int64, percent float64) string {
-	if maxValue <= 0 {
-		return colorGray + strings.Repeat("░", barWidth) + colorReset
+	if value <= 0 || maxValue <= 0 {
+		return strings.Repeat(" ", barWidth)
 	}
 
 	filled := min(int((value*int64(barWidth))/maxValue), barWidth)
@@ -109,6 +114,9 @@ func coloredProgressBar(value, maxValue int64, percent float64) string {
 		barColor = colorBlue
 	} else {
 		barColor = colorGreen
+	}
+	if filled == 0 {
+		return barColor + "▏" + strings.Repeat(" ", barWidth-1) + colorReset
 	}
 
 	var bar strings.Builder
@@ -128,7 +136,7 @@ func coloredProgressBar(value, maxValue int64, percent float64) string {
 				}
 			}
 		} else {
-			bar.WriteString(colorGray + "░" + barColor)
+			bar.WriteString(" ")
 		}
 	}
 	return bar.String() + colorReset
