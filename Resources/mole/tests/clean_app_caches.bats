@@ -10,11 +10,17 @@ setup_file() {
     HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-app-caches.XXXXXX")"
     export HOME
 
+    # Prevent AppleScript permission dialogs during tests
+    MOLE_TEST_MODE=1
+    export MOLE_TEST_MODE
+
     mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
     if [[ -n "${ORIGINAL_HOME:-}" ]]; then
         export HOME="$ORIGINAL_HOME"
     fi
@@ -31,13 +37,12 @@ clean_xcode_tools
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Xcode is running"* ]]
-    [[ "$output" != *"derived data"* ]]
-    [[ "$output" != *"archives"* ]]
+    [[ "$output" == *"Xcode DerivedData/Documentation · skipped (Xcode running)"* ]] || return 1
+    [[ "$output" != *"derived data"* ]] || return 1
     [[ "$output" != *"documentation cache"* ]]
 }
 
-@test "clean_xcode_tools cleans documentation caches when Xcode is not running" {
+@test "clean_xcode_tools cleans documentation caches but not archives when Xcode is not running" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -48,26 +53,51 @@ clean_xcode_tools
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Xcode derived data"* ]]
-    [[ "$output" == *"Xcode archives"* ]]
-    [[ "$output" == *"Xcode documentation cache"* ]]
+    # clean_xcode_tools does not touch DerivedData (that is clean_xcode_derived_data),
+    # so assert the documentation cache this test is actually named for.
+    [[ "$output" == *"Xcode documentation cache"* ]] || return 1
+    [[ "$output" != *"Xcode archives"* ]] || return 1
+    [[ "$output" == *"Xcode documentation cache"* ]] || return 1
     [[ "$output" == *"Xcode documentation index"* ]]
 }
 
-@test "clean_media_players protects spotify offline cache" {
+@test "clean_xcode_tools does not duplicate unavailable simulator cleanup" {
+    run grep -n "simctl" "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+@test "clean_media_players protects spotify offline cache when bnk has content" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 mkdir -p "$HOME/Library/Application Support/Spotify/PersistentCache/Storage"
-touch "$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk"
+dd if=/dev/zero of="$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk" bs=1024 count=2 2>/dev/null
 safe_clean() { echo "CLEAN:$2"; }
 clean_media_players
 EOF
 
     [ "$status" -eq 0 ]
+    [[ "$output" != *"CLEAN:Spotify cache"* ]] || return 1
     [[ "$output" == *"Spotify cache protected"* ]]
-    [[ "$output" != *"CLEAN: Spotify cache"* ]]
+}
+
+@test "clean_media_players cleans spotify cache when bnk is empty" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+mkdir -p "$HOME/Library/Application Support/Spotify/PersistentCache/Storage"
+> "$HOME/Library/Application Support/Spotify/PersistentCache/Storage/offline.bnk"
+safe_clean() { echo "CLEAN:$2"; }
+clean_media_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Spotify cache protected"* ]] || return 1
+    [[ "$output" == *"CLEAN:Spotify cache"* ]]
 }
 
 @test "clean_user_gui_applications calls all sections" {
@@ -80,30 +110,316 @@ safe_clean() { :; }
 clean_xcode_tools() { echo "xcode"; }
 clean_code_editors() { echo "editors"; }
 clean_communication_apps() { echo "comm"; }
+clean_dingtalk() { echo "dingtalk"; }
+clean_ai_apps() { echo "ai"; }
 clean_user_gui_applications
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"xcode"* ]]
-    [[ "$output" == *"editors"* ]]
-    [[ "$output" == *"comm"* ]]
+    [[ "$output" != *"xcode"* ]] || return 1
+    [[ "$output" != *"editors"* ]] || return 1
+    [[ "$output" == *"comm"* ]] || return 1
+    [[ "$output" == *"dingtalk"* ]] || return 1
+    [[ "$output" == *"ai"* ]]
+}
+
+@test "clean_final_cut_pro_generated_caches targets only safe generated media in Movies libraries" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Render Files/High Quality Media"
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Transcoded Media/Proxy Media"
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Transcoded Media/High Quality Media"
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Analysis Files/Stabilization"
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Original Media/Render Files/High Quality Media"
+mkdir -p "$HOME/Documents/Other.fcpbundle/Event/Render Files/High Quality Media"
+
+touch "$HOME/Movies/Project.fcpbundle/Event/Render Files/High Quality Media/render.mov"
+touch "$HOME/Movies/Project.fcpbundle/Event/Transcoded Media/Proxy Media/proxy.mov"
+
+pgrep() { return 1; }
+safe_clean() {
+    local arg
+    for arg in "$@"; do
+        printf 'CLEAN:%s\n' "$arg"
+    done
+}
+
+clean_final_cut_pro_generated_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Movies/Project.fcpbundle/Event/Render Files/High Quality Media"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Movies/Project.fcpbundle/Event/Transcoded Media/Proxy Media"* ]] || return 1
+    [[ "$output" == *"CLEAN:Final Cut Pro generated cache"* ]] || return 1
+    [[ "$output" != *"Transcoded Media/High Quality Media"* ]] || return 1
+    [[ "$output" != *"Analysis Files"* ]] || return 1
+    [[ "$output" != *"Original Media"* ]] || return 1
+    [[ "$output" != *"Documents/Other.fcpbundle"* ]]
+}
+
+@test "clean_final_cut_pro_generated_caches skips while Final Cut Pro is running" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+mkdir -p "$HOME/Movies/Project.fcpbundle/Event/Render Files/High Quality Media"
+pgrep() { return 0; }
+safe_clean() {
+    echo "unexpected safe_clean"
+    return 1
+}
+
+clean_final_cut_pro_generated_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Final Cut Pro generated caches · skipped (Final Cut Pro running)"* ]] || return 1
+    [[ "$output" != *"unexpected safe_clean"* ]]
+}
+
+@test "clean_jianying_pro_generated_caches targets only whitelisted regenerable subdirs" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+cache_root="$HOME/Movies/JianyingPro/User Data/Cache"
+# Regenerable (should be cleaned)
+mkdir -p "$cache_root/recognize"
+mkdir -p "$cache_root/frameThumbnail"
+mkdir -p "$cache_root/audioWave"
+mkdir -p "$cache_root/AlgorithmCache"
+# Draft-referenced / downloaded assets (must be preserved)
+mkdir -p "$cache_root/effect"
+mkdir -p "$cache_root/music"
+mkdir -p "$cache_root/AigcMaterailCache"
+mkdir -p "$cache_root/agencycache"
+# Copies of user-imported material (must be preserved, see the exclusion note)
+mkdir -p "$cache_root/image"
+mkdir -p "$cache_root/importcache3"
+# The user's editable drafts (must never be touched)
+mkdir -p "$HOME/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/my-project"
+
+pgrep() { return 1; }
+safe_clean() {
+    local arg
+    for arg in "$@"; do
+        printf 'CLEAN:%s\n' "$arg"
+    done
+}
+
+clean_jianying_pro_generated_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Movies/JianyingPro/User Data/Cache/recognize"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Movies/JianyingPro/User Data/Cache/frameThumbnail"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Movies/JianyingPro/User Data/Cache/audioWave"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Movies/JianyingPro/User Data/Cache/AlgorithmCache"* ]] || return 1
+    [[ "$output" == *"CLEAN:JianyingPro generated cache"* ]] || return 1
+    [[ "$output" != *"Cache/effect"* ]] || return 1
+    [[ "$output" != *"Cache/music"* ]] || return 1
+    [[ "$output" != *"Cache/image"* ]] || return 1
+    [[ "$output" != *"importcache3"* ]] || return 1
+    [[ "$output" != *"AigcMaterailCache"* ]] || return 1
+    [[ "$output" != *"agencycache"* ]] || return 1
+    [[ "$output" != *"Projects"* ]] || return 1
+}
+
+@test "jianying_pro_is_running ignores the resident menu-bar tray helper" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+# Faithful pgrep mock for a process table that contains ONLY the always-on
+# tray helper: -x compares the pattern against the process name exactly,
+# and -f substring-matches the pattern against the command line, like real
+# pgrep does.
+helper_name="VideoFusion-macOSTrayHelper"
+helper_cmdline="/Applications/VideoFusion-macOS.app/Contents/Frameworks/VideoFusion-macOSTrayHelper.app/Contents/MacOS/VideoFusion-macOSTrayHelper"
+pgrep() {
+    local mode="$1"
+    local pattern="${!#}"
+    if [[ "$mode" == "-x" ]]; then
+        [[ "$helper_name" == "$pattern" ]] && return 0
+        return 1
+    fi
+    case "$helper_cmdline" in
+        *"$pattern"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Mock fidelity check: the historical broad probe DOES match the helper's
+# command line. Without this, a lazy mock would pass even if the production
+# probe were widened back to "/VideoFusion-macOS.app/".
+if pgrep -f "/VideoFusion-macOS.app/" > /dev/null 2>&1; then
+    echo "MOCK-FAITHFUL: broad pattern matches helper"
+fi
+
+if jianying_pro_is_running; then
+    echo "WRONG: reported running"
+else
+    echo "OK: not running"
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"MOCK-FAITHFUL: broad pattern matches helper"* ]] || return 1
+    [[ "$output" == *"OK: not running"* ]] || return 1
+    [[ "$output" != *"WRONG"* ]] || return 1
+}
+
+@test "clean_jianying_pro_generated_caches skips while JianyingPro is running" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+mkdir -p "$HOME/Movies/JianyingPro/User Data/Cache/recognize"
+pgrep() { return 0; }
+safe_clean() {
+    echo "unexpected safe_clean"
+    return 1
+}
+
+clean_jianying_pro_generated_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"JianyingPro generated caches · skipped (JianyingPro running)"* ]] || return 1
+    [[ "$output" != *"unexpected safe_clean"* ]] || return 1
+}
+
+@test "clean_jianying_pro_generated_caches fails closed when the process probe errors" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+mkdir -p "$HOME/Movies/JianyingPro/User Data/Cache/recognize"
+pgrep() { return 2; }
+safe_clean() {
+    echo "unexpected safe_clean"
+    return 1
+}
+
+clean_jianying_pro_generated_caches
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"skipped (process state unknown)"* ]] || return 1
+    [[ "$output" != *"unexpected safe_clean"* ]] || return 1
+}
+
+@test "clean_jianying_pro_generated_caches is a no-op when cache root is absent" {
+    local empty_home
+    empty_home="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-app-caches.XXXXXX")"
+    run env HOME="$empty_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+pgrep() { return 1; }
+safe_clean() {
+    echo "unexpected safe_clean"
+    return 1
+}
+
+clean_jianying_pro_generated_caches
+EOF
+    rm -rf "$empty_home"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"unexpected safe_clean"* ]] || return 1
+}
+
+@test "is_final_cut_pro_generated_cache_target rejects protected sibling paths" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+library="$HOME/Movies/Project.fcpbundle"
+mkdir -p "$library/Event/Render Files/High Quality Media"
+mkdir -p "$library/Event/Original Media/Render Files/High Quality Media"
+mkdir -p "$library/Event/Transcoded Media/High Quality Media"
+
+is_final_cut_pro_generated_cache_target "$library" "$library/Event/Render Files/High Quality Media"
+! is_final_cut_pro_generated_cache_target "$library" "$library/Event/Original Media/Render Files/High Quality Media"
+! is_final_cut_pro_generated_cache_target "$library" "$library/Event/Transcoded Media/High Quality Media"
+EOF
+
+    [ "$status" -eq 0 ]
 }
 
 @test "clean_ai_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
+note_activity() { :; }
 clean_ai_apps
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ChatGPT cache"* ]]
-    [[ "$output" == *"Claude desktop cache"* ]]
+    [[ "$output" == *"ChatGPT cache"* ]] || return 1
+    [[ "$output" == *"Claude desktop cache"* ]] || return 1
+    [[ "$output" == *"Google Clearcut logs"* ]] || return 1
+    [[ "$output" == *"LM Studio cache"* ]] || return 1
+    [[ "$output" != *"Codex"* ]]
+}
+
+@test "clean_ai_apps targets app cache but never the legacy LM Studio home" {
+    mkdir -p "$HOME/Library/Caches/com.lmstudio.lmstudio"
+    echo "cache" > "$HOME/Library/Caches/com.lmstudio.lmstudio/cache.bin"
+    mkdir -p "$HOME/.cache/lm-studio/models"
+    echo "model" > "$HOME/.cache/lm-studio/models/keep.gguf"
+    mkdir -p "$HOME/.lmstudio/models"
+    echo "model" > "$HOME/.lmstudio/models/keep.gguf"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { printf 'CLEAN:%s\n' "${@:1:$#-1}"; }
+note_activity() { :; }
+clean_ai_apps
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Library/Caches/com.lmstudio.lmstudio/cache.bin"* ]] || return 1
+    [[ "$output" != *"$HOME/.cache/lm-studio"* ]] || return 1
+    [[ "$output" != *"$HOME/.lmstudio"* ]] || return 1
+}
+
+@test "clean_ai_apps skips Codex Desktop state by default" {
+    mkdir -p "$HOME/Library/Application Support/Codex/Cache" "$HOME/Library/Logs/com.openai.codex"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+note_activity() { echo "NOTE_ACTIVITY"; }
+clean_ai_apps
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Codex Desktop state · preserved (sessions, credentials)"* ]] || return 1
+    [[ "$output" == *"NOTE_ACTIVITY"* ]] || return 1
+    [[ "$output" != *"Codex cache"* ]] || return 1
+    [[ "$output" != *"Codex CLI logs"* ]]
 }
 
 @test "clean_design_tools calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -111,25 +427,26 @@ clean_design_tools
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Sketch cache"* ]]
+    [[ "$output" == *"Sketch cache"* ]] || return 1
     [[ "$output" == *"Figma cache"* ]]
 }
 
 @test "clean_dingtalk calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
+mkdir -p ~/Library/Application\ Support/iDingTalk
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
 clean_dingtalk
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"DingTalk iDingTalk cache"* ]]
+    [[ "$output" == *"DingTalk iDingTalk cache"* ]] || return 1
     [[ "$output" == *"DingTalk logs"* ]]
 }
 
 @test "clean_download_managers calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -137,12 +454,12 @@ clean_download_managers
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Aria2 cache"* ]]
+    [[ "$output" == *"Aria2 cache"* ]] || return 1
     [[ "$output" == *"qBittorrent cache"* ]]
 }
 
 @test "clean_productivity_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -150,12 +467,12 @@ clean_productivity_apps
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"MiaoYan cache"* ]]
+    [[ "$output" == *"MiaoYan cache"* ]] || return 1
     [[ "$output" == *"Flomo cache"* ]]
 }
 
 @test "clean_screenshot_tools calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -163,12 +480,12 @@ clean_screenshot_tools
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"CleanShot cache"* ]]
+    [[ "$output" == *"CleanShot cache"* ]] || return 1
     [[ "$output" == *"Xnip cache"* ]]
 }
 
 @test "clean_office_applications calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/user.sh"
 stop_section_spinner() { :; }
@@ -177,34 +494,420 @@ clean_office_applications
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Microsoft Word cache"* ]]
+    [[ "$output" == *"Microsoft Word cache"* ]] || return 1
     [[ "$output" == *"Apple iWork cache"* ]]
 }
 
 @test "clean_communication_apps includes Microsoft Teams legacy caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
+mkdir -p ~/Library/Application\ Support/Microsoft/Teams
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
 clean_communication_apps
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Microsoft Teams legacy cache"* ]]
+    [[ "$output" == *"Microsoft Teams legacy cache"* ]] || return 1
     [[ "$output" == *"Microsoft Teams legacy logs"* ]]
 }
 
 @test "clean_gaming_platforms includes steam and minecraft related caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
+mkdir -p ~/Library/Application\ Support/Steam ~/Library/Application\ Support/Battle.net
+mkdir -p ~/Library/Application\ Support/minecraft ~/.lunarclient
+mkdir -p ~/Library/Application\ Support/PCSX2 ~/Library/Application\ Support/rpcs3
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
 clean_gaming_platforms
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Steam app cache"* ]]
-    [[ "$output" == *"Steam shader cache"* ]]
-    [[ "$output" == *"Minecraft logs"* ]]
+    [[ "$output" == *"Steam app cache"* ]] || return 1
+    [[ "$output" == *"Steam shader cache"* ]] || return 1
+    [[ "$output" == *"Minecraft logs"* ]] || return 1
     [[ "$output" == *"Lunar Client logs"* ]]
+}
+
+@test "clean_code_editors includes Zed caches" {
+    mkdir -p "$HOME/Library/Application Support/Zed/node/cache/_cacache"
+    mkdir -p "$HOME/Library/Application Support/Zed/node/node-v24.11.0-darwin-arm64/cache/_cacache"
+    mkdir -p "$HOME/Library/Application Support/Zed/node/node-v24.11.0-darwin-arm64/bin"
+    mkdir -p "$HOME/Library/Application Support/Zed/db"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "CLEAN:$1|$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Zed cache"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Library/Application Support/Zed/node/cache/_cacache|Zed npm cache"* ]] || return 1
+    [[ "$output" == *"CLEAN:$HOME/Library/Application Support/Zed/node/node-v24.11.0-darwin-arm64/cache/_cacache|Zed npm cache"* ]] || return 1
+    [[ "$output" != *"$HOME/Library/Application Support/Zed/db"* ]] || return 1
+    [[ "$output" != *"node-v24.11.0-darwin-arm64/bin"* ]] || return 1
+    [[ "$output" == *"Zed logs"* ]] || return 1
+}
+
+@test "clean_code_editors includes VS Code WebStorage CacheStorage only" {
+    mkdir -p "$HOME/Library/Application Support/Code/WebStorage/29/CacheStorage/uuid-1"
+    mkdir -p "$HOME/Library/Application Support/Code/WebStorage/29/Local Storage"
+    touch "$HOME/Library/Application Support/Code/WebStorage/29/QuotaManager"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "CLEAN:$1|$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Library/Application Support/Code/WebStorage/29/CacheStorage/uuid-1|VS Code webview cache"* ]] || return 1
+    [[ "$output" != *"Local Storage"* ]] || return 1
+    [[ "$output" != *"QuotaManager"* ]]
+}
+
+@test "clean_shell_utils includes Warp and Ghostty caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_shell_utils
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warp cache"* ]] || return 1
+    [[ "$output" == *"Warp log"* ]] || return 1
+    [[ "$output" == *"Warp Sentry crash reports"* ]] || return 1
+    [[ "$output" == *"Ghostty cache"* ]]
+}
+
+@test "clean_video_players includes Stremio caches" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+mkdir -p ~/Library/Application\ Support/stremio
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_video_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Stremio cache"* ]] || return 1
+    [[ "$output" == *"Stremio server cache"* ]]
+}
+
+@test "clean_video_players cleans SenPlayer videoCache but not sibling data (#1070)" {
+    local sen="$HOME/Library/Containers/com.wuziqi.SenPlayer/Data"
+    mkdir -p "$sen/tmp/videoCache" "$sen/Documents"
+    touch "$sen/tmp/videoCache/segment.mp4" "$sen/Documents/saved.mp4"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { local arg; for arg in "$@"; do printf 'CLEAN:%s\n' "$arg"; done; }
+clean_video_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Library/Containers/com.wuziqi.SenPlayer/Data/tmp/videoCache/segment.mp4"* &&
+        "$output" != *"SenPlayer/Data/Documents"* ]]
+}
+
+@test "clean_productivity_apps cleans Folo Cache_Data but not sibling data (#1070)" {
+    local folo="$HOME/Library/Containers/is.follow/Data/Library/Application Support/Folo"
+    mkdir -p "$folo/Cache/Cache_Data"
+    touch "$folo/Cache/Cache_Data/blob" "$folo/Cache/other.bin" "$folo/db.sqlite"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { local arg; for arg in "$@"; do printf 'CLEAN:%s\n' "$arg"; done; }
+clean_productivity_apps
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/Library/Containers/is.follow/Data/Library/Application Support/Folo/Cache/Cache_Data/blob"* &&
+        "$output" != *"Folo/Cache/other.bin"* &&
+        "$output" != *"db.sqlite"* ]]
+}
+
+@test "clean_editor_obsolete_extensions removes only dirs listed in .obsolete (#910)" {
+    local ext_root="$HOME/.vscode/extensions"
+    mkdir -p "$ext_root/pub.ext-old-1.0.0" "$ext_root/pub.ext-new-1.1.0"
+    cat > "$ext_root/.obsolete" << 'JSON'
+{
+  "pub.ext-old-1.0.0": true
+}
+JSON
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "CLEAN:$1"; }
+clean_editor_obsolete_extensions
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$HOME/.vscode/extensions/pub.ext-old-1.0.0"* ]] || return 1
+    [[ "$output" != *"pub.ext-new-1.1.0"* ]]
+}
+
+@test "clean_editor_obsolete_extensions rejects path-traversal keys in .obsolete (#910)" {
+    rm -rf "$HOME/.vscode" "$HOME/.vscode-insiders" "$HOME/.cursor"
+    local ext_root="$HOME/.cursor/extensions"
+    mkdir -p "$ext_root"
+    mkdir -p "$HOME/obsolete-victim"
+    # A legitimate entry alongside the malicious ones. Without it the function has
+    # nothing to clean, output is empty, and "no CLEAN: line" cannot distinguish
+    # "traversal rejected" from "never ran".
+    mkdir -p "$ext_root/publisher.legit-1.0.0"
+    cat > "$ext_root/.obsolete" << 'JSON'
+{
+  "../../obsolete-victim": true,
+  "..": true,
+  "publisher.legit-1.0.0": true
+}
+JSON
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "CLEAN:$1"; }
+clean_editor_obsolete_extensions
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CLEAN:$ext_root/publisher.legit-1.0.0"* ]] || return 1
+    [[ "$output" != *"obsolete-victim"* ]] || return 1
+    [[ "$output" != *"CLEAN:$HOME/.cursor\""* ]] || return 1
+    [ -d "$HOME/obsolete-victim" ]
+}
+
+@test "clean_code_editors includes CodeBuddy Extension caches when directory exists" {
+    mkdir -p "$HOME/Library/Application Support/CodeBuddyExtension"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CodeBuddy Extension cache"* ]] || return 1
+    [[ "$output" == *"CodeBuddy Extension logs"* ]]
+}
+
+@test "clean_code_editors includes CodeBuddy CN caches when directory exists" {
+    mkdir -p "$HOME/Library/Application Support/CodeBuddy CN"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"CodeBuddy CN cache"* ]] || return 1
+    [[ "$output" == *"CodeBuddy CN logs"* ]] || return 1
+    [[ "$output" == *"CodeBuddy CN GPU cache"* ]]
+}
+
+@test "clean_code_editors skips CodeBuddy when directories are absent" {
+    rm -rf "$HOME/Library/Application Support/CodeBuddyExtension" "$HOME/Library/Application Support/CodeBuddy CN"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_code_editors
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"CodeBuddy"* ]]
+}
+
+@test "clean_media_players includes QQ Music Mac container caches" {
+    mkdir -p "$HOME/Library/Containers/com.tencent.QQMusicMac/Data/Library/Application Support/QQMusicMac"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_media_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"QQ Music Mac cache"* ]] || return 1
+    [[ "$output" == *"QQ Music streaming cache"* ]] || return 1
+    [[ "$output" == *"QQ Music logs"* ]] || return 1
+    [[ "$output" == *"QQ Music container cache"* ]]
+}
+
+@test "clean_media_players does not reference iDownloadProxy" {
+    mkdir -p "$HOME/Library/Containers/com.tencent.QQMusicMac/Data/Library/Application Support/QQMusicMac"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$1 $2"; }
+clean_media_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"iDownloadProxy"* ]]
+}
+
+@test "clean_video_players includes Tencent Video container caches" {
+    mkdir -p "$HOME/Library/Containers/com.tencent.tenvideo/Data/Library/Application Support"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_video_players
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Tencent Video old installer"* ]] || return 1
+    [[ "$output" == *"Tencent Video native cache"* ]] || return 1
+    [[ "$output" == *"Tencent Video document cache"* ]]
+}
+
+@test "clean_productivity_apps includes Spacedrive thumbnail cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+safe_clean() { echo "$2"; }
+clean_productivity_apps
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Spacedrive thumbnail cache"* ]]
+}
+
+@test "clean_neatdm_stale_segments removes segments older than threshold" {
+    local neatdm_dir="$HOME/Library/Application Support/com.NeatDownloadManager"
+    rm -rf "$neatdm_dir"
+    mkdir -p "$neatdm_dir/12345"
+    touch "$neatdm_dir/12345/seg.x0"
+    # Set mtime to 31 days ago
+    touch -t "$(date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/12345/seg.x0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+note_activity() { :; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+clean_neatdm_stale_segments
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NeatDM stale downloads"* ]] || return 1
+    [[ "$output" == *"1 items"* ]]
+}
+
+@test "clean_neatdm_stale_segments skips recent segments" {
+    local neatdm_dir="$HOME/Library/Application Support/com.NeatDownloadManager"
+    rm -rf "$neatdm_dir"
+    mkdir -p "$neatdm_dir/67890"
+    touch "$neatdm_dir/67890/seg.x0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+note_activity() { :; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+clean_neatdm_stale_segments
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"NeatDM stale downloads"* ]] || return 1
+    # The absence of a label is weak evidence on its own: this run prints nothing at
+    # all, so assert the survival the test is actually named for.
+    [ -f "$neatdm_dir/67890/seg.x0" ]
+    [ -d "$neatdm_dir/67890" ]
+}
+
+@test "clean_neatdm_stale_segments skips non-numeric segment-like directories" {
+    local neatdm_dir="$HOME/Library/Application Support/com.NeatDownloadManager"
+    rm -rf "$neatdm_dir"
+    mkdir -p "$neatdm_dir/history-backup"
+    touch "$neatdm_dir/history-backup/seg.x0"
+    touch -t "$(date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/history-backup/seg.x0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+note_activity() { :; }
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+clean_neatdm_stale_segments
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"NeatDM stale downloads"* ]] || return 1
+    # This path prints nothing, so the absence check alone cannot fail. Assert the
+    # survival the test is named for.
+    [ -f "$neatdm_dir/history-backup/seg.x0" ]
+    [ -d "$neatdm_dir/history-backup" ]
+}
+
+@test "clean_neatdm_stale_segments skips when directory absent" {
+    rm -rf "$HOME/Library/Application Support/com.NeatDownloadManager"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+clean_neatdm_stale_segments
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ -z "$output" ]]
+}
+
+@test "clean_launcher_apps does not touch Raycast cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+mkdir -p "$HOME/Library/Caches/com.raycast.macos/urlcache"
+mkdir -p "$HOME/Library/Caches/com.raycast.macos/fsCachedData"
+safe_clean() { echo "CLEAN:$2|$1"; }
+clean_launcher_apps
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Raycast"* ]] && [[ "$output" != *"raycast"* ]]
 }

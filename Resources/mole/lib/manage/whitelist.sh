@@ -8,6 +8,7 @@ set -euo pipefail
 _MOLE_MANAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_MOLE_MANAGE_DIR/../core/common.sh"
 source "$_MOLE_MANAGE_DIR/../ui/menu_simple.sh"
+source "$_MOLE_MANAGE_DIR/../optimize/catalog.sh"
 
 # Config file paths
 readonly WHITELIST_CONFIG_CLEAN="$HOME/.config/mole/whitelist"
@@ -78,10 +79,10 @@ get_all_cache_items() {
     # Format: "display_name|pattern|category"
     cat << 'EOF'
 Apple Mail cache|$HOME/Library/Caches/com.apple.mail/*|system_cache
-Gradle build cache (Android Studio, Gradle projects)|$HOME/.gradle/caches/*|ide_cache
+Gradle build cache (Android Studio, Gradle projects)|$HOME/.gradle/caches/build-cache-*/*|ide_cache
 Gradle daemon processes cache|$HOME/.gradle/daemon/*|ide_cache
+Gradle worker cache|$HOME/.gradle/workers/*|ide_cache
 Xcode DerivedData (build outputs, indexes)|$HOME/Library/Developer/Xcode/DerivedData/*|ide_cache
-Xcode archives (built app packages)|$HOME/Library/Developer/Xcode/Archives/*|ide_cache
 Xcode internal cache files|$HOME/Library/Caches/com.apple.dt.Xcode/*|ide_cache
 Xcode iOS device support symbols|$HOME/Library/Developer/Xcode/iOS DeviceSupport/*/Symbols/System/Library/Caches/*|ide_cache
 Maven local repository (Java dependencies)|$HOME/.m2/repository/*|ide_cache
@@ -93,6 +94,10 @@ VS Code runtime cache|$HOME/Library/Application Support/Code/Cache/*|ide_cache
 VS Code extension and update cache|$HOME/Library/Application Support/Code/CachedData/*|ide_cache
 VS Code system cache (Cursor, VSCodium)|$HOME/Library/Caches/com.microsoft.VSCode/*|ide_cache
 Cursor editor cache|$HOME/Library/Caches/com.todesktop.230313mzl4w4u92/*|ide_cache
+LM Studio app cache|$HOME/Library/Caches/com.lmstudio.lmstudio/*|ai_ml_cache
+Codex Desktop update staging|$HOME/Library/Caches/com.openai.codex/org.sparkle-project.Sparkle/Installation|ai_ml_cache
+Chrome on-device AI models|$HOME/Library/Application Support/Google/Chrome/OptGuideOnDevice*/*|ai_ml_cache
+Chrome optimization guide models|$HOME/Library/Application Support/Google/Chrome/optimization_guide_model_store/*|ai_ml_cache
 Bazel build cache|$HOME/.cache/bazel/*|compiler_cache
 Go build cache|$HOME/Library/Caches/go-build/*|compiler_cache
 Go module cache|$HOME/go/pkg/mod/*|compiler_cache
@@ -120,13 +125,15 @@ npm package cache|$HOME/.npm/_cacache/*|package_manager
 pip Python package cache|$HOME/.cache/pip/*|package_manager
 uv Python package cache|$HOME/.cache/uv/*|package_manager
 R renv global cache (virtual environments)|$HOME/Library/Caches/org.R-project.R/R/renv/*|package_manager
+tealdeer tldr pages cache|$HOME/Library/Caches/tealdeer/tldr-pages|package_manager
 Homebrew downloaded packages|$HOME/Library/Caches/Homebrew/*|package_manager
 Yarn package manager cache|$HOME/.cache/yarn/*|package_manager
 pnpm package store|$HOME/Library/pnpm/store/*|package_manager
-Composer PHP dependencies cache|$HOME/.composer/cache/*|package_manager
+Composer PHP dependencies cache (legacy)|$HOME/.composer/cache/*|package_manager
+Composer PHP dependencies cache|$HOME/Library/Caches/composer/*|package_manager
 RubyGems cache|$HOME/.gem/cache/*|package_manager
-Conda packages cache|$HOME/.conda/pkgs/*|package_manager
-Anaconda packages cache|$HOME/anaconda3/pkgs/*|package_manager
+Conda package metadata/tarball cache|$HOME/.conda/pkgs|package_manager
+Anaconda package metadata/tarball cache|$HOME/anaconda3/pkgs|package_manager
 PyTorch model cache|$HOME/.cache/torch/*|ai_ml_cache
 TensorFlow model and dataset cache|$HOME/.cache/tensorflow/*|ai_ml_cache
 HuggingFace models and datasets|$HOME/.cache/huggingface/*|ai_ml_cache
@@ -140,12 +147,15 @@ Firefox browser cache|$HOME/Library/Caches/Firefox/*|browser_cache
 Brave browser cache|$HOME/Library/Caches/BraveSoftware/Brave-Browser/*|browser_cache
 Surge proxy cache|$HOME/Library/Caches/com.nssurge.surge-mac/*|network_tools
 Surge configuration and data|$HOME/Library/Application Support/com.nssurge.surge-mac/*|network_tools
-Docker Desktop image cache|$HOME/Library/Containers/com.docker.docker/Data/*|container_cache
+Docker BuildX cache|$HOME/.docker/buildx/cache/*|container_cache
 Podman container cache|$HOME/.local/share/containers/cache/*|container_cache
+Tart OCI/IPSW cache|$HOME/.tart/cache|container_cache
 Font cache|$HOME/Library/Caches/com.apple.FontRegistry/*|system_cache
 Spotlight metadata cache|$HOME/Library/Caches/com.apple.spotlight/*|system_cache
 CloudKit cache|$HOME/Library/Caches/CloudKit/*|system_cache
 Trash|$HOME/.Trash|system_cache
+iOS/iPadOS device firmware (.ipsw) from iTunes/Finder|$HOME/Library/iTunes/*Software Updates/*.ipsw|system_cache
+Apple Configurator 2 device firmware (.ipsw)|$HOME/Library/Group Containers/*.group.com.apple.configurator/**/*.ipsw|system_cache
 EOF
     # Add FINDER_METADATA with constant reference
     echo "Finder metadata, .DS_Store|$FINDER_METADATA_SENTINEL|system_cache"
@@ -154,19 +164,12 @@ EOF
 # Get all optimize items with their patterns
 get_optimize_whitelist_items() {
     # Format: "display_name|pattern|category"
-    cat << 'EOF'
-macOS Firewall check|firewall|security_check
-Gatekeeper check|gatekeeper|security_check
-macOS system updates check|check_macos_updates|update_check
-Mole updates check|check_mole_update|update_check
-Homebrew health check (doctor)|check_brew_health|health_check
-SIP status check|check_sip|security_check
-FileVault status check|check_filevault|security_check
-TouchID sudo check|check_touchid|config_check
-Rosetta 2 check|check_rosetta|config_check
-Git configuration check|check_git_config|config_check
-Login items check|check_login_items|config_check
-EOF
+    local index
+    for ((index = 0; index < ${#MOLE_OPTIMIZE_ACTIONS[@]}; index++)); do
+        printf '%s|%s|optimize_task\n' \
+            "${MOLE_OPTIMIZE_WHITELIST_NAMES[$index]}" \
+            "${MOLE_OPTIMIZE_ACTIONS[$index]}"
+    done
 }
 
 patterns_equivalent() {
@@ -207,10 +210,18 @@ load_whitelist() {
             patterns+=("$line")
         done < "$config_file"
     else
+        # bash 3.2 (default on macOS) raises "unbound variable" under set -u
+        # when expanding "${arr[@]}" on an empty array, so gate each branch
+        # on the array length. patterns stays the local empty default when a
+        # default list is empty, which the downstream dedupe loop handles.
         if [[ "$mode" == "clean" ]]; then
-            patterns=("${DEFAULT_WHITELIST_PATTERNS[@]}")
+            if [[ ${#DEFAULT_WHITELIST_PATTERNS[@]} -gt 0 ]]; then
+                patterns=("${DEFAULT_WHITELIST_PATTERNS[@]}")
+            fi
         elif [[ "$mode" == "optimize" ]]; then
-            patterns=("${DEFAULT_OPTIMIZE_WHITELIST_PATTERNS[@]}")
+            if [[ ${#DEFAULT_OPTIMIZE_WHITELIST_PATTERNS[@]} -gt 0 ]]; then
+                patterns=("${DEFAULT_OPTIMIZE_WHITELIST_PATTERNS[@]}")
+            fi
         fi
     fi
 
@@ -230,6 +241,7 @@ load_whitelist() {
             unique_patterns+=("$pattern")
         done
         CURRENT_WHITELIST_PATTERNS=("${unique_patterns[@]}")
+        WHITELIST_PATTERNS=("${unique_patterns[@]}")
 
         # Migrate legacy optimize config to the new path automatically
         if [[ "$mode" == "optimize" && "$using_legacy" == "true" && "$config_file" != "$WHITELIST_CONFIG_OPTIMIZE" ]]; then
@@ -237,6 +249,7 @@ load_whitelist() {
         fi
     else
         CURRENT_WHITELIST_PATTERNS=()
+        WHITELIST_PATTERNS=()
     fi
 }
 
@@ -284,7 +297,7 @@ manage_whitelist_categories() {
         items_source=$(get_optimize_whitelist_items)
         active_config_file="$WHITELIST_CONFIG_OPTIMIZE"
         local display_config="${active_config_file/#$HOME/~}"
-        menu_title="Whitelist Manager, Select system checks to ignore
+        menu_title="Whitelist Manager, Select optimize tasks to ignore
 ${GRAY}Edit: ${display_config}${NC}"
     else
         items_source=$(get_all_cache_items)
@@ -368,13 +381,13 @@ ${GRAY}Edit: ${display_config}${NC}"
     fi
 
     MOLE_SELECTION_RESULT=""
-    paginated_multi_select "$menu_title" "${menu_options[@]}"
+    local exit_code=0
+    paginated_multi_select "$menu_title" "${menu_options[@]}" || exit_code=$?
     unset MOLE_PRESELECTED_INDICES
-    local exit_code=$?
 
-    # Normal exit or cancel
     if [[ $exit_code -ne 0 ]]; then
-        return 1
+        echo -e "${GRAY}Cancelled, no changes saved${NC}"
+        return 0
     fi
 
     # Convert selected indices to patterns
