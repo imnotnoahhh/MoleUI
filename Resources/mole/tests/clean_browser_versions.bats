@@ -1,27 +1,33 @@
 #!/usr/bin/env bats
 
 setup_file() {
-    PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
-    export PROJECT_ROOT
+	PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
+	export PROJECT_ROOT
 
-    ORIGINAL_HOME="${HOME:-}"
-    export ORIGINAL_HOME
+	ORIGINAL_HOME="${HOME:-}"
+	export ORIGINAL_HOME
 
-    HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-browser-cleanup.XXXXXX")"
-    export HOME
+	HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-browser-cleanup.XXXXXX")"
+	export HOME
 
-    mkdir -p "$HOME"
+	# Prevent AppleScript permission dialogs during tests
+	MOLE_TEST_MODE=1
+	export MOLE_TEST_MODE
+
+	mkdir -p "$HOME"
 }
 
 teardown_file() {
-    rm -rf "$HOME"
-    if [[ -n "${ORIGINAL_HOME:-}" ]]; then
-        export HOME="$ORIGINAL_HOME"
-    fi
+	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		rm -rf "$HOME"
+	fi
+	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
+		export HOME="$ORIGINAL_HOME"
+	fi
 }
 
 @test "clean_chrome_old_versions skips when Chrome is running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -33,13 +39,33 @@ export -f pgrep
 clean_chrome_old_versions
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Google Chrome running"* ]]
-    [[ "$output" == *"old versions cleanup skipped"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Chrome old versions · skipped (Chrome running)"* ]]
+}
+
+@test "clean_chrome_old_versions skips when only Chrome helpers are running" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() {
+    case "$*" in
+        *"Google Chrome Helper"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+export -f pgrep
+
+clean_chrome_old_versions
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Chrome old versions · skipped (Chrome running)"* ]]
 }
 
 @test "clean_chrome_old_versions removes old versions but keeps current" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -52,6 +78,7 @@ export -f pgrep
 CHROME_APP="$HOME/Applications/Google Chrome.app"
 VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
 mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0,130.0.0.0}
+export MOLE_CHROME_APP_PATHS="$CHROME_APP"
 
 # Create Current symlink pointing to 130.0.0.0
 ln -s "130.0.0.0" "$VERSIONS_DIR/Current"
@@ -74,14 +101,14 @@ clean_chrome_old_versions
 echo "Cleaned: $files_cleaned items"
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Chrome old versions"* ]]
-    [[ "$output" == *"dry"* ]]
-    [[ "$output" == *"Cleaned: 2 items"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Chrome old versions"* ]] || return 1
+	[[ "$output" == *"dry"* ]] || return 1
+	[[ "$output" == *"Cleaned: 2 items"* ]]
 }
 
 @test "clean_chrome_old_versions respects whitelist" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -94,6 +121,7 @@ export -f pgrep
 CHROME_APP="$HOME/Applications/Google Chrome.app"
 VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
 mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0,130.0.0.0}
+export MOLE_CHROME_APP_PATHS="$CHROME_APP"
 
 # Create Current symlink pointing to 130.0.0.0
 ln -s "130.0.0.0" "$VERSIONS_DIR/Current"
@@ -119,18 +147,140 @@ clean_chrome_old_versions
 echo "Cleaned: $files_cleaned items"
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Cleaned: 1 items"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Cleaned: 1 items"* ]]
 }
 
-@test "clean_edge_updater_old_versions keeps latest version" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true bash --noprofile --norc <<'EOF'
+@test "clean_chrome_old_versions keeps newest version even when Current points older" {
+	rm -rf "$HOME/Applications/Google Chrome.app"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
 
 pgrep() { return 1; }
 export -f pgrep
+
+CHROME_APP="$HOME/Applications/Google Chrome.app"
+VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
+mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0,130.0.0.0}
+export MOLE_CHROME_APP_PATHS="$CHROME_APP"
+touch -t 202601010000 "$VERSIONS_DIR/128.0.0.0"
+touch -t 202602010000 "$VERSIONS_DIR/129.0.0.0"
+touch -t 202603010000 "$VERSIONS_DIR/130.0.0.0"
+ln -s "129.0.0.0" "$VERSIONS_DIR/Current"
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_chrome_old_versions
+echo "Cleaned: $files_cleaned items"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Cleaned: 1 items"* ]]
+}
+
+@test "clean_edge_old_versions keeps newest version even when Current points older" {
+	rm -rf "$HOME/Applications/Microsoft Edge.app"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+export -f pgrep
+
+EDGE_APP="$HOME/Applications/Microsoft Edge.app"
+VERSIONS_DIR="$EDGE_APP/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
+mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0,130.0.0.0}
+export MOLE_EDGE_APP_PATHS="$EDGE_APP"
+touch -t 202601010000 "$VERSIONS_DIR/128.0.0.0"
+touch -t 202602010000 "$VERSIONS_DIR/129.0.0.0"
+touch -t 202603010000 "$VERSIONS_DIR/130.0.0.0"
+ln -s "129.0.0.0" "$VERSIONS_DIR/Current"
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_edge_old_versions
+echo "Cleaned: $files_cleaned items"
+EOF
+
+	# HOME is shared across tests in this file; leave a clean slate for the
+	# later "removes old versions" test that reuses this app path.
+	rm -rf "$HOME/Applications/Microsoft Edge.app"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	# 130 is a freshly staged update newer than Current (129); only 128 goes.
+	[[ "$output" == *"Cleaned: 1 items"* ]] || { echo "$output"; return 1; }
+}
+
+@test "clean_brave_old_versions keeps newest version even when Current points older" {
+	rm -rf "$HOME/Applications/Brave Browser.app"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+export -f pgrep
+
+BRAVE_APP="$HOME/Applications/Brave Browser.app"
+VERSIONS_DIR="$BRAVE_APP/Contents/Frameworks/Brave Browser Framework.framework/Versions"
+mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0,130.0.0.0}
+export MOLE_BRAVE_APP_PATHS="$BRAVE_APP"
+touch -t 202601010000 "$VERSIONS_DIR/128.0.0.0"
+touch -t 202602010000 "$VERSIONS_DIR/129.0.0.0"
+touch -t 202603010000 "$VERSIONS_DIR/130.0.0.0"
+ln -s "129.0.0.0" "$VERSIONS_DIR/Current"
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_brave_old_versions
+echo "Cleaned: $files_cleaned items"
+EOF
+
+	rm -rf "$HOME/Applications/Brave Browser.app"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"Cleaned: 1 items"* ]] || { echo "$output"; return 1; }
+}
+
+@test "clean_edge_updater_old_versions keeps latest version" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+# No readable installed-Edge version: pins the conservative keep-latest
+# fallback even on machines where a real Edge is installed.
+plutil() { return 1; }
+export -f pgrep plutil
 
 UPDATER_DIR="$HOME/Library/Application Support/Microsoft/EdgeUpdater/apps/msedge-stable"
 mkdir -p "$UPDATER_DIR"/{117.0.2045.60,118.0.2088.46,119.0.2108.9}
@@ -150,26 +300,136 @@ clean_edge_updater_old_versions
 echo "Cleaned: $files_cleaned items"
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Edge updater old versions"* ]]
-    [[ "$output" == *"dry"* ]]
-    [[ "$output" == *"Cleaned: 2 items"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Edge updater old versions"* ]] || return 1
+	[[ "$output" == *"dry"* ]] || return 1
+	[[ "$output" == *"Cleaned: 2 items"* ]]
+}
+
+# Issue #1216: after Edge updates itself, the updater staging dir can hold a
+# single payload that is OLDER than the installed Edge. The keep-latest rule
+# kept that stale copy forever because it was the only directory.
+@test "clean_edge_updater_old_versions removes a lone payload older than installed Edge (#1216)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+plutil() { echo "150.0.4078.65"; }
+export -f pgrep plutil
+mkdir -p "$HOME/Applications/Microsoft Edge.app/Contents"
+touch "$HOME/Applications/Microsoft Edge.app/Contents/Info.plist"
+
+UPDATER_DIR="$HOME/Library/Application Support/Microsoft/EdgeUpdater/apps/msedge-stable"
+rm -rf "$UPDATER_DIR"
+mkdir -p "$UPDATER_DIR/149.0.4022.52"
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_edge_updater_old_versions
+echo "Cleaned: $files_cleaned items"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Edge updater old versions"* ]] || return 1
+	[[ "$output" == *"Cleaned: 1 items"* ]] || return 1
+}
+
+@test "clean_edge_updater_old_versions keeps payloads not older than installed Edge" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+plutil() { echo "150.0.4078.65"; }
+export -f pgrep plutil
+mkdir -p "$HOME/Applications/Microsoft Edge.app/Contents"
+touch "$HOME/Applications/Microsoft Edge.app/Contents/Info.plist"
+
+UPDATER_DIR="$HOME/Library/Application Support/Microsoft/EdgeUpdater/apps/msedge-stable"
+rm -rf "$UPDATER_DIR"
+# One stale, one equal to installed, one staged-newer pending update.
+mkdir -p "$UPDATER_DIR"/{149.0.4022.52,150.0.4078.65,151.0.5000.1}
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_edge_updater_old_versions
+echo "Cleaned: $files_cleaned items"
+[[ -d "$UPDATER_DIR/150.0.4078.65" ]] && echo "KEPT-EQUAL"
+[[ -d "$UPDATER_DIR/151.0.5000.1" ]] && echo "KEPT-NEWER"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Cleaned: 1 items"* ]] || return 1
+	[[ "$output" == *"KEPT-EQUAL"* ]] || return 1
+	[[ "$output" == *"KEPT-NEWER"* ]] || return 1
+}
+
+@test "clean_edge_updater_old_versions keeps a lone payload when installed version is unknown" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+pgrep() { return 1; }
+plutil() { return 1; }
+export -f pgrep plutil
+
+UPDATER_DIR="$HOME/Library/Application Support/Microsoft/EdgeUpdater/apps/msedge-stable"
+rm -rf "$UPDATER_DIR"
+mkdir -p "$UPDATER_DIR/149.0.4022.52"
+
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo "10240"; }
+bytes_to_human() { echo "10M"; }
+note_activity() { :; }
+export -f is_path_whitelisted get_path_size_kb bytes_to_human note_activity
+
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+
+clean_edge_updater_old_versions
+echo "Cleaned: $files_cleaned items"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Cleaned: 0 items"* ]] || return 1
 }
 
 @test "clean_chrome_old_versions DRY_RUN mode does not delete files" {
-    # Create test directory
-    CHROME_APP="$HOME/Applications/Google Chrome.app"
-    VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
-    mkdir -p "$VERSIONS_DIR"/{128.0.0.0,130.0.0.0}
+	# Create test directory
+	CHROME_APP="$HOME/Applications/Google Chrome.app"
+	VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
+	mkdir -p "$VERSIONS_DIR"/{128.0.0.0,130.0.0.0}
+	export MOLE_CHROME_APP_PATHS="$CHROME_APP"
 
-    # Remove Current if it exists as a directory, then create symlink
-    rm -rf "$VERSIONS_DIR/Current"
-    ln -s "130.0.0.0" "$VERSIONS_DIR/Current"
+	# Remove Current if it exists as a directory, then create symlink
+	rm -rf "$VERSIONS_DIR/Current"
+	ln -s "130.0.0.0" "$VERSIONS_DIR/Current"
 
-    # Create a marker file in old version
-    touch "$VERSIONS_DIR/128.0.0.0/marker.txt"
+	# Create a marker file in old version
+	touch "$VERSIONS_DIR/128.0.0.0/marker.txt"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -188,17 +448,17 @@ total_items=0
 clean_chrome_old_versions
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"dry"* ]]
-    # Verify marker file still exists (not deleted in dry run)
-    [ -f "$VERSIONS_DIR/128.0.0.0/marker.txt" ]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"dry"* ]] || return 1
+	# Verify marker file still exists (not deleted in dry run)
+	[ -f "$VERSIONS_DIR/128.0.0.0/marker.txt" ]
 }
 
 @test "clean_chrome_old_versions handles missing Current symlink gracefully" {
-    # Use a fresh temp directory for this test
-    TEST_HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-test5.XXXXXX")"
+	# Use a fresh temp directory for this test
+	TEST_HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-test5.XXXXXX")"
 
-    run env HOME="$TEST_HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$TEST_HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -219,18 +479,19 @@ total_items=0
 CHROME_APP="$HOME/Applications/Google Chrome.app"
 VERSIONS_DIR="$CHROME_APP/Contents/Frameworks/Google Chrome Framework.framework/Versions"
 mkdir -p "$VERSIONS_DIR"/{128.0.0.0,129.0.0.0}
+export MOLE_CHROME_APP_PATHS="$CHROME_APP"
 # No Current symlink created
 
 clean_chrome_old_versions
 EOF
 
-    rm -rf "$TEST_HOME"
-    [ "$status" -eq 0 ]
-    # Should exit gracefully with no output
+	rm -rf "$TEST_HOME"
+	[ "$status" -eq 0 ]
+	# Should exit gracefully with no output
 }
 
 @test "clean_edge_old_versions skips when Edge is running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -242,20 +503,19 @@ export -f pgrep
 clean_edge_old_versions
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Microsoft Edge running"* ]]
-    [[ "$output" == *"old versions cleanup skipped"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Edge old versions · skipped (Edge running)"* ]]
 }
 
 @test "clean_edge_old_versions removes old versions but keeps current" {
-    # Create mock Edge directory structure
-    local EDGE_APP="$HOME/Applications/Microsoft Edge.app"
-    local VERSIONS_DIR="$EDGE_APP/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
-    mkdir -p "$VERSIONS_DIR"/{120.0.0.0,121.0.0.0,122.0.0.0}
-    ln -s "122.0.0.0" "$VERSIONS_DIR/Current"
+	# Create mock Edge directory structure
+	local EDGE_APP="$HOME/Applications/Microsoft Edge.app"
+	local VERSIONS_DIR="$EDGE_APP/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
+	mkdir -p "$VERSIONS_DIR"/{120.0.0.0,121.0.0.0,122.0.0.0}
+	ln -s "122.0.0.0" "$VERSIONS_DIR/Current"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true \
-        MOLE_EDGE_APP_PATHS="$EDGE_APP" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true \
+		MOLE_EDGE_APP_PATHS="$EDGE_APP" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -276,24 +536,24 @@ clean_edge_old_versions
 echo "Cleaned: $files_cleaned items"
 EOF
 
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Edge old versions"* ]]
-    [[ "$output" == *"dry"* ]]
-    [[ "$output" == *"Cleaned: 2 items"* ]]
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Edge old versions"* ]] || return 1
+	[[ "$output" == *"dry"* ]] || return 1
+	[[ "$output" == *"Cleaned: 2 items"* ]]
 }
 
 @test "clean_edge_old_versions handles no old versions gracefully" {
-    # Use a fresh temp directory for this test
-    TEST_HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-test8.XXXXXX")"
+	# Use a fresh temp directory for this test
+	TEST_HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-test8.XXXXXX")"
 
-    # Create Edge with only current version
-    local EDGE_APP="$TEST_HOME/Applications/Microsoft Edge.app"
-    local VERSIONS_DIR="$EDGE_APP/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
-    mkdir -p "$VERSIONS_DIR/122.0.0.0"
-    ln -s "122.0.0.0" "$VERSIONS_DIR/Current"
+	# Create Edge with only current version
+	local EDGE_APP="$TEST_HOME/Applications/Microsoft Edge.app"
+	local VERSIONS_DIR="$EDGE_APP/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
+	mkdir -p "$VERSIONS_DIR/122.0.0.0"
+	ln -s "122.0.0.0" "$VERSIONS_DIR/Current"
 
-    run env HOME="$TEST_HOME" PROJECT_ROOT="$PROJECT_ROOT" \
-        MOLE_EDGE_APP_PATHS="$EDGE_APP" bash --noprofile --norc <<'EOF'
+	run env HOME="$TEST_HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+		MOLE_EDGE_APP_PATHS="$EDGE_APP" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -312,8 +572,8 @@ total_items=0
 clean_edge_old_versions
 EOF
 
-    rm -rf "$TEST_HOME"
-    [ "$status" -eq 0 ]
-    # Should exit gracefully with no cleanup output
-    [[ "$output" != *"Edge old versions"* ]]
+	rm -rf "$TEST_HOME"
+	[ "$status" -eq 0 ]
+	# Should exit gracefully with no cleanup output
+	[[ "$output" != *"Edge old versions"* ]]
 }
