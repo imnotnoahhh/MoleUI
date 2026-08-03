@@ -1,0 +1,178 @@
+# Mole Agent Guide
+
+This file is the shared source of truth for any AI agent working on this repo (Claude Code, Codex, etc.). `CLAUDE.md` is a symlink to this file. Put machine-specific or personal overrides in `AGENTS.local.md` / `CLAUDE.local.md`; both are gitignored.
+
+## Project
+
+Mole is a macOS system cleanup and optimization tool with shell and Go components. It performs file cleanup, app protection checks, and maintenance tasks, so safety rules matter more than speed.
+
+## Product Direction
+
+Mole is a terminal-first macOS maintenance toolkit. Its core job is to help power users inspect reclaimable space, remove known-safe leftovers, uninstall apps safely, run bounded maintenance, and check health from a CLI, script, or compact TUI. It is not a general Mac control center, package manager, background monitor, or GUI feature mirror.
+
+### What Mole Should Do
+
+- Make cleanup and uninstall actions boring, reviewable, logged, protected by path/app rules, and dry-run capable.
+- Prefer reversible user-facing removals through Trash where the command surface expects recoverability.
+- Keep `clean`, `uninstall`, `purge`, and `installer` focused on reclaimable files, app leftovers, rebuildable caches, installer artifacts, and exact known cleanup targets.
+- Keep `analyze` as a disk explorer and ad hoc cleanup surface. Optimize first paint, navigation, sorting, filtering, and safe deletion before adding dashboard-style features.
+- Keep `status` as a compact read-only health dashboard plus stable JSON/NDJSON automation output. It may surface actionable signals, but should not become an iStat clone, alerting daemon, or configurable metrics workbench.
+- Keep `optimize` focused on explicit, bounded maintenance tasks that can be explained before execution and tested without real authorization prompts.
+- Keep command UX dense and terminal-native: short labels, stable alignment, predictable shortcuts, one-screen summaries, then optional drill-down.
+- Keep Mole Mac references as a cross-link or support path. The CLI and Mac app can share product values without requiring feature parity.
+
+### What Mole Should Not Do
+
+- Do not add broad system modification, privacy reset, package management, app bundle patching, or device-management features just because they are technically possible.
+- Do not remove or rewrite third-party app bundle contents, signed resources, user documents, credentials, sessions, active databases, or active developer-tool state.
+- Do not add background agents, persistent monitoring, notifications, schedulers, menu bar behavior, or GUI-like state unless explicitly requested and justified as CLI scope.
+- Do not broaden leftover matching from exact app or bundle evidence into vendor-wide, TeamID-prefix, generic-name, or fallback wildcard deletion.
+- Do not turn `status` into a noisy dashboard. Extra rows, live alerts, and tuning controls need a common user action, not just an available metric.
+- Do not add prompts, preferences, or output modes to solve every edge case. Prefer quieter defaults, preview/read-only guidance, or declining unsupported operations. A new flag, environment variable, or config key is the same weight as a new setting: it passes only when no single default is right for everyone, and the fix-by-default alternative has to be stated and rejected first. Reaching for a knob to close an issue is the default failure here, not an edge case.
+- Do not treat Mole Mac features as required CLI gaps. The CLI should stay narrower, scriptable, and safety-first when parity would add complexity or ambiguity.
+
+### Product Decision Filter
+
+Before accepting a new feature, answer these questions in the PR, issue, or review notes when the fit is not obvious:
+
+1. Does it clearly belong to clean, uninstall, analyze, optimize, status, purge, history, installer, update, completion, touchid, or remove?
+2. Is it safe by default, previewable where destructive, testable without real auth, and explainable in one terminal screen?
+3. Can the user verify what will change before Mole changes it?
+4. Is the target data locally rebuildable, disposable, or backed by exact app/bundle evidence?
+5. Would this be better as Mole Mac UI, documentation, a warning, or an explicit "not supported" answer?
+
+If the answer is no or unclear, decline the feature, narrow it, or park it until the product value beats the added surface area.
+
+## Repository Map
+
+- `AGENTS.md` is the cross-agent source of truth. `CLAUDE.md` must remain a symlink to it so Claude and Codex receive the same project contract.
+- `.claude/skills/` is the canonical home for project skills. `.agents/skills/` contains relative symlinks for Codex discovery; do not maintain copied skill bodies.
+- `.claude/agents/` contains focused Claude review profiles. They must read the current contract from this file instead of copying a frozen version of the safety or portability rules.
+- `mole` - the CLI entrypoint. It is a **router only**: it parses args, renders the menu, and dispatches. Business logic does not belong here. Self-update lives in `lib/manage/update.sh` and self-removal in `lib/manage/remove.sh`; both are `source`d (not `exec`d) because the interactive menu and the update banner call them in-process. `VERSION=` stays in `mole` because `install.sh` reads it out of this file with `sed`.
+- `lib/core/` - shared shell safety, UI, file operations, operation logs, app protection logic, and centralized timeout constants (`timeouts.sh`).
+- `lib/core/app_protection_data.sh` - readonly bundle ID and pattern arrays consumed by `app_protection.sh`. Data only, no logic.
+- `cmd/analyze/` - Go disk-analysis TUI. `main.go` is bootstrap only; `model.go` holds types and accessor methods; `update.go` holds the Bubble Tea Update chain.
+- `tests/fuzz_corpus/` holds property-test corpora consumed by `path_validation_fuzz.bats`.
+- `scripts/` - check, test, build, and release helpers. `audit_bundle_drift.sh` backs the monthly bundle audit; per-PR perf is covered by `tests/core_performance.bats`.
+- `docs/SECURITY_DESIGN.md` - design doc for the path validation / app protection / # SAFE annotation contract.
+- `SECURITY_AUDIT.md` - security review notes.
+
+## Commands
+
+```bash
+./scripts/check.sh --format
+MOLE_TEST_NO_AUTH=1 ./scripts/test.sh
+MOLE_TEST_NO_AUTH=1 bats tests/clean_core.bats
+MOLE_DRY_RUN=1 ./mole clean
+MOLE_TEST_NO_AUTH=1 ./mole clean --dry-run
+MOLE_TEST_NO_AUTH=1 ./mole purge --dry-run
+MOLE_TEST_NO_AUTH=1 ./mole installer --dry-run
+find bin lib -name '*.sh' -print0 | xargs -0 -n1 bash -n
+make build
+go test ./...
+```
+
+Public docs and examples should prefer the installed `mo` command. Use `./mole` in this repository when verifying source-tree behavior before installation. `analyze` and `analyse` are both accepted command spellings.
+
+## Critical Safety Rules
+
+- Route deletion through the safe helpers in `lib/core/file_ops.sh`. Raw `rm -rf` and `find -delete` are allowed only with a `# SAFE: <one-sentence reason>` annotation on the same line, which is the contract `docs/SECURITY_DESIGN.md` Layer 2 defines and `.github/workflows/test.yml` enforces by whitelist; nine call sites use it today for paths the function itself created. Do not route a mktemp scratch path through `mole_delete`: that adds Trash routing and an operation-log entry to a temp file.
+- Use `mole_delete` from `lib/core/file_ops.sh` for removals so Trash routing, operation logs, dry-run behavior, and path protection stay consistent.
+- Never modify protected paths such as `/System`, `/Library/Apple`, or `com.apple.*`.
+- Route user-facing cleanup through Trash where the project expects recoverability, especially for analyze-driven ad hoc cleanup.
+- Never let verification block on sudo, AppleScript, or macOS authorization prompts unless the task explicitly targets auth behavior.
+- Use `MOLE_DRY_RUN=1` before destructive cleanup flows.
+- Use `MOLE_TEST_NO_AUTH=1` for tests, manual repro, and verification unless real auth behavior is being tested.
+- Any new direct use of `sudo`, `osascript`, or `launchctl` must have a `MOLE_TEST_MODE` / `MOLE_TEST_NO_AUTH` guard or be fully mocked in tests.
+- Never auto-delete Software Update-owned staging trees such as `/Library/Updates` or `/macOS Install Data`. Directory age, process lists, and Software Update plist state cannot prove those trees stay inactive across a scan-to-delete window; keep this surface read-only.
+- Never delete, truncate, or vacuum the active PowerLog database at `/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL` or its `-wal` / `-shm` companions. Size and mtime cannot prove that Apple has closed every SQLite connection; keep abnormal-size handling read-only.
+- Never run a privileged path-based delete or move through an invoking-user-mutable ancestor. `safe_sudo_remove`, `safe_sudo_find_delete`, and `mole_delete` must downgrade or fail closed there; privileged Trash moves must cross into dedicated immutable root-owned staging under `/Library` before the invoking user moves the item into Trash.
+- **`install.sh` stays fail-closed on verification failure.** A checksum or attestation mismatch aborts and says why; it must never downgrade to a source build, which turns "the binary was tampered with" into a quieter path with weaker verification. Resolving no release tag and falling back to `main` must warn that this is a nightly source install. The abort cases in `tests/install_checksum.bats` pin both. Keep the README install URL on unpinned `main`: pinning it there blocks fixes from reaching new installs.
+- The `mo update` self-heal fallback (`_update_self_heal_reinstall`) exists because the local bootstrap (temp file, registry, exec) is frozen on the user's machine and a broken installed version cannot fix itself (#1297). Keep it streaming install.sh from `main` straight into bash with no local temp files. Stable success is asserted against the installed binary's bounded version response, never installer output (the V1.47.1 false-success shape), and `install.sh` must bound its own `--version` / `--help` verification probes too. Nightly success additionally requires a per-attempt install receipt; pin the source archive to the resolved commit when HEAD is known, and never reuse an older `COMMIT_HASH` when it is not. Keep updates single-flight per install directory so receipt, commit metadata, and binary verification cannot cross concurrent generations: both writers use absolute `/usr/bin/lockf` on the same target-adjacent kernel lock, and a missing or failed lock command is fail-closed. Regression tests live in `tests/update.bats` and `tests/install_checksum.bats`.
+- Do not change ESC timeout behavior in `lib/core/ui.sh` unless explicitly requested.
+- Preserve operation logging to the project log path unless the user explicitly asks to change `MO_NO_OPLOG` behavior.
+- **PRs touching destructive sinks need line-by-line review.** For `find_app_files`, `mole_delete`, `remove_file_list`, container traversal, identifier-prefix wildcards, or recursion that ends in deletion, audit every primary and fallback branch for matcher breadth, protected-path coverage, and preserved confirmation. Exact bundle ID or path evidence is required; vendor prefixes and common-name globs are not. Treat specialist or AI review output as a claim to verify, never as approval.
+
+## Working Rules
+
+- Before reviewing, auditing, debugging, or accepting a contributed PR, read `.claude/skills/bugs/SKILL.md`. Load its shell/test reference only when that surface is touched.
+- Check `should_protect_path()` before adding cleanup behavior.
+- Check app protection helpers before adding app cache, uninstall, or leftover cleanup behavior.
+- Bundle protection matching is case-sensitive glob (`bundle_matches_pattern`), and macOS system bundles report inconsistent casing across releases (macOS 26 ships `com.apple.bootcampassistant` alongside the older `com.apple.BootCampAssistant`). When the monthly bundle drift audit reports gaps, add the exact IDs as the audit printed them, and check the runtime blanket `com.apple.*` guard before rating the gap's severity. The audit workflow's issue path requires the `bundle-drift` label to exist in the repo.
+- **A new cleanup target needs measured value and an explicit non-target list.** State bytes reclaimed on a real app version, which sibling directories are excluded because they are user data, and whether protection covers every reachable cleanup path. "It looks like a cache" is not evidence; zero measured value stays out of scope. An encrypted or opaque index cannot prove a directory is unreferenced, so exclude it.
+- Keep AI-tool cache cleanup conservative. Claude Code, opencode, Copilot CLI, Zed, Warp, Ghostty, and similar developer tools may have active versions, config, credentials, or session state that must not be removed accidentally.
+- Do not clean tiny macOS UI state just because it is rebuildable. Wallpaper previews, preference thumbnails, and similar cover/state caches can create visible blank or cloud-download UI while reclaiming only a few MB; keep them unless there is strong user value and a regression test.
+- Homebrew cleanup must be preview-first. Show the exact `brew autoremove` candidates before removal, preserve dry-run behavior, and keep tests on mocked `brew`; do not let a cleanup path execute real package-manager removals in verification.
+- Sudo gates must not treat typed password characters as "skip". Only an explicit skip key should skip privileged cleanup; direct typed input must proceed into the real sudo prompt and have a regression test.
+- Long cleanup scans need both an overall wall-clock budget and inner-loop checkpoints. A timed-out producer must not feed partial output into a deletion loop: materialize only completed scans, discard results on nonzero status, and propagate timeout/failure instead of reporting success. Probe and action must use the same pattern, type, age, and depth. If a project/artifact scan times out, degrade to partial or skipped-slow-scan output instead of appearing hung.
+- System-service orphan scans must parse plist `Program` / `ProgramArguments` values as absolute paths only. Use non-interactive sudo for unreadable root-owned plists when needed, reject PlistBuddy error text as data, and keep CI tests on `/Library/LaunchDaemons` rather than relying on `/Library/PrivilegedHelperTools`.
+- Uninstall leftover expansion must stay exact and boring: bundle ID or app-name variants only, reject generic/common words, keep short-name floors, skip broad locations like `Preferences/ByHost`, and only remove helper remnants after the parent app is confirmed gone and protected-path checks pass.
+- Any new uninstall teardown path (launch services, login items, cask zap, helper bootout) must route through the shared-bundle-id sibling guard, covering `/Volumes` copies, inverse-name, and shared-identity variants, with a Bats regression per variant.
+- Preference repair and optimize cleanup must skip protected and whitelisted plists before attempting removal.
+- **Git worktree staleness is not decidable.** Clean only whitelisted rebuildable artifacts inside a worktree, never the worktree itself, and never emit a "safe to delete" verdict. Branch/remote heuristics fail on detached worktrees, ordinary status hides ignored files, and ignored entries may be the only copy of private state. A status surface may report blockers only: dirty, unpushed, locked, or ignored entries outside `MOLE_PURGE_TARGETS`.
+- Purge discovery skips dot-directory containers by design. Add each supported container, such as `~/.codex/worktrees`, explicitly to `MOLE_PURGE_DEFAULT_SEARCH_PATHS`; do not broaden discovery to all dot directories. The scan layer already handles hidden descendants once their parent container is known, while project roots deeper than the existing two-level probe remain intentionally out of scope.
+- **Do not add a shell-side directory size cache.** APFS does not propagate mtime up the tree, so a parent directory's mtime is unchanged when a descendant grows or shrinks and the cache hands the user a stale reclaimable number. Measure every time; `get_path_size_kb` is already timeout-bounded.
+- Keep shell code formatted with `./scripts/check.sh --format`.
+- Prefer targeted Bats tests during development; run the full suite before committing.
+- Do not add AI attribution trailers to commits.
+- `start_section` / `end_section` / `note_activity` have three intentionally different implementations in `lib/core/base.sh`, `bin/clean.sh`, and `bin/purge.sh`. Source order decides which one wins, and the wording, color, and dry-run export semantics differ on purpose. Read the cross-reference comment in `lib/core/base.sh` before changing any of them.
+- **Test-orphan pattern:** before declaring a symbol dead, grep `lib`, `bin`, `cmd`, `scripts`, `tests`, and top-level entry/install scripts; check dynamic lookup through `eval`, `declare -f`, and `compgen`; then re-grep after removal. Trace variables and config written by a removed helper. Tests alone are not production callers, and sub-agent reports are leads, not verdicts.
+
+## Hotspot Ownership
+
+These files are intentionally large. Do not start by splitting them. Keep edits narrow, preserve local safety boundaries, and run the listed tests when touching each area.
+
+- `lib/clean/user.sh` owns user-level cleanup flows, browser caches, cloud/app support cleanup, device firmware, and Apple Silicon caches. Run `MOLE_TEST_NO_AUTH=1 bats tests/clean_user_core.bats tests/clean_browser_versions.bats tests/clean_app_caches.bats tests/clean_cached_device_firmware.bats` when touching this area, or `MOLE_TEST_NO_AUTH=1 ./scripts/test.sh` if behavior crosses sections. Chrome / Edge / Brave old-version cleanup is one table-driven helper (`_clean_chromium_old_versions`) plus three thin public wrappers; the wrapper names are the test surface, so keep them. `clean_edge_updater_old_versions` is deliberately NOT part of it: it prunes staged updater payloads strictly older than the installed Edge (falling back to keep-latest by `sort -V` when the installed version is unreadable), has no `Current` symlink, and never escalates to a sudo removal, so folding it in would silently change its semantics.
+- `lib/core/app_protection.sh` owns uninstall/data/path protection policy and bundle matching; `lib/core/app_protection_data.sh` owns the protected app category lists. Run `MOLE_TEST_NO_AUTH=1 bats tests/uninstall_safety.bats tests/uninstall_naming_variants.bats tests/bundle_resolver.bats`.
+- `lib/clean/project.sh` owns purge discovery, project artifact filtering, purge menus, and purge config. Run `MOLE_TEST_NO_AUTH=1 bats tests/purge.bats tests/purge_config_paths.bats`.
+- `bin/uninstall.sh` owns uninstall command orchestration, app inventory, metadata refresh, and list/json output. Run `MOLE_TEST_NO_AUTH=1 bats tests/uninstall.bats tests/uninstall_scan_bash32.bats`.
+- `lib/uninstall/batch.sh` owns batch uninstall execution, the shared-bundle-id sibling guard, launch service and login item teardown, and brew cask removal routing. Run `MOLE_TEST_NO_AUTH=1 bats tests/uninstall.bats tests/brew_uninstall.bats tests/uninstall_remove_file_list.bats`.
+- `lib/clean/dev.sh` owns developer-tool cleanup, language/toolchain caches, AI agent caches, and Codex runtime handling. Run `MOLE_TEST_NO_AUTH=1 bats tests/clean_dev_caches.bats tests/dev_extended.bats`.
+- `lib/optimize/tasks.sh` owns optimize task registration and system maintenance actions. Run `MOLE_TEST_NO_AUTH=1 bats tests/optimize.bats tests/optimize_db.bats`.
+- `bin/clean.sh` owns clean command orchestration, section output, and safe cleanup execution. Run `MOLE_TEST_NO_AUTH=1 bats tests/clean_core.bats tests/clean_apps.bats tests/cli.bats`. Section output follows one fixed rhythm: title → loading state → content → one trailing blank line, for every section. When touching any step of it, re-run the command and read the whole rendered output (column alignment, block spacing, icon consistency) instead of patching the one step that was reported. `_safe_clean_impl` filters protected, whitelisted, compiled-cache, and missing targets before consulting the dry-run delete guard or registering previews, so preview and real cleanup use the same eligible set; that check is intentional, not redundant with the per-path checks the real branch keeps at its deletion boundary.
+- `lib/manage/update.sh` owns self-update, registry/bootstrap replacement, and self-heal fallback behavior. Preserve fail-closed version checks and test both normal update and broken-bootstrap recovery with `MOLE_TEST_NO_AUTH=1 bats tests/update.bats`.
+- `cmd/analyze/update.go` owns the Bubble Tea `Update` chain and message handlers (Init, scanCmd, updateKey, goBack, switchToOverviewMode, enterSelectedDir). This is the largest file in `cmd/analyze/` and the natural landing spot for new key bindings, message types, or navigation behavior. Run `go test ./cmd/analyze`. `cmd/analyze/main.go` is bootstrap only (flag parsing, `main()`, helpers); `cmd/analyze/model.go` holds types and the model struct.
+- `cmd/analyze/cache.go` owns analyze cache schema, expiry, load/save, invalidation, and cacheability decisions. Computation changes must invalidate stale persisted data in the same change. Run `go test ./cmd/analyze`.
+- `cmd/analyze/analyze_test.go` and `cmd/status/view_test.go` are test hotspots. Add new cases near related behavior; split later only when touching many adjacent cases. Run `go test ./cmd/...`.
+- `lib/core/file_ops.sh` owns the deletion funnel, Trash/permanent routing, operation-log outcomes, size accounting, and last-mile path validation. `lib/core/base.sh` owns shared shell primitives and source-order-sensitive section helpers. Keep policy in the existing protection helpers rather than adding a second delete path. Run `MOLE_TEST_NO_AUTH=1 bats tests/file_ops_mole_delete.bats tests/file_ops_size.bats tests/file_ops_safe_remove_symlink.bats tests/user_file_ops.bats tests/core_safe_functions.bats`.
+- `cmd/analyze/scanner.go` owns disk traversal, Spotlight integration, cancellation, and all scan concurrency budgets. Treat its semaphores as independent resource limits and measure before changing them. Run `go test ./cmd/analyze`.
+- `lib/clean/apps.sh` owns application-data cleanup, orphan service discovery, and the narrow verified-container-stub exception. `lib/clean/hints.sh` is read-only guidance and must stay bounded, timeout-aware, and non-destructive. Run `MOLE_TEST_NO_AUTH=1 bats tests/clean_apps.bats tests/clean_hints.bats`.
+- `lib/ui/menu_paginated.sh` owns the shared Bash 3.2-compatible selection UI and terminal restoration. Preserve trap chaining, TTY restoration, and empty-selection behavior. Run `MOLE_TEST_NO_AUTH=1 bats tests/menu_trap_restore.bats tests/uninstall.bats`.
+- `cmd/status/view.go` owns status rendering only; collection and JSON/NDJSON contracts live elsewhere in `cmd/status/`. Keep narrow-terminal layout and automation output independent. Run `go test ./cmd/status` and `MOLE_TEST_NO_AUTH=1 bats tests/cli.bats` when command routing changes.
+- `bin/installer.sh` owns installer discovery, immutable delete-plan validation, the paginated selection flow, and incomplete-cleanup exit semantics. Run `MOLE_TEST_NO_AUTH=1 bats tests/installer.bats tests/installer_fd.bats tests/installer_zip.bats`.
+
+## Verification
+
+- Shell changes: run `./scripts/check.sh --format`, then the relevant Bats test or `MOLE_TEST_NO_AUTH=1 ./scripts/test.sh`.
+- Go changes: run `go test ./...`.
+- Cleanup behavior: verify with dry-run or test mode first.
+- File operation changes: run `MOLE_TEST_NO_AUTH=1 bats tests/file_ops_mole_delete.bats tests/user_file_ops.bats`.
+- Installer changes: run `MOLE_TEST_NO_AUTH=1 bats tests/installer.bats tests/installer_fd.bats tests/installer_zip.bats`.
+- Purge changes: run `MOLE_TEST_NO_AUTH=1 bats tests/purge.bats tests/purge_config_paths.bats`.
+- Whitelist or management changes: run `MOLE_TEST_NO_AUTH=1 bats tests/manage_whitelist.bats tests/manage_sudo.bats`.
+- Uninstall changes: run `MOLE_TEST_NO_AUTH=1 bats tests/uninstall.bats tests/uninstall_remove_file_list.bats`.
+- Documentation-only changes: check links and commands.
+- Never pipe a test, check, or CI run into `tail` or `head`. The pipeline reports the pager's exit code, so a red run reads green. Let it print in full, or capture to a file and check the status separately.
+
+`make check`, `make format`, `make test`, `make test-go`, and `make verify` are wrappers around the scripts above. `make verify` intentionally runs `check` plus Go tests only; use the full Bats suite before risky cleanup, uninstall, or release work.
+
+If `golangci-lint` reports issues from deleted temporary worktrees or non-existent paths, clear its local cache and rerun the linter:
+
+```bash
+golangci-lint cache clean
+golangci-lint run ./cmd/...
+```
+
+## GitHub Operations
+
+- Re-read the live issue or PR title, body, comments, state, labels, and author language before any public reply or closeout.
+- Keep CLI issues and Mole Mac app issues separate. A fix in `mole-mac` does not imply a close in this CLI repo, and a CLI fix does not prove a Mac app issue is fixed unless the Mac app release path is verified.
+- When closing a fixed bug or shipped feature, use project wording from the issue context and include the expected release path only when confirmed.
+- **Mole Mac invitation after resolved reports**: after stating the verified fix or release state and the concrete retest step in the reporter's language, append one short final sentence to resolved bug or problem replies in both Issues and Discussions. Use `也欢迎试试我的 Mole Mac：https://mole.fit/，更易用，也更精致。` for Chinese and `You’re also welcome to try my Mole Mac app at https://mole.fit/ for a more polished, easier-to-use experience.` for English. Keep this separate from the resolution facts, and omit it only when the thread already concerns Mole Mac or the invitation would be redundant.
+- **Discussion content cleanup**: when the maintainer classifies a Discussion as cleanup-only, such as spam, an empty or accidental post, duplicate promotion, or obsolete housekeeping with no technical answer needed, close it directly without replying. Do not apply this shortcut to substantive bug reports, Q&A, feature requests, or not-planned product decisions; those still need a concise disposition before closure.
+- **Remote diagnostics for unreproducible reports**: for Mole Mac reports, ask the reporter to download the script with `curl -fL 'https://mole.fit/downloads/Mole-Diagnose.command' -o "$HOME/Desktop/Mole-Diagnose.command"`, then run `chmod +x "$HOME/Desktop/Mole-Diagnose.command" && open -R "$HOME/Desktop/Mole-Diagnose.command"`. Tell them to inspect it before double-clicking it and email the resulting `Mole-Diagnose-*.zip`; never ask them to attach the archive publicly because it contains local paths and logs. For CLI-only issues, prefer the relevant `mo` command output or `mo status` JSON.
+- **Default issue closeout pipeline** once a fix is confirmed: commit lands on `main` (that alone makes it installable via nightly), verify the fix is actually on `main`, then reply in the reporter's language, opening with `@reporter`, in short paragraphs rather than one block, with the concrete update command: `mo update --nightly` now, the next stable release only when that path is confirmed. Closing needs the maintainer's word, but that word covers the whole pipeline: "该回复回复，该关闭关闭" or an equivalent authorizes commit, reply, and close in one turn, so run them to the end instead of returning for a separate confirmation at each step. The closing comment should invite reopening if the problem persists.
+
+## Release
+
+Tag-driven flow via `release.yml` on capital-`V` tag pushes. The full release runbook (distribution channels, pre-flight checklist, tag/publish commands, curated notes handoff, release-only pitfalls) lives in `.claude/skills/release-flow/SKILL.md`; read it before starting any release-flavored task. Notes formatting stays owned by `.claude/skills/release-notes/SKILL.md`. One rule that always applies: restate which distribution channels a release-flavored run will touch and confirm with the maintainer before acting; channel scope is specified by the maintainer, never inferred.
