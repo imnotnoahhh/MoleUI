@@ -26,6 +26,7 @@ readonly PURGE_CONFIG_FILE="$HOME/.config/mole/purge_paths"
 
 # Resolved search paths.
 PURGE_SEARCH_PATHS=()
+PURGE_CATEGORY_FULL_PATHS_ARRAY=()
 
 # Project indicators for container detection.
 # Monorepo indicators (higher priority)
@@ -74,7 +75,9 @@ discover_project_dirs() {
 
     for path in "${DEFAULT_PURGE_SEARCH_PATHS[@]}"; do
         if [[ -d "$path" ]]; then
-            discovered+=("$path")
+            # Resolve to canonical casing to avoid duplicates on
+            # case-insensitive filesystems (macOS APFS).
+            discovered+=("$(mole_purge_resolve_path_case "$path")")
         fi
     done
 
@@ -83,9 +86,11 @@ discover_project_dirs() {
     for dir in "$HOME"/*/; do
         [[ ! -d "$dir" ]] && continue
         dir="${dir%/}" # Remove trailing slash
+        # Resolve casing so that ~/code and ~/Code compare equal.
+        dir=$(mole_purge_resolve_path_case "$dir")
 
         local already_found=false
-        for existing in "${DEFAULT_PURGE_SEARCH_PATHS[@]}"; do
+        for existing in "${discovered[@]+"${discovered[@]}"}"; do
             if [[ "$dir" == "$existing" ]]; then
                 already_found=true
                 break
@@ -98,27 +103,67 @@ discover_project_dirs() {
         fi
     done
 
-    printf '%s\n' "${discovered[@]}" | sort -u
+    printf '%s\n' "${discovered[@]+"${discovered[@]}"}" | sort -u
+}
+
+# Prepare purge config directory/file ownership when possible.
+prepare_purge_config_path() {
+    ensure_user_dir "$(dirname "$PURGE_CONFIG_FILE")"
+    ensure_user_file "$PURGE_CONFIG_FILE"
+}
+
+# Write purge config content atomically when possible.
+write_purge_config() {
+    local header="$1"
+    shift
+    local -a paths=("$@")
+
+    prepare_purge_config_path
+
+    local tmp_file
+    tmp_file=$(mktemp_file "mole-purge-paths") || return 1
+
+    if ! cat > "$tmp_file" << EOF; then
+$header
+EOF
+        rm -f "$tmp_file" 2> /dev/null || true
+        return 1
+    fi
+
+    # Guard empty-array expansion under `set -u` on bash 3.2 (first-run case
+    # from `mo purge --paths` passes only the header with no paths).
+    if [[ ${#paths[@]} -gt 0 ]]; then
+        for path in "${paths[@]}"; do
+            # Convert $HOME to ~ for portability
+            path="${path/#$HOME/~}"
+            if ! printf '%s\n' "$path" >> "$tmp_file"; then
+                rm -f "$tmp_file" 2> /dev/null || true
+                return 1
+            fi
+        done
+    fi
+
+    if ! mv "$tmp_file" "$PURGE_CONFIG_FILE" 2> /dev/null; then
+        rm -f "$tmp_file" 2> /dev/null || true
+        return 1
+    fi
+
+    return 0
+}
+
+warn_purge_config_write_failure() {
+    [[ -t 1 ]] || return 0
+    [[ -z "${_PURGE_DISCOVERY_SILENT:-}" ]] || return 0
+    echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/~}, using discovered paths for this run" >&2
 }
 
 # Save discovered paths to config.
 save_discovered_paths() {
     local -a paths=("$@")
-
-    ensure_user_dir "$(dirname "$PURGE_CONFIG_FILE")"
-
-    cat > "$PURGE_CONFIG_FILE" << 'EOF'
-# Mole Purge Paths - Auto-discovered project directories
+    write_purge_config "# Mole Purge Paths - Auto-discovered project directories
 # Edit this file to customize, or run: mo purge --paths
 # Add one path per line (supports ~ for home directory)
-EOF
-
-    printf '\n' >> "$PURGE_CONFIG_FILE"
-    for path in "${paths[@]}"; do
-        # Convert $HOME to ~ for portability
-        path="${path/#$HOME/~}"
-        echo "$path" >> "$PURGE_CONFIG_FILE"
-    done
+" "${paths[@]}"
 }
 
 # Load purge paths from config or auto-discover
@@ -141,10 +186,12 @@ load_purge_config() {
 
         if [[ ${#discovered[@]} -gt 0 ]]; then
             PURGE_SEARCH_PATHS=("${discovered[@]}")
-            save_discovered_paths "${discovered[@]}"
-
-            if [[ -t 1 ]] && [[ -z "${_PURGE_DISCOVERY_SILENT:-}" ]]; then
-                echo -e "${GRAY}Found ${#discovered[@]} project directories, saved to config${NC}" >&2
+            if save_discovered_paths "${discovered[@]}"; then
+                if [[ -t 1 ]] && [[ -z "${_PURGE_DISCOVERY_SILENT:-}" ]]; then
+                    echo -e "${GRAY}Found ${#discovered[@]} project directories, saved to config${NC}" >&2
+                fi
+            else
+                warn_purge_config_write_failure
             fi
         else
             PURGE_SEARCH_PATHS=("${DEFAULT_PURGE_SEARCH_PATHS[@]}")
@@ -154,6 +201,53 @@ load_purge_config() {
 
 # Initialize paths on script load.
 load_purge_config
+
+format_purge_target_path() {
+    local path="$1"
+    echo "${path/#$HOME/~}"
+}
+
+compact_purge_menu_path() {
+    local path="$1"
+    local max_width="${2:-0}"
+
+    if ! [[ "$max_width" =~ ^[0-9]+$ ]] || [[ "$max_width" -lt 4 ]]; then
+        max_width=4
+    fi
+
+    local path_width
+    path_width=$(get_display_width "$path")
+    if [[ $path_width -le $max_width ]]; then
+        echo "$path"
+        return
+    fi
+
+    local tail=""
+    local remainder="$path"
+    local prefix_width=3
+
+    while [[ "$remainder" == */* ]]; do
+        local segment="/${remainder##*/}"
+        remainder="${remainder%/*}"
+
+        local candidate="${segment}${tail}"
+        local candidate_width
+        candidate_width=$(get_display_width "$candidate")
+        if [[ $((candidate_width + prefix_width)) -le $max_width ]]; then
+            tail="$candidate"
+        else
+            break
+        fi
+    done
+
+    if [[ -n "$tail" ]]; then
+        echo "...${tail}"
+        return
+    fi
+
+    local suffix_len=$((max_width - 3))
+    echo "...${path: -$suffix_len}"
+}
 
 # Args: $1 - directory path
 # Determine whether a directory is a project root.
@@ -199,7 +293,8 @@ is_safe_project_artifact() {
 
     # Must not be a direct child of the search root.
     local relative_path="${path#"$search_path"/}"
-    local depth=$(echo "$relative_path" | LC_ALL=C tr -cd '/' | wc -c)
+    local _rel_stripped="${relative_path//\//}"
+    local depth=$((${#relative_path} - ${#_rel_stripped}))
     if [[ $depth -lt 1 ]]; then
         # Allow direct-child artifacts only when the search path is itself
         # a project root (single-project mode).
@@ -209,6 +304,26 @@ is_safe_project_artifact() {
         return 1
     fi
     return 0
+}
+
+# Revalidate a selected artifact against the configured scan roots immediately
+# before deletion. Purge supports explicit roots outside HOME (for example
+# /var/www), so HOME containment is neither sufficient nor correct here.
+is_safe_configured_purge_artifact() {
+    local path="$1"
+
+    [[ -n "$path" && "$path" != "/" && "$path" != "$HOME" ]] || return 1
+    [[ ${#PURGE_SEARCH_PATHS[@]} -gt 0 ]] || return 1
+
+    local search_path
+    for search_path in "${PURGE_SEARCH_PATHS[@]}"; do
+        [[ -n "$search_path" ]] || continue
+        if is_safe_project_artifact "$path" "$search_path"; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 # Detect if directory is a Rails project root
@@ -326,9 +441,22 @@ scan_purge_targets() {
         return
     fi
 
+    local cachedir_tag_min_depth=$((min_depth + 1))
+    local cachedir_tag_max_depth=$((max_depth + 1))
+
     # Update current scanning path
     local stats_dir="${XDG_CACHE_HOME:-$HOME/.cache}/mole"
     echo "$search_path" > "$stats_dir/purge_scanning" 2> /dev/null || true
+
+    emit_valid_cachedir_tag_dirs() {
+        while IFS= read -r tag_file; do
+            [[ -n "$tag_file" ]] || continue
+            local cache_dir="${tag_file%/*}"
+            if [[ -n "$cache_dir" ]] && mole_dir_has_cachedir_tag "$cache_dir"; then
+                printf '%s\n' "$cache_dir"
+            fi
+        done
+    }
 
     # Helper to process raw results
     process_scan_results() {
@@ -343,7 +471,7 @@ scan_purge_targets() {
                 if [[ -n "$item" ]] && is_safe_project_artifact "$item" "$search_path"; then
                     echo "$item"
                     # Update scanning path to show current project directory
-                    local project_dir=$(dirname "$item")
+                    local project_dir="${item%/*}"
                     echo "$project_dir" > "$stats_dir/purge_scanning" 2> /dev/null || true
                 fi
             done < "$input_file" | filter_nested_artifacts | filter_protected_artifacts > "$output_file"
@@ -360,15 +488,11 @@ scan_purge_targets() {
         debug_log "MO_USE_FIND=1: Forcing find instead of fd"
         use_find=true
     elif command -v fd > /dev/null 2>&1; then
-        # Escape regex special characters in target names for fd patterns
-        local escaped_targets=()
-        for target in "${PURGE_TARGETS[@]}"; do
-            escaped_targets+=("^$(printf '%s' "$target" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')\$")
-        done
-        local pattern="($(
-            IFS='|'
-            echo "${escaped_targets[*]}"
-        ))"
+        # Escape regex special characters in target names for fd patterns (single sed pass)
+        local _escaped_lines
+        _escaped_lines=$(printf '%s\n' "${PURGE_TARGETS[@]}" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')
+        local pattern
+        pattern="($(printf '%s\n' "$_escaped_lines" | sed -e 's/^/^/' -e 's/$/$/' | paste -sd '|' -))"
         local fd_args=(
             "--absolute-path"
             "--hidden"
@@ -382,19 +506,30 @@ scan_purge_targets() {
             "--exclude" ".Trash"
             "--exclude" "Applications"
         )
+        local fd_tag_args=(
+            "--absolute-path"
+            "--hidden"
+            "--no-ignore"
+            "--type" "f"
+            "--min-depth" "$cachedir_tag_min_depth"
+            "--max-depth" "$cachedir_tag_max_depth"
+            "--threads" "8"
+            "--exclude" ".git"
+            "--exclude" "Library"
+            "--exclude" ".Trash"
+            "--exclude" "Applications"
+        )
 
-        # Try running fd. If it succeeds (exit code 0), use it.
-        # If it fails (e.g. bad flag, permissions, binary issue), fallback to find.
-        if fd "${fd_args[@]}" "$pattern" "$search_path" 2> /dev/null > "$output_file.raw"; then
-            # Check if fd actually found anything - if empty, fallback to find
-            if [[ -s "$output_file.raw" ]]; then
-                debug_log "Using fd for scanning (found results)"
-                use_find=false
-                process_scan_results "$output_file.raw"
-            else
-                debug_log "fd returned empty results, falling back to find"
-                rm -f "$output_file.raw"
-            fi
+        # Trust fd when it exits successfully, including an empty result set.
+        # Empty scans are common in healthy project trees; falling back to find
+        # doubles the scan cost and can make "nothing to clean" feel slow.
+        local _scan_timeout="${MO_PURGE_SCAN_TIMEOUT_SEC:-60}"
+        if run_with_timeout "$_scan_timeout" fd "${fd_args[@]}" "$pattern" "$search_path" 2> /dev/null > "$output_file.raw"; then
+            run_with_timeout "$_scan_timeout" fd "${fd_tag_args[@]}" "^${MOLE_CACHEDIR_TAG_NAME}$" "$search_path" \
+                2> /dev/null | emit_valid_cachedir_tag_dirs >> "$output_file.raw" || true
+            debug_log "Using fd for scanning"
+            process_scan_results "$output_file.raw"
+            use_find=false
         else
             debug_log "fd command failed, falling back to find"
         fi
@@ -420,10 +555,16 @@ scan_purge_targets() {
 
         # Use plain `find` here for compatibility with environments where
         # `command find` behaves inconsistently in this complex expression.
-        find "$search_path" -mindepth "$min_depth" -maxdepth "$max_depth" -type d \
+        local _scan_timeout="${MO_PURGE_SCAN_TIMEOUT_SEC:-60}"
+        run_with_timeout "$_scan_timeout" find "$search_path" -mindepth "$min_depth" -maxdepth "$max_depth" -type d \
             \( "${prune_expr[@]}" \) -prune -o \
             \( "${target_expr[@]}" \) -print -prune \
             2> /dev/null > "$output_file.raw" || true
+
+        run_with_timeout "$_scan_timeout" find "$search_path" -mindepth "$cachedir_tag_min_depth" -maxdepth "$cachedir_tag_max_depth" \
+            \( "${prune_expr[@]}" \) -prune -o \
+            -type f -name "$MOLE_CACHEDIR_TAG_NAME" -print \
+            2> /dev/null | emit_valid_cachedir_tag_dirs >> "$output_file.raw" || true
 
         process_scan_results "$output_file.raw"
     fi
@@ -456,26 +597,104 @@ filter_protected_artifacts() {
         fi
     done
 }
-# Args: $1 - path
-# Check if a path was modified recently (safety check).
-is_recently_modified() {
+# Args: $1 - path, $2 - optional current epoch
+# Classify artifact activity as recent, old, or uncertain. Only a complete
+# bounded scan may return old; timeouts and read failures fail closed.
+classify_purge_activity() {
     local path="$1"
+    local current_time="${2:-}"
     local age_days=$MIN_AGE_DAYS
+    _PURGE_ACTIVITY_STATE="uncertain"
+
     if [[ ! -e "$path" ]]; then
-        return 1
+        _PURGE_ACTIVITY_STATE="old"
+        return 0
     fi
+
     local mod_time
-    mod_time=$(get_file_mtime "$path")
-    local current_time
-    current_time=$(get_epoch_seconds)
+    mod_time=$(get_file_mtime "$path" 2> /dev/null || true)
+    if [[ ! "$mod_time" =~ ^[0-9]+$ ]]; then
+        debug_log "Unable to read purge activity timestamp: $path"
+        return 0
+    fi
+    if [[ -z "$current_time" || ! "$current_time" =~ ^[0-9]+$ ]]; then
+        current_time=$(get_epoch_seconds)
+    fi
+
     local age_seconds=$((current_time - mod_time))
     local age_in_days=$((age_seconds / 86400))
     if [[ $age_in_days -lt $age_days ]]; then
-        return 0 # Recently modified
+        _PURGE_ACTIVITY_STATE="recent"
+        return 0
+    fi
+
+    if [[ ! -d "$path" ]]; then
+        _PURGE_ACTIVITY_STATE="old"
+        return 0
+    fi
+
+    local probe_timeout="${MO_PURGE_ACTIVITY_TIMEOUT_SEC:-$MOLE_TIMEOUT_MEDIUM_PROBE_SEC}"
+    if [[ ! "$probe_timeout" =~ ^[1-9][0-9]*$ ]]; then
+        probe_timeout="$MOLE_TIMEOUT_MEDIUM_PROBE_SEC"
+    fi
+
+    # clean_project_artifacts sets one deadline for the whole classification
+    # pass. A standalone caller still gets the per-item ceiling above.
+    if [[ "${_PURGE_ACTIVITY_DEADLINE_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+        local now_epoch remaining
+        now_epoch=$(get_epoch_seconds)
+        remaining=$((_PURGE_ACTIVITY_DEADLINE_EPOCH - now_epoch))
+        if [[ $remaining -le 0 ]]; then
+            debug_log "Purge activity scan budget exhausted before: $path"
+            return 0
+        fi
+        if [[ $probe_timeout -gt $remaining ]]; then
+            probe_timeout=$remaining
+        fi
+    fi
+
+    local recent_file=""
+    local probe_status=0
+    recent_file=$(run_with_timeout "$probe_timeout" \
+        find "$path" -type f -mtime "-$age_days" -print -quit 2> /dev/null) || probe_status=$?
+
+    if [[ $probe_status -ne 0 ]]; then
+        debug_log "Purge activity scan failed closed (exit $probe_status): $path"
+        return 0
+    fi
+    if [[ -n "$recent_file" ]]; then
+        _PURGE_ACTIVITY_STATE="recent"
     else
-        return 1 # Old enough to clean
+        _PURGE_ACTIVITY_STATE="old"
     fi
 }
+
+# Args: $1 - path, $2 - optional current epoch
+# Check whether a path must be protected from default purge selection.
+is_recently_modified() {
+    classify_purge_activity "$@"
+    [[ "$_PURGE_ACTIVITY_STATE" != "old" ]]
+}
+
+# An artifact that was old when the menu opened can become active before the
+# user confirms deletion. Recheck only those default-safe rows; a user who
+# explicitly selected an already-recent row has already overridden that hint.
+purge_target_activity_still_safe() {
+    local path="$1"
+    local was_recent="${2:-true}"
+    [[ "$was_recent" == "true" ]] && return 0
+
+    # Do not inherit the menu pass's expired shared deadline.
+    local _PURGE_ACTIVITY_DEADLINE_EPOCH=""
+    local _PURGE_ACTIVITY_STATE="uncertain"
+    if is_recently_modified "$path" "$(get_epoch_seconds)"; then
+        return 1
+    fi
+    # Preserve the established test/caller seam where an override returning 1
+    # means old without setting the newer classification detail.
+    [[ "$_PURGE_ACTIVITY_STATE" == "old" || "$_PURGE_ACTIVITY_STATE" == "uncertain" ]]
+}
+
 # Args: $1 - path
 # Get directory size in KB.
 get_dir_size_kb() {
@@ -508,7 +727,8 @@ get_dir_size_kb() {
     fi
 
     if [[ $du_exit -ne 0 ]]; then
-        echo "0"
+        debug_log "Size calculation failed (exit $du_exit): $path"
+        echo "ERROR"
         return
     fi
 
@@ -517,7 +737,8 @@ get_dir_size_kb() {
     if [[ "$size_kb" =~ ^[0-9]+$ ]]; then
         echo "$size_kb"
     else
-        echo "0"
+        debug_log "Size calculation returned invalid output: $path"
+        echo "ERROR"
     fi
 }
 # Purge category selector.
@@ -542,7 +763,7 @@ select_purge_categories() {
                 term_height=24
             fi
         fi
-        local reserved=6
+        local reserved=8
         local available=$((term_height - reserved))
         if [[ $available -lt 3 ]]; then
             echo 3
@@ -587,20 +808,28 @@ select_purge_categories() {
         fi
         terminal_restored=true
 
+        # Clear traps first to prevent re-entrant firing during eval below.
         trap - EXIT INT TERM
+
+        # Restore terminal state before re-installing caller traps, so the
+        # terminal is always usable even if a restored trap handler exits.
         show_cursor
         if [[ -n "${original_stty:-}" ]]; then
             stty "${original_stty}" 2> /dev/null || stty sane 2> /dev/null || true
         fi
-        if [[ -n "$previous_exit_trap" ]]; then
-            eval "$previous_exit_trap"
-        fi
-        if [[ -n "$previous_int_trap" ]]; then
-            eval "$previous_int_trap"
-        fi
-        if [[ -n "$previous_term_trap" ]]; then
-            eval "$previous_term_trap"
-        fi
+
+        # Snapshot and clear saved traps before eval to prevent infinite
+        # recursion if the restored handler triggers another signal.
+        local _prev_exit="$previous_exit_trap"
+        local _prev_int="$previous_int_trap"
+        local _prev_term="$previous_term_trap"
+        previous_exit_trap=""
+        previous_int_trap=""
+        previous_term_trap=""
+        # eval: restore caller traps captured by $(trap -p)
+        [[ -n "$_prev_exit" ]] && eval "$_prev_exit"
+        [[ -n "$_prev_int" ]] && eval "$_prev_int"
+        [[ -n "$_prev_term" ]] && eval "$_prev_term"
     }
     # shellcheck disable=SC2329
     handle_interrupt() {
@@ -659,6 +888,7 @@ select_purge_categories() {
         printf "%s\n" "$clear_line"
 
         IFS=',' read -r -a recent_flags <<< "${PURGE_RECENT_CATEGORIES:-}"
+        IFS=',' read -r -a age_labels <<< "${PURGE_AGE_LABELS:-}"
 
         # Calculate visible range
         local end_index=$((top_index + visible_count))
@@ -668,7 +898,8 @@ select_purge_categories() {
             local checkbox="$ICON_EMPTY"
             [[ ${selected[i]} == true ]] && checkbox="$ICON_SOLID"
             local recent_marker=""
-            [[ ${recent_flags[i]:-false} == "true" ]] && recent_marker=" ${GRAY}| Recent${NC}"
+            local _age="${age_labels[i]:-}"
+            [[ -n "$_age" ]] && recent_marker=" ${GRAY}| ${_age}${NC}"
             local rel_pos=$((i - top_index))
             if [[ $rel_pos -eq $cursor_pos ]]; then
                 printf "%s${CYAN}${ICON_ARROW} %s %s%s${NC}\n" "$clear_line" "$checkbox" "${categories[i]}" "$recent_marker"
@@ -680,7 +911,18 @@ select_purge_categories() {
         # Keep one blank line between the list and footer tips.
         printf "%s\n" "$clear_line"
 
-        # Adaptive footer hints — mirrors menu_paginated.sh pattern
+        local current_index=$((top_index + cursor_pos))
+        local current_full_path=""
+        local paths_len="${#PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}"
+        if [[ "$paths_len" -gt 0 && "$current_index" -lt "$paths_len" ]]; then
+            current_full_path="${PURGE_CATEGORY_FULL_PATHS_ARRAY[current_index]}"
+        fi
+        if [[ -n "$current_full_path" ]]; then
+            printf "%s${GRAY}Full path:${NC} %s\n" "$clear_line" "$current_full_path"
+            printf "%s\n" "$clear_line"
+        fi
+
+        # Adaptive footer hints, mirrors menu_paginated.sh pattern
         local _term_w
         _term_w=$(tput cols 2> /dev/null || echo 80)
         [[ "$_term_w" =~ ^[0-9]+$ ]] || _term_w=80
@@ -821,10 +1063,13 @@ confirm_purge_cleanup() {
     local item_count="${1:-0}"
     local total_size_kb="${2:-0}"
     local unknown_count="${3:-0}"
+    local cloud_count="${4:-0}"
+    local -a selected_paths=("${@:5}")
 
     [[ "$item_count" =~ ^[0-9]+$ ]] || item_count=0
     [[ "$total_size_kb" =~ ^[0-9]+$ ]] || total_size_kb=0
     [[ "$unknown_count" =~ ^[0-9]+$ ]] || unknown_count=0
+    [[ "$cloud_count" =~ ^[0-9]+$ ]] || cloud_count=0
 
     local item_text="artifact"
     [[ $item_count -ne 1 ]] && item_text="artifacts"
@@ -837,6 +1082,21 @@ confirm_purge_cleanup() {
         local unknown_text="unknown size"
         [[ $unknown_count -gt 1 ]] && unknown_text="unknown sizes"
         unknown_hint=", ${unknown_count} ${unknown_text}"
+    fi
+
+    if [[ ${#selected_paths[@]} -gt 0 ]]; then
+        echo ""
+        echo -e "${GRAY}Selected paths:${NC}"
+        local selected_path=""
+        for selected_path in "${selected_paths[@]}"; do
+            echo "  $selected_path"
+        done
+    fi
+
+    if [[ $cloud_count -gt 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}${ICON_WARNING}${NC} Cloud-synced artifacts may also be removed from other devices."
+        echo -e "${GRAY}Use 'mo purge --paths' to exclude cloud storage roots.${NC}"
     fi
 
     echo -ne "${PURPLE}${ICON_ARROW}${NC} Remove ${item_count} ${item_text}, ${size_display}${unknown_hint}  ${GREEN}Enter${NC} confirm, ${GRAY}ESC${NC} cancel: "
@@ -861,7 +1121,8 @@ confirm_purge_cleanup() {
 clean_project_artifacts() {
     local -a all_found_items=()
     local -a safe_to_clean=()
-    local -a recently_modified=()
+    local -a safe_recent_flags=()
+    local -a safe_activity_states=()
     local previous_int_trap=""
     local previous_term_trap=""
     local trap_installed_by_this_call=false
@@ -869,8 +1130,11 @@ clean_project_artifacts() {
     # Note: Declared without 'local' so cleanup_scan trap can access them
     scan_pids=()
     scan_temps=()
+    _cleanup_scan_done=false
     # shellcheck disable=SC2329
     cleanup_scan() {
+        [[ "$_cleanup_scan_done" == "true" ]] && return
+        _cleanup_scan_done=true
         # Kill all background scans
         for pid in "${scan_pids[@]+"${scan_pids[@]}"}"; do
             kill "$pid" 2> /dev/null || true
@@ -898,7 +1162,7 @@ clean_project_artifacts() {
             scan_output=$(mktemp)
             scan_temps+=("$scan_output")
             # Launch scan in background for true parallelism
-            scan_purge_targets "$path" "$scan_output" &
+            scan_purge_targets "$path" "$scan_output" < /dev/null &
             local scan_pid=$!
             scan_pids+=("$scan_pid")
         fi
@@ -917,20 +1181,26 @@ clean_project_artifacts() {
         sleep 0.2
     fi
 
-    # Collect all results
+    # Collect all results and deduplicate once. This avoids an O(N²) shell loop
+    # when overlapping search roots produce the same artifact many times.
+    local dedupe_output
+    dedupe_output=$(mktemp_file "mole-purge-dedupe") || return 1
     for scan_output in "${scan_temps[@]+"${scan_temps[@]}"}"; do
         if [[ -f "$scan_output" ]]; then
-            while IFS= read -r item; do
-                if [[ -n "$item" ]]; then
-                    all_found_items+=("$item")
-                fi
-            done < "$scan_output"
+            cat "$scan_output" >> "$dedupe_output"
             rm -f "$scan_output"
         fi
     done
+    if [[ -s "$dedupe_output" ]]; then
+        while IFS= read -r item; do
+            [[ -n "$item" ]] && all_found_items+=("$item")
+        done < <(LC_COLLATE=C sort -u "$dedupe_output")
+    fi
+    rm -f "$dedupe_output"
     # Restore caller traps after this function completes.
     if [[ "$trap_installed_by_this_call" == "true" ]]; then
         trap - INT TERM
+        # eval: restore caller traps captured by $(trap -p)
         [[ -n "$previous_int_trap" ]] && eval "$previous_int_trap"
         [[ -n "$previous_term_trap" ]] && eval "$previous_term_trap"
     fi
@@ -941,37 +1211,113 @@ clean_project_artifacts() {
         return 2 # Special code: nothing to clean
     fi
     # Mark recently modified items (for default selection state)
+    if [[ -t 1 ]]; then
+        start_inline_spinner "Checking recent activity..."
+    fi
+    local _now_epoch
+    _now_epoch=$(get_epoch_seconds)
+    local _activity_total_timeout="${MO_PURGE_ACTIVITY_TOTAL_TIMEOUT_SEC:-$MOLE_TIMEOUT_HINT_SCAN_SEC}"
+    if [[ ! "$_activity_total_timeout" =~ ^[1-9][0-9]*$ ]]; then
+        _activity_total_timeout="$MOLE_TIMEOUT_HINT_SCAN_SEC"
+    fi
+    local _PURGE_ACTIVITY_DEADLINE_EPOCH=$((_now_epoch + _activity_total_timeout))
     for item in "${all_found_items[@]}"; do
-        if is_recently_modified "$item"; then
-            recently_modified+=("$item")
+        local is_recent=false
+        _PURGE_ACTIVITY_STATE="uncertain"
+        if is_recently_modified "$item" "$_now_epoch"; then
+            is_recent=true
+        fi
+        local activity_state="${_PURGE_ACTIVITY_STATE:-uncertain}"
+        if [[ "$activity_state" != "recent" && "$activity_state" != "old" && "$activity_state" != "uncertain" ]]; then
+            activity_state="uncertain"
+        elif [[ "$activity_state" == "uncertain" && "$is_recent" == "false" ]]; then
+            # Preserve the long-standing is_recently_modified test/mocking seam:
+            # a legacy override returning 1 means definitely old.
+            activity_state="old"
         fi
         # Add all items to safe_to_clean, let user choose
         safe_to_clean+=("$item")
+        safe_recent_flags+=("$is_recent")
+        safe_activity_states+=("$activity_state")
     done
+    if [[ -t 1 ]]; then
+        stop_inline_spinner
+    fi
     # Build menu options - one per artifact
     if [[ -t 1 ]]; then
         start_inline_spinner "Calculating sizes..."
     fi
+
+    # Pre-compute sizes in parallel with sliding-window throttle.
+    # Unbounded parallelism (all N at once) causes I/O contention on cold
+    # filesystem cache, making du timeout and display "unknown" sizes.
+    local -a _size_tmpfiles=()
+    local -a _size_pids=()
+    local _max_size_jobs
+    _max_size_jobs=$(get_optimal_parallel_jobs io)
+    if ! [[ "$_max_size_jobs" =~ ^[0-9]+$ ]] || [[ "$_max_size_jobs" -lt 1 ]]; then
+        _max_size_jobs=1
+    elif [[ "$_max_size_jobs" -gt 8 ]]; then
+        _max_size_jobs=8
+    fi
+
+    # Reap any finished PID from the sliding window. Uses `wait -n` when
+    # available (bash 4.3+) to avoid blocking on the slowest job; falls
+    # back to first-PID wait on macOS default bash 3.2.
+    local _has_wait_n=false
+    if [[ "${BASH_VERSINFO[0]:-0}" -gt 4 ]] ||
+        { [[ "${BASH_VERSINFO[0]:-0}" -eq 4 ]] && [[ "${BASH_VERSINFO[1]:-0}" -ge 3 ]]; }; then
+        _has_wait_n=true
+    fi
+    _reap_one_size_pid() {
+        if [[ "$_has_wait_n" == "true" ]]; then
+            wait -n "${_size_pids[@]}" 2> /dev/null || true
+            local -a _remaining=()
+            for _p in "${_size_pids[@]}"; do
+                if kill -0 "$_p" 2> /dev/null; then
+                    _remaining+=("$_p")
+                fi
+            done
+            _size_pids=("${_remaining[@]}")
+        else
+            wait "${_size_pids[0]}" 2> /dev/null || true
+            _size_pids=("${_size_pids[@]:1}")
+        fi
+    }
+
+    for _sz_item in "${safe_to_clean[@]}"; do
+        local _stmp
+        _stmp=$(mktemp)
+        register_temp_file "$_stmp"
+        _size_tmpfiles+=("$_stmp")
+        (get_dir_size_kb "$_sz_item" > "$_stmp" 2> /dev/null) < /dev/null &
+        _size_pids+=($!)
+
+        if [[ ${#_size_pids[@]} -ge $_max_size_jobs ]]; then
+            _reap_one_size_pid
+        fi
+    done
+    for _spid in "${_size_pids[@]+"${_size_pids[@]}"}"; do
+        wait "$_spid" 2> /dev/null || true
+    done
+
     local -a menu_options=()
     local -a item_paths=()
     local -a item_sizes=()
     local -a item_size_unknown_flags=()
     local -a item_recent_flags=()
-    # Helper to get project name from path
-    # For ~/www/pake/src-tauri/target -> returns "pake"
-    # For ~/work/code/MyProject/node_modules -> returns "MyProject"
-    # Strategy: Find the nearest ancestor directory containing a project indicator file
-    get_project_name() {
+    local -a item_age_labels=()
+    local -a item_cloud_flags=()
+    # Find the best project root for an artifact once; callers decide how to
+    # display it. Monorepo indicators win over plain project indicators.
+    find_purge_project_root_for_artifact() {
         local path="$1"
-
-        local current_dir
-        current_dir=$(dirname "$path")
+        local current_dir="${path%/*}"
+        [[ -z "$current_dir" ]] && current_dir="/"
         local monorepo_root=""
         local project_root=""
 
-        # Single pass: check both monorepo and project indicators
         while [[ "$current_dir" != "/" && "$current_dir" != "$HOME" && -n "$current_dir" ]]; do
-            # First check for monorepo indicators (higher priority)
             if [[ -z "$monorepo_root" ]]; then
                 for indicator in "${MONOREPO_INDICATORS[@]}"; do
                     if [[ -e "$current_dir/$indicator" ]]; then
@@ -981,7 +1327,6 @@ clean_project_artifacts() {
                 done
             fi
 
-            # Then check for project indicators (save first match)
             if [[ -z "$project_root" ]]; then
                 for indicator in "${PROJECT_INDICATORS[@]}"; do
                     if [[ -e "$current_dir/$indicator" ]]; then
@@ -991,136 +1336,123 @@ clean_project_artifacts() {
                 done
             fi
 
-            # If we found monorepo, we can stop (monorepo always wins)
             if [[ -n "$monorepo_root" ]]; then
                 break
             fi
 
-            # If we found project but still checking for monorepo above
-            # (only stop if we're beyond reasonable depth)
-            local depth=$(echo "${current_dir#"$HOME"}" | LC_ALL=C tr -cd '/' | wc -c | tr -d ' ')
+            local _rel="${current_dir#"$HOME"}"
+            local _stripped="${_rel//\//}"
+            local depth=$((${#_rel} - ${#_stripped}))
             if [[ -n "$project_root" && $depth -lt 2 ]]; then
                 break
             fi
 
-            current_dir=$(dirname "$current_dir")
+            local _parent="${current_dir%/*}"
+            current_dir="${_parent:-/}"
         done
 
-        # Determine result: monorepo > project > fallback
-        local result=""
         if [[ -n "$monorepo_root" ]]; then
-            result=$(basename "$monorepo_root")
-        elif [[ -n "$project_root" ]]; then
-            result=$(basename "$project_root")
-        else
-            # Fallback: first directory under search root
-            local search_roots=()
-            if [[ ${#PURGE_SEARCH_PATHS[@]} -gt 0 ]]; then
-                search_roots=("${PURGE_SEARCH_PATHS[@]}")
-            else
-                search_roots=("$HOME/www" "$HOME/dev" "$HOME/Projects")
-            fi
-            for root in "${search_roots[@]}"; do
-                root="${root%/}"
-                if [[ -n "$root" && "$path" == "$root/"* ]]; then
-                    local relative_path="${path#"$root"/}"
-                    result=$(echo "$relative_path" | cut -d'/' -f1)
-                    break
-                fi
-            done
+            echo "$monorepo_root"
+            return 0
+        fi
 
-            # Final fallback: use grandparent directory
-            if [[ -z "$result" ]]; then
-                result=$(dirname "$(dirname "$path")" | xargs basename)
+        if [[ -n "$project_root" ]]; then
+            echo "$project_root"
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Helper to get project name from path.
+    get_project_name() {
+        local path="$1"
+        local project_root=""
+
+        if project_root=$(find_purge_project_root_for_artifact "$path"); then
+            echo "${project_root##*/}"
+            return
+        fi
+
+        local result=""
+        local search_roots=()
+        if [[ ${#PURGE_SEARCH_PATHS[@]} -gt 0 ]]; then
+            search_roots=("${PURGE_SEARCH_PATHS[@]}")
+        else
+            search_roots=("$HOME/www" "$HOME/dev" "$HOME/Projects")
+        fi
+        for root in "${search_roots[@]}"; do
+            root="${root%/}"
+            if [[ -n "$root" && "$path" == "$root/"* ]]; then
+                local relative_path="${path#"$root"/}"
+                result="${relative_path%%/*}"
+                break
             fi
+        done
+
+        if [[ -z "$result" ]]; then
+            local _gp="${path%/*}"
+            _gp="${_gp%/*}"
+            result="${_gp##*/}"
         fi
 
         echo "$result"
     }
 
-    # Helper to get project path (more complete than just project name)
-    # For ~/www/pake/src-tauri/target -> returns "~/www/pake"
-    # For ~/work/code/MyProject/node_modules -> returns "~/work/code/MyProject"
-    # Shows the full path relative to HOME with ~ prefix for better clarity
+    # Helper to get project path (more complete than just project name).
     get_project_path() {
         local path="$1"
-
-        local current_dir
-        current_dir=$(dirname "$path")
-        local monorepo_root=""
         local project_root=""
-
-        # Single pass: check both monorepo and project indicators
-        while [[ "$current_dir" != "/" && "$current_dir" != "$HOME" && -n "$current_dir" ]]; do
-            # First check for monorepo indicators (higher priority)
-            if [[ -z "$monorepo_root" ]]; then
-                for indicator in "${MONOREPO_INDICATORS[@]}"; do
-                    if [[ -e "$current_dir/$indicator" ]]; then
-                        monorepo_root="$current_dir"
-                        break
-                    fi
-                done
-            fi
-
-            # Then check for project indicators (save first match)
-            if [[ -z "$project_root" ]]; then
-                for indicator in "${PROJECT_INDICATORS[@]}"; do
-                    if [[ -e "$current_dir/$indicator" ]]; then
-                        project_root="$current_dir"
-                        break
-                    fi
-                done
-            fi
-
-            # If we found monorepo, we can stop (monorepo always wins)
-            if [[ -n "$monorepo_root" ]]; then
-                break
-            fi
-
-            # If we found project but still checking for monorepo above
-            local depth=$(echo "${current_dir#"$HOME"}" | LC_ALL=C tr -cd '/' | wc -c | tr -d ' ')
-            if [[ -n "$project_root" && $depth -lt 2 ]]; then
-                break
-            fi
-
-            current_dir=$(dirname "$current_dir")
-        done
-
-        # Determine result: monorepo > project > fallback
-        local result=""
-        if [[ -n "$monorepo_root" ]]; then
-            result="$monorepo_root"
-        elif [[ -n "$project_root" ]]; then
-            result="$project_root"
-        else
-            # Fallback: use parent directory of artifact
-            result=$(dirname "$path")
+        if ! project_root=$(find_purge_project_root_for_artifact "$path"); then
+            project_root="${path%/*}"
         fi
-
-        # Convert to ~ format for cleaner display
-        result="${result/#$HOME/~}"
-        echo "$result"
+        echo "${project_root/#$HOME/~}"
     }
 
     # Helper to get artifact display name
     # For duplicate artifact names within same project, include parent directory for context
+    # Uses pre-computed _cached_basenames and _cached_project_names arrays when available.
     get_artifact_display_name() {
         local path="$1"
-        local artifact_name=$(basename "$path")
-        local project_name=$(get_project_name "$path")
-        local parent_name=$(basename "$(dirname "$path")")
+        local artifact_name="${path##*/}"
+        local parent_name="${path%/*}"
+        parent_name="${parent_name##*/}"
+
+        local project_name
+        if [[ -n "${_cached_project_names[*]+x}" ]]; then
+            # Fast path: use pre-computed cache
+            local _idx
+            project_name=""
+            for _idx in "${!safe_to_clean[@]}"; do
+                if [[ "${safe_to_clean[$_idx]}" == "$path" ]]; then
+                    project_name="${_cached_project_names[$_idx]}"
+                    break
+                fi
+            done
+        else
+            project_name=$(get_project_name "$path")
+        fi
 
         # Check if there are other items with same artifact name AND same project
         local has_duplicate=false
-        for other_item in "${safe_to_clean[@]}"; do
-            if [[ "$other_item" != "$path" && "$(basename "$other_item")" == "$artifact_name" ]]; then
-                # Same artifact name, check if same project
-                if [[ "$(get_project_name "$other_item")" == "$project_name" ]]; then
+        if [[ -n "${_cached_basenames[*]+x}" ]]; then
+            local _idx
+            for _idx in "${!safe_to_clean[@]}"; do
+                if [[ "${safe_to_clean[$_idx]}" != "$path" && "${_cached_basenames[$_idx]}" == "$artifact_name" && "${_cached_project_names[$_idx]}" == "$project_name" ]]; then
                     has_duplicate=true
                     break
                 fi
-            fi
-        done
+            done
+        else
+            for other_item in "${safe_to_clean[@]}"; do
+                if [[ "$other_item" != "$path" && "${other_item##*/}" == "$artifact_name" ]]; then
+                    if [[ "$(get_project_name "$other_item")" == "$project_name" ]]; then
+                        has_duplicate=true
+                        break
+                    fi
+                fi
+            done
+        fi
 
         # If duplicate exists in same project and parent is not the project itself, show parent/artifact
         if [[ "$has_duplicate" == "true" && "$parent_name" != "$project_name" && "$parent_name" != "." && "$parent_name" != "/" ]]; then
@@ -1139,6 +1471,12 @@ clean_project_artifacts() {
         local max_path_width="${5:-}"
         local artifact_col="${6:-12}"
         local available_width
+        local path_prefix=""
+
+        if [[ "$project_path" == "[cloud] "* ]]; then
+            path_prefix="[cloud] "
+            project_path="${project_path#"[cloud] "}"
+        fi
 
         if [[ -n "$max_path_width" ]]; then
             available_width="$max_path_width"
@@ -1157,31 +1495,59 @@ clean_project_artifacts() {
             fi
 
             [[ $available_width -lt $min_width ]] && available_width=$min_width
-            [[ $available_width -gt 60 ]] && available_width=60
         fi
 
         # Truncate project path if needed
         local truncated_path
-        truncated_path=$(truncate_by_display_width "$project_path" "$available_width")
+        local compact_width=$((available_width - ${#path_prefix}))
+        [[ $compact_width -lt 4 ]] && compact_width=4
+        truncated_path="${path_prefix}$(compact_purge_menu_path "$project_path" "$compact_width")"
         local current_width
         current_width=$(get_display_width "$truncated_path")
-        local char_count=${#truncated_path}
+
+        # Get byte count for printf width calculation
+        local old_lc="${LC_ALL:-}"
+        export LC_ALL=C
+        local byte_count=${#truncated_path}
+        if [[ -n "$old_lc" ]]; then
+            export LC_ALL="$old_lc"
+        else
+            unset LC_ALL
+        fi
+
         local padding=$((available_width - current_width))
-        local printf_width=$((char_count + padding))
+        local printf_width=$((byte_count + padding))
         # Format: "project_path  size | artifact_type"
         printf "%-*s %9s | %-*s" "$printf_width" "$truncated_path" "$size_str" "$artifact_col" "$artifact_type"
     }
+    # Pre-compute basenames and project names once so get_artifact_display_name()
+    # can avoid repeated filesystem traversals during the O(N^2) duplicate check.
+    local -a _cached_basenames=()
+    local -a _cached_project_names=()
+    local -a _cached_project_paths=()
+    local _pre_idx
+    for _pre_idx in "${!safe_to_clean[@]}"; do
+        _cached_basenames[_pre_idx]="${safe_to_clean[$_pre_idx]##*/}"
+        _cached_project_names[_pre_idx]=$(get_project_name "${safe_to_clean[$_pre_idx]}")
+        _cached_project_paths[_pre_idx]=$(get_project_path "${safe_to_clean[$_pre_idx]}")
+    done
+
     # Build menu options - one line per artifact
-    # Pass 1: collect data into parallel arrays (needed for pre-scan of widths)
+    # Pass 1: collect data into parallel arrays (needed for pre-scan of widths).
+    # Sizes are read from pre-computed results (parallel du calls launched above).
     local -a raw_project_paths=()
     local -a raw_artifact_types=()
+    local -a item_display_paths=()
+    local _sz_idx=0
     for item in "${safe_to_clean[@]}"; do
-        local project_path
-        project_path=$(get_project_path "$item")
+        local item_index=$_sz_idx
+        local project_path="${_cached_project_paths[$item_index]}"
         local artifact_type
         artifact_type=$(get_artifact_display_name "$item")
         local size_raw
-        size_raw=$(get_dir_size_kb "$item")
+        size_raw=$(cat "${_size_tmpfiles[$item_index]}" 2> /dev/null || echo "0")
+        rm -f "${_size_tmpfiles[$item_index]}" 2> /dev/null || true
+        _sz_idx=$((_sz_idx + 1))
         local size_kb=0
         local size_human=""
         local size_unknown=false
@@ -1189,31 +1555,59 @@ clean_project_artifacts() {
         if [[ "$size_raw" == "TIMEOUT" ]]; then
             size_unknown=true
             size_human="unknown"
+        elif [[ "$size_raw" == "ERROR" ]]; then
+            debug_log "Skipping purge target with unknown size: $item"
+            continue
         elif [[ "$size_raw" =~ ^[0-9]+$ ]]; then
             size_kb="$size_raw"
-            # Skip empty directories (0 bytes)
-            if [[ $size_kb -eq 0 ]]; then
+            if [[ $size_kb -eq 0 && "${MOLE_PURGE_INCLUDE_EMPTY:-0}" != "1" ]]; then
                 continue
             fi
             size_human=$(bytes_to_human "$((size_kb * 1024))")
         else
+            debug_log "Skipping purge target with invalid size result '$size_raw': $item"
             continue
         fi
 
-        # Check if recent
-        local is_recent=false
-        for recent_item in "${recently_modified[@]+"${recently_modified[@]}"}"; do
-            if [[ "$item" == "$recent_item" ]]; then
-                is_recent=true
-                break
-            fi
-        done
-        raw_project_paths+=("$project_path")
+        local is_recent="${safe_recent_flags[$item_index]:-true}"
+        local activity_state="${safe_activity_states[$item_index]:-uncertain}"
+        local is_cloud=false
+        if mole_purge_is_cloud_synced_path "$item"; then
+            is_cloud=true
+        fi
+        local display_project_path="$project_path"
+        local display_item_path
+        display_item_path=$(format_purge_target_path "$item")
+        if [[ "$is_cloud" == "true" ]]; then
+            display_project_path="[cloud] $display_project_path"
+            display_item_path="[cloud] $display_item_path"
+        fi
+        raw_project_paths+=("$display_project_path")
         raw_artifact_types+=("$artifact_type")
         item_paths+=("$item")
+        item_display_paths+=("$display_item_path")
         item_sizes+=("$size_kb")
         item_size_unknown_flags+=("$size_unknown")
         item_recent_flags+=("$is_recent")
+        item_cloud_flags+=("$is_cloud")
+        # Build human-readable age label (bash 3.2 compatible, no assoc arrays).
+        local _mod_time _age_secs _age_d
+        _mod_time=$(get_file_mtime "$item" 2> /dev/null || echo "0")
+        _age_secs=$((_now_epoch - _mod_time))
+        _age_d=$((_age_secs / 86400))
+        if [[ "$activity_state" == "uncertain" ]]; then
+            item_age_labels+=("unknown")
+        elif [[ "$activity_state" == "recent" && $_age_d -ge $MIN_AGE_DAYS ]]; then
+            item_age_labels+=("<${MIN_AGE_DAYS}d")
+        elif [[ $_age_d -lt 1 ]]; then
+            item_age_labels+=("<1d")
+        elif [[ $_age_d -lt 30 ]]; then
+            item_age_labels+=("${_age_d}d")
+        elif [[ $_age_d -lt 365 ]]; then
+            item_age_labels+=("$((_age_d / 30))mo")
+        else
+            item_age_labels+=("$((_age_d / 365))y")
+        fi
     done
 
     # Pre-scan: find max path and artifact display widths (mirrors app_selector.sh approach)
@@ -1236,7 +1630,7 @@ clean_project_artifacts() {
     [[ $max_artifact_width -lt 6 ]] && max_artifact_width=6
     [[ $max_artifact_width -gt 17 ]] && max_artifact_width=17
 
-    # Exact overhead: prefix(4) + space(1) + size(9) + " | "(3) + artifact_col + " | Recent"(9) = artifact_col + 26
+    # Exact overhead: prefix(4) + space(1) + size(9) + " | "(3) + artifact_col + " | 11mo"(7) = artifact_col + 24
     local fixed_overhead=$((max_artifact_width + 26))
     local available_for_path=$((terminal_width - fixed_overhead))
 
@@ -1251,7 +1645,6 @@ clean_project_artifacts() {
 
     [[ $max_path_display_width -lt $min_path_width ]] && max_path_display_width=$min_path_width
     [[ $available_for_path -lt $max_path_display_width ]] && max_path_display_width=$available_for_path
-    [[ $max_path_display_width -gt 60 ]] && max_path_display_width=60
     # Ensure path width is at least 5 on very narrow terminals
     [[ $max_path_display_width -lt 5 ]] && max_path_display_width=5
 
@@ -1291,6 +1684,9 @@ clean_project_artifacts() {
         local -a sorted_item_sizes=()
         local -a sorted_item_size_unknown_flags=()
         local -a sorted_item_recent_flags=()
+        local -a sorted_item_display_paths=()
+        local -a sorted_item_age_labels=()
+        local -a sorted_item_cloud_flags=()
 
         for idx in "${sorted_indices[@]}"; do
             sorted_menu_options+=("${menu_options[idx]}")
@@ -1298,6 +1694,9 @@ clean_project_artifacts() {
             sorted_item_sizes+=("${item_sizes[idx]}")
             sorted_item_size_unknown_flags+=("${item_size_unknown_flags[idx]}")
             sorted_item_recent_flags+=("${item_recent_flags[idx]}")
+            sorted_item_display_paths+=("${item_display_paths[idx]}")
+            sorted_item_age_labels+=("${item_age_labels[idx]}")
+            sorted_item_cloud_flags+=("${item_cloud_flags[idx]}")
         done
 
         # Replace original arrays with sorted versions
@@ -1306,6 +1705,9 @@ clean_project_artifacts() {
         item_sizes=("${sorted_item_sizes[@]}")
         item_size_unknown_flags=("${sorted_item_size_unknown_flags[@]}")
         item_recent_flags=("${sorted_item_recent_flags[@]}")
+        item_display_paths=("${sorted_item_display_paths[@]}")
+        item_age_labels=("${sorted_item_age_labels[@]}")
+        item_cloud_flags=("${sorted_item_cloud_flags[@]}")
     fi
     if [[ -t 1 ]]; then
         stop_inline_spinner
@@ -1327,32 +1729,52 @@ clean_project_artifacts() {
         IFS=,
         echo "${item_recent_flags[*]-}"
     )
+    export PURGE_AGE_LABELS=$(
+        IFS=,
+        echo "${item_age_labels[*]-}"
+    )
     # Interactive selection (only if terminal is available)
     PURGE_SELECTION_RESULT=""
+    PURGE_CATEGORY_FULL_PATHS_ARRAY=("${item_display_paths[@]}")
     if [[ -t 0 ]]; then
         if ! select_purge_categories "${menu_options[@]}"; then
-            unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_SELECTION_RESULT
+            PURGE_CATEGORY_FULL_PATHS_ARRAY=()
+            unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_AGE_LABELS PURGE_SELECTION_RESULT
             return 1
         fi
     else
         # Non-interactive: select all non-recent items
+        local skipped_cloud_count=0
         for ((i = 0; i < ${#menu_options[@]}; i++)); do
+            if [[ "${item_cloud_flags[i]:-false}" == "true" && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
+                skipped_cloud_count=$((skipped_cloud_count + 1))
+                continue
+            fi
             if [[ ${item_recent_flags[i]} != "true" ]]; then
                 [[ -n "$PURGE_SELECTION_RESULT" ]] && PURGE_SELECTION_RESULT+=","
                 PURGE_SELECTION_RESULT+="$i"
             fi
         done
+        if [[ $skipped_cloud_count -gt 0 ]]; then
+            local skipped_cloud_text="artifact"
+            [[ $skipped_cloud_count -ne 1 ]] && skipped_cloud_text="artifacts"
+            echo ""
+            echo -e "${YELLOW}${ICON_WARNING}${NC} Skipped ${skipped_cloud_count} cloud-synced ${skipped_cloud_text} in non-interactive mode (confirmation required)"
+        fi
     fi
     if [[ -z "$PURGE_SELECTION_RESULT" ]]; then
         echo ""
         echo -e "${GRAY}No items selected${NC}"
         printf '\n'
-        unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_SELECTION_RESULT
+        PURGE_CATEGORY_FULL_PATHS_ARRAY=()
+        unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_AGE_LABELS PURGE_SELECTION_RESULT
         return 0
     fi
     IFS=',' read -r -a selected_indices <<< "$PURGE_SELECTION_RESULT"
     local selected_total_kb=0
     local selected_unknown_count=0
+    local selected_cloud_count=0
+    local -a selected_display_paths=()
     for idx in "${selected_indices[@]}"; do
         local selected_size_kb="${item_sizes[idx]:-0}"
         [[ "$selected_size_kb" =~ ^[0-9]+$ ]] || selected_size_kb=0
@@ -1360,16 +1782,22 @@ clean_project_artifacts() {
         if [[ "${item_size_unknown_flags[idx]:-false}" == "true" ]]; then
             selected_unknown_count=$((selected_unknown_count + 1))
         fi
+        if [[ "${item_cloud_flags[idx]:-false}" == "true" ]]; then
+            selected_cloud_count=$((selected_cloud_count + 1))
+        fi
+        selected_display_paths+=("${item_display_paths[idx]}")
     done
 
     if [[ -t 0 ]]; then
-        if ! confirm_purge_cleanup "${#selected_indices[@]}" "$selected_total_kb" "$selected_unknown_count"; then
+        if ! confirm_purge_cleanup "${#selected_indices[@]}" "$selected_total_kb" "$selected_unknown_count" "$selected_cloud_count" "${selected_display_paths[@]}"; then
             echo -e "${GRAY}Purge cancelled${NC}"
             printf '\n'
-            unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_SELECTION_RESULT
+            PURGE_CATEGORY_FULL_PATHS_ARRAY=()
+            unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_AGE_LABELS PURGE_SELECTION_RESULT
             return 1
         fi
     fi
+    PURGE_CATEGORY_FULL_PATHS_ARRAY=()
 
     # Clean selected items
     echo ""
@@ -1378,8 +1806,7 @@ clean_project_artifacts() {
     local dry_run_mode="${MOLE_DRY_RUN:-0}"
     for idx in "${selected_indices[@]}"; do
         local item_path="${item_paths[idx]}"
-        local artifact_type=$(basename "$item_path")
-        local project_path=$(get_project_path "$item_path")
+        local display_item_path="${item_display_paths[idx]}"
         local size_kb="${item_sizes[idx]}"
         local size_unknown="${item_size_unknown_flags[idx]:-false}"
         local size_human
@@ -1389,11 +1816,16 @@ clean_project_artifacts() {
             size_human=$(bytes_to_human "$((size_kb * 1024))")
         fi
         # Safety checks
-        if [[ -z "$item_path" || "$item_path" == "/" || "$item_path" == "$HOME" || "$item_path" != "$HOME/"* ]]; then
+        if ! is_safe_configured_purge_artifact "$item_path"; then
+            debug_log "Skipping purge target outside configured safe roots: ${item_path:-<empty>}"
+            continue
+        fi
+        if ! purge_target_activity_still_safe "$item_path" "${item_recent_flags[idx]:-true}"; then
+            echo -e "${YELLOW}${ICON_WARNING}${NC} Skipped $display_item_path (activity changed after review)"
             continue
         fi
         if [[ -t 1 ]]; then
-            start_inline_spinner "Cleaning $project_path/$artifact_type..."
+            start_inline_spinner "Cleaning $display_item_path..."
         fi
         local removal_recorded=false
         if [[ -e "$item_path" ]]; then
@@ -1409,16 +1841,16 @@ clean_project_artifacts() {
         fi
         if [[ -t 1 ]]; then
             stop_inline_spinner
-            if [[ "$removal_recorded" == "true" ]]; then
-                if [[ "$dry_run_mode" == "1" ]]; then
-                    echo -e "${GREEN}${ICON_SUCCESS}${NC} [DRY RUN] $project_path, $artifact_type${NC}, ${GREEN}$size_human${NC}"
-                else
-                    echo -e "${GREEN}${ICON_SUCCESS}${NC} $project_path, $artifact_type${NC}, ${GREEN}$size_human${NC}"
-                fi
+        fi
+        if [[ "$removal_recorded" == "true" ]]; then
+            if [[ "$dry_run_mode" == "1" ]]; then
+                echo -e "${GREEN}${ICON_SUCCESS}${NC} [DRY RUN] $display_item_path${NC}, ${GREEN}$size_human${NC}"
+            elif [[ -t 1 ]]; then
+                echo -e "${GREEN}${ICON_SUCCESS}${NC} $display_item_path${NC}, ${GREEN}$size_human${NC}"
             fi
         fi
     done
     # Update count
     echo "$cleaned_count" > "$stats_dir/purge_count"
-    unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_SELECTION_RESULT
+    unset PURGE_CATEGORY_SIZES PURGE_RECENT_CATEGORIES PURGE_AGE_LABELS PURGE_SELECTION_RESULT
 }
