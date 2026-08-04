@@ -17,8 +17,8 @@ format_app_display() {
     fi
 
     # Format size
-    local size_str="N/A"
-    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" ]] && size_str="$size"
+    local size_str="--"
+    [[ "$size" != "0" && "$size" != "" && "$size" != "Unknown" && "$size" != "N/A" && "$size" != "--" ]] && size_str="$size"
 
     # Calculate available width for app name based on terminal width
     # Accept pre-calculated max_name_width (5th param) to avoid recalculation in loops
@@ -58,10 +58,19 @@ format_app_display() {
     current_display_width=$(get_display_width "$truncated_name")
 
     # Calculate padding needed
-    # Formula: char_count + (available_width - display_width) = padding to add
-    local char_count=${#truncated_name}
+    # printf counts bytes (in LC_ALL=C), not display width or char count.
+    # Get byte count for printf width calculation.
+    local old_lc="${LC_ALL:-}"
+    export LC_ALL=C
+    local byte_count=${#truncated_name}
+    if [[ -n "$old_lc" ]]; then
+        export LC_ALL="$old_lc"
+    else
+        unset LC_ALL
+    fi
+
     local padding_needed=$((available_width - current_display_width))
-    local printf_width=$((char_count + padding_needed))
+    local printf_width=$((byte_count + padding_needed))
 
     # Use dynamic column width with corrected padding
     printf "%-*s %9s | %s" "$printf_width" "$truncated_name" "$size_str" "$compact_last_used"
@@ -146,6 +155,8 @@ select_apps_for_uninstall() {
         fi
     fi
 
+    drain_pending_input 0.2
+
     # Expose metadata for the paginated menu (optional inputs)
     # - MOLE_MENU_META_EPOCHS: numeric last_used_epoch per item
     # - MOLE_MENU_META_SIZEKB: numeric size in KB per item
@@ -161,6 +172,7 @@ select_apps_for_uninstall() {
         unset MOLE_MENU_META_SIZEKB
     fi
     export MOLE_MENU_FILTER_NAMES="$names_newline"
+    export MOLE_MENU_IGNORE_INITIAL_ENTER=1
 
     # Use paginated menu - result will be stored in MOLE_SELECTION_RESULT
     # Note: paginated_multi_select enters alternate screen and handles clearing
@@ -169,7 +181,7 @@ select_apps_for_uninstall() {
     local exit_code=$?
 
     # Clean env leakage for safety
-    unset MOLE_MENU_META_EPOCHS MOLE_MENU_META_SIZEKB MOLE_MENU_FILTER_NAMES
+    unset MOLE_MENU_META_EPOCHS MOLE_MENU_META_SIZEKB MOLE_MENU_FILTER_NAMES MOLE_MENU_IGNORE_INITIAL_ENTER
     # leave MOLE_MENU_SORT_DEFAULT untouched if user set it globally
 
     if [[ $exit_code -ne 0 ]]; then
