@@ -14,22 +14,64 @@ setup_file() {
 }
 
 teardown_file() {
-	rm -rf "$HOME"
+	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		rm -rf "$HOME"
+	fi
 	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
 		export HOME="$ORIGINAL_HOME"
 	fi
 }
 
 setup() {
+	# Safety: refuse to operate on a real home directory.
+	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+		return 1
+	fi
 	mkdir -p "$HOME/www"
 	mkdir -p "$HOME/dev"
 	mkdir -p "$HOME/.cache/mole"
 
 	rm -rf "${HOME:?}/www"/* "${HOME:?}/dev"/*
+	rm -rf "${HOME:?}/Library/CloudStorage" "${HOME:?}/Library/Mobile Documents"
+}
+
+@test "mole_purge_is_cloud_synced_path matches only exact cloud roots and descendants" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+physical_home="$HOME/cloud-home-physical"
+logical_home="$HOME/cloud-home-link"
+mkdir -p "$physical_home"
+ln -s "$physical_home" "$logical_home"
+HOME="$logical_home"
+source "$PROJECT_ROOT/lib/clean/purge_shared.sh"
+
+mole_purge_is_cloud_synced_path "$HOME/Library/CloudStorage"
+mole_purge_is_cloud_synced_path "$HOME/Library/CloudStorage/Provider/project/target"
+mole_purge_is_cloud_synced_path "$HOME/Library/Mobile Documents"
+mole_purge_is_cloud_synced_path "$HOME/Library/Mobile Documents/com~apple~CloudDocs/project/node_modules"
+mole_purge_is_cloud_synced_path "$physical_home/Library/CloudStorage/Provider/project/target"
+mole_purge_is_cloud_synced_path "$physical_home/Library/Mobile Documents/com~apple~CloudDocs/project/node_modules"
+
+if mole_purge_is_cloud_synced_path "$HOME/Library/CloudStorageBackup/project/target"; then
+	exit 1
+fi
+if mole_purge_is_cloud_synced_path "$HOME/Library/Mobile Documents-old/project/target"; then
+	exit 1
+fi
+if mole_purge_is_cloud_synced_path "$physical_home/Library/CloudStorageBackup/project/target"; then
+	exit 1
+fi
+if mole_purge_is_cloud_synced_path "$physical_home/Library/Mobile Documents-old/project/target"; then
+	exit 1
+fi
+EOF
+
+	[ "$status" -eq 0 ] || return 1
 }
 
 @test "is_safe_project_artifact: rejects shallow paths (protection against accidents)" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact '$HOME/www/node_modules' '$HOME/www'; then
             echo 'UNSAFE'
@@ -41,7 +83,7 @@ setup() {
 }
 
 @test "is_safe_project_artifact: allows proper project artifacts" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact '$HOME/www/myproject/node_modules' '$HOME/www'; then
             echo 'ALLOWED'
@@ -53,7 +95,7 @@ setup() {
 }
 
 @test "is_safe_project_artifact: rejects non-absolute paths" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact 'relative/path/node_modules' '$HOME/www'; then
             echo 'UNSAFE'
@@ -65,7 +107,7 @@ setup() {
 }
 
 @test "is_safe_project_artifact: validates depth calculation" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact '$HOME/www/project/subdir/node_modules' '$HOME/www'; then
             echo 'ALLOWED'
@@ -80,7 +122,7 @@ setup() {
 	mkdir -p "$HOME/single-project/node_modules"
 	touch "$HOME/single-project/package.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact '$HOME/single-project/node_modules' '$HOME/single-project'; then
             echo 'ALLOWED'
@@ -97,7 +139,7 @@ setup() {
 	touch "$HOME/www/real/proj/package.json"
 	ln -s "$HOME/www/real" "$HOME/www/link"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_safe_project_artifact '$HOME/www/real/proj/node_modules' '$HOME/www/link/proj'; then
             echo 'ALLOWED'
@@ -109,10 +151,59 @@ setup() {
 	[[ "$result" == "ALLOWED" ]]
 }
 
+@test "is_safe_configured_purge_artifact rejects paths outside configured roots" {
+	mkdir -p "$HOME/www/project/node_modules" "$HOME/dev/other/node_modules"
+
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        PURGE_SEARCH_PATHS=('$HOME/www')
+        if is_safe_configured_purge_artifact '$HOME/dev/other/node_modules'; then
+            echo 'UNSAFE'
+        else
+            echo 'BLOCKED'
+        fi
+    ")
+
+	[[ "$result" == "BLOCKED" ]]
+}
+
+@test "compact_purge_scan_path keeps the tail of long purge paths visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_SKIP_MAIN=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/purge.sh"
+compact_purge_scan_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "compact_purge_menu_path keeps the project tail visible" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+compact_purge_menu_path "$HOME/projects/team/service/very/deep/component/node_modules" 32
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == ".../deep/component/node_modules" ]]
+}
+
+@test "format_purge_target_path rewrites home with tilde" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+format_purge_target_path "$HOME/www/app/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == \~/www/app/node_modules ]]
+}
+
 @test "filter_nested_artifacts: removes nested node_modules" {
 	mkdir -p "$HOME/www/project/node_modules/package/node_modules"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         printf '%s\n' '$HOME/www/project/node_modules' '$HOME/www/project/node_modules/package/node_modules' | \
         filter_nested_artifacts | wc -l | tr -d ' '
@@ -125,7 +216,7 @@ setup() {
 	mkdir -p "$HOME/www/project1/node_modules"
 	mkdir -p "$HOME/www/project2/target"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         printf '%s\n' '$HOME/www/project1/node_modules' '$HOME/www/project2/target' | \
         filter_nested_artifacts | wc -l | tr -d ' '
@@ -142,7 +233,7 @@ setup() {
 	mkdir -p "$HOME/www/testapp/build/Framework.build"
 	mkdir -p "$HOME/www/testapp/build/Package.build"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         printf '%s\n' \
             '$HOME/www/testapp/build' \
@@ -163,7 +254,7 @@ setup() {
 	touch "$HOME/www/test-rails/Gemfile"
 	touch "$HOME/www/test-rails/bin/rails"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_rails_project_root '$HOME/www/test-rails'; then
             echo 'YES'
@@ -179,7 +270,7 @@ setup() {
 	mkdir -p "$HOME/www/not-rails"
 	touch "$HOME/www/not-rails/package.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_rails_project_root '$HOME/www/not-rails'; then
             echo 'YES'
@@ -195,7 +286,7 @@ setup() {
 	mkdir -p "$HOME/www/test-go"
 	touch "$HOME/www/test-go/go.mod"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_go_project_root '$HOME/www/test-go'; then
             echo 'YES'
@@ -211,7 +302,7 @@ setup() {
 	mkdir -p "$HOME/www/test-php"
 	touch "$HOME/www/test-php/composer.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_php_project_root '$HOME/www/test-php'; then
             echo 'YES'
@@ -230,7 +321,7 @@ setup() {
 	touch "$HOME/www/rails-app/Gemfile"
 	touch "$HOME/www/rails-app/config/environment.rb"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_vendor_dir '$HOME/www/rails-app/vendor'; then
             echo 'PROTECTED'
@@ -246,7 +337,7 @@ setup() {
 	mkdir -p "$HOME/www/php-app/vendor"
 	touch "$HOME/www/php-app/composer.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_vendor_dir '$HOME/www/php-app/vendor'; then
             echo 'PROTECTED'
@@ -259,7 +350,7 @@ setup() {
 }
 
 @test "is_project_container detects project indicators" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 mkdir -p "$HOME/Workspace2/project"
@@ -274,7 +365,7 @@ EOF
 }
 
 @test "discover_project_dirs includes detected containers" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 mkdir -p "$HOME/CustomProjects/app"
@@ -285,8 +376,53 @@ EOF
 	[ "$status" -eq 0 ]
 }
 
+@test "discover_project_dirs includes agent worktree containers" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.codex/worktrees/checkout/node_modules"
+discover_project_dirs | grep -q "^$HOME/.codex/worktrees$"
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
+@test "discover_project_dirs still ignores unlisted dot directories" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.local/share/app"
+touch "$HOME/.local/share/app/package.json"
+if discover_project_dirs | grep -q "$HOME/.local"; then
+	echo "leaked"
+fi
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"leaked"* ]] || return 1
+}
+
+@test "agent worktree container does not allow direct-child artifact removal" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.codex/worktrees/node_modules"
+mkdir -p "$HOME/.codex/worktrees/checkout/node_modules"
+if is_safe_project_artifact "$HOME/.codex/worktrees/node_modules" "$HOME/.codex/worktrees"; then
+	echo "direct-child-allowed"
+fi
+if is_safe_project_artifact "$HOME/.codex/worktrees/checkout/node_modules" "$HOME/.codex/worktrees"; then
+	echo "nested-allowed"
+fi
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"nested-allowed"* ]] || return 1
+	[[ "$output" != *"direct-child-allowed"* ]] || return 1
+}
+
 @test "save_discovered_paths writes config with tilde" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 save_discovered_paths "$HOME/Projects"
@@ -297,7 +433,7 @@ EOF
 }
 
 @test "select_purge_categories returns failure on empty input" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 if select_purge_categories; then
@@ -309,7 +445,7 @@ EOF
 }
 
 @test "select_purge_categories restores caller EXIT/INT/TERM traps" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 trap 'echo parent-exit' EXIT
@@ -347,22 +483,56 @@ EOF
 }
 
 @test "confirm_purge_cleanup accepts Enter" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 drain_pending_input() { :; }
-confirm_purge_cleanup 2 1024 0 <<< ''
+confirm_purge_cleanup 2 1024 0 0 <<< ''
 EOF
 
-    [ "$status" -eq 0 ]
+	[ "$status" -eq 0 ]
+}
+
+@test "confirm_purge_cleanup shows selected paths" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+drain_pending_input() { :; }
+confirm_purge_cleanup 2 1024 0 0 "~/www/app/node_modules" "~/www/app/dist" <<< ''
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Selected paths:"* ]] || return 1
+	[[ "$output" == *"~/www/app/node_modules"* ]] || return 1
+	[[ "$output" == *"~/www/app/dist"* ]]
+}
+
+@test "confirm_purge_cleanup warns once before confirming cloud-synced artifacts" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+drain_pending_input() { :; }
+confirm_purge_cleanup 2 1024 0 1 "[cloud] ~/Library/CloudStorage/Provider/app/target" "~/www/app/dist" <<< ''
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Cloud-synced artifacts may also be removed from other devices."* ]] || return 1
+	[[ "$output" == *"mo purge --paths"* ]] || return 1
+	local warning_count
+	warning_count=$(printf '%s\n' "$output" | grep -cF "Cloud-synced artifacts may also be removed from other devices.")
+	[ "$warning_count" -eq 1 ] || return 1
+	local warning_line prompt_line
+	warning_line=$(printf '%s\n' "$output" | grep -nF "Cloud-synced artifacts may also be removed from other devices." | cut -d: -f1)
+	prompt_line=$(printf '%s\n' "$output" | grep -nF "Remove 2 artifacts" | cut -d: -f1)
+	[ "$warning_line" -lt "$prompt_line" ] || return 1
 }
 
 @test "confirm_purge_cleanup cancels on ESC" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 drain_pending_input() { :; }
-confirm_purge_cleanup 2 1024 0 <<< $'\033'
+confirm_purge_cleanup 2 1024 0 0 <<< $'\033'
 EOF
 
     [ "$status" -eq 1 ]
@@ -372,7 +542,7 @@ EOF
 	mkdir -p "$HOME/www/go-app/vendor"
 	touch "$HOME/www/go-app/go.mod"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_vendor_dir '$HOME/www/go-app/vendor'; then
             echo 'PROTECTED'
@@ -387,7 +557,7 @@ EOF
 @test "is_protected_vendor_dir: protects unknown vendor (conservative)" {
 	mkdir -p "$HOME/www/unknown-app/vendor"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_vendor_dir '$HOME/www/unknown-app/vendor'; then
             echo 'PROTECTED'
@@ -403,7 +573,7 @@ EOF
 	mkdir -p "$HOME/www/php-app/vendor"
 	touch "$HOME/www/php-app/composer.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_purge_artifact '$HOME/www/php-app/vendor'; then
             echo 'PROTECTED'
@@ -419,7 +589,7 @@ EOF
 @test "is_protected_purge_artifact: returns false for non-vendor artifacts" {
 	mkdir -p "$HOME/www/app/node_modules"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_protected_purge_artifact '$HOME/www/app/node_modules'; then
             echo 'PROTECTED'
@@ -444,7 +614,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/rails-app/vendor' '$scan_output'; then
@@ -466,7 +636,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/php-app/vendor' '$scan_output'; then
@@ -489,7 +659,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/go-app/vendor' '$scan_output'; then
@@ -511,7 +681,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/unknown-app/vendor' '$scan_output'; then
@@ -534,10 +704,32 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         MO_USE_FIND=1 scan_purge_targets '$HOME/single-project' '$scan_output'
         if grep -q '$HOME/single-project/node_modules' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'MISSING'
+        fi
+    ")
+
+	rm -f "$scan_output"
+
+	[[ "$result" == "FOUND" ]]
+}
+
+@test "scan_purge_targets: includes Terragrunt cache in project root with find mode" {
+	mkdir -p "$HOME/terragrunt-project/.terragrunt-cache"
+	touch "$HOME/terragrunt-project/terragrunt.hcl"
+
+	local scan_output
+	scan_output="$(mktemp)"
+
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/terragrunt-project' '$scan_output'
+        if grep -q '$HOME/terragrunt-project/.terragrunt-cache' '$scan_output'; then
             echo 'FOUND'
         else
             echo 'MISSING'
@@ -556,7 +748,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         MO_USE_FIND=1 scan_purge_targets '$HOME/single-project/' '$scan_output'
         if grep -q '$HOME/single-project/node_modules' '$scan_output'; then
@@ -571,11 +763,105 @@ EOF
 	[[ "$result" == "FOUND" ]]
 }
 
+@test "scan_purge_targets: includes valid CACHEDIR.TAG directories in find mode" {
+	mkdir -p "$HOME/www/python-app/.custom-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$HOME/www/python-app/.custom-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/.custom-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "FOUND" ]]
+}
+
+@test "scan_purge_targets: ignores invalid CACHEDIR.TAG signatures" {
+	mkdir -p "$HOME/www/python-app/.custom-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: invalid\n' > "$HOME/www/python-app/.custom-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/.custom-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "NOT_FOUND" ]]
+}
+
+@test "scan_purge_targets: keeps CACHEDIR.TAG under Library out of purge scans" {
+	mkdir -p "$HOME/www/python-app/Library/fontconfig-cache"
+	touch "$HOME/www/python-app/pyproject.toml"
+	printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "$HOME/www/python-app/Library/fontconfig-cache/CACHEDIR.TAG"
+
+	scan_output=$(mktemp)
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        MO_USE_FIND=1 scan_purge_targets '$HOME/www' '$scan_output'
+        if grep -q '$HOME/www/python-app/Library/fontconfig-cache' '$scan_output'; then
+            echo 'FOUND'
+        else
+            echo 'NOT_FOUND'
+        fi
+    ")
+	rm -f "$scan_output"
+
+	[[ "$result" == "NOT_FOUND" ]]
+}
+
+@test "scan_purge_targets: trusts empty fd result without falling back to find" {
+	mkdir -p "$HOME/.config/mole" "$HOME/www/empty-project"
+	printf '%s\n' "$HOME/www" > "$HOME/.config/mole/purge_paths"
+
+	local mock_bin="$HOME/mock-bin"
+	mkdir -p "$mock_bin"
+	cat > "$mock_bin/fd" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+	chmod +x "$mock_bin/fd"
+	cat > "$mock_bin/find" <<'EOF'
+#!/bin/bash
+echo find-called >> "$HOME/find-called"
+exit 0
+EOF
+	chmod +x "$mock_bin/find"
+
+	local scan_output
+	scan_output="$(mktemp)"
+
+	run env HOME="$HOME" PATH="$mock_bin:$PATH" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+scan_purge_targets "$HOME/www" "$scan_output"
+[[ ! -e "$HOME/find-called" ]] || exit 1
+[[ -f "$scan_output" ]] || exit 1
+[[ ! -s "$scan_output" ]] || exit 1
+EOF
+
+	rm -f "$scan_output"
+	[ "$status" -eq 0 ]
+}
+
 @test "is_recently_modified: detects recent projects" {
 	mkdir -p "$HOME/www/project/node_modules"
 	touch "$HOME/www/project/package.json"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/core/common.sh'
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_recently_modified '$HOME/www/project/node_modules'; then
@@ -587,33 +873,130 @@ EOF
 	[[ "$result" == "RECENT" ]]
 }
 
+@test "is_recently_modified: detects recent contained files under an old artifact directory" {
+	mkdir -p "$HOME/www/active-project/node_modules"
+	touch "$HOME/www/active-project/node_modules/active.js"
+	touch -t 202001010000 "$HOME/www/active-project/node_modules"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+is_recently_modified "$HOME/www/active-project/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
 @test "is_recently_modified: marks old projects correctly" {
 	mkdir -p "$HOME/www/old-project/node_modules"
-	mkdir -p "$HOME/www/old-project"
+	touch "$HOME/www/old-project/node_modules/old.js"
+	touch -t 202001010000 \
+		"$HOME/www/old-project/node_modules/old.js" \
+		"$HOME/www/old-project/node_modules"
 
-	bash -c "
-        source '$PROJECT_ROOT/lib/core/common.sh'
-        source '$PROJECT_ROOT/lib/clean/project.sh'
-        is_recently_modified '$HOME/www/old-project/node_modules' || true
-    "
-	local exit_code=$?
-	[ "$exit_code" -eq 0 ] || [ "$exit_code" -eq 1 ]
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+if is_recently_modified "$HOME/www/old-project/node_modules"; then
+	exit 99
+fi
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
+@test "is_recently_modified: treats activity probe timeout as uncertain and protected" {
+	mkdir -p "$HOME/www/uncertain-project/node_modules"
+	touch -t 202001010000 "$HOME/www/uncertain-project/node_modules"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+run_with_timeout() { return 124; }
+is_recently_modified "$HOME/www/uncertain-project/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
+@test "is_recently_modified: treats activity probe failure as uncertain and protected" {
+	mkdir -p "$HOME/www/unreadable-project/node_modules"
+	touch -t 202001010000 "$HOME/www/unreadable-project/node_modules"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+run_with_timeout() { return 2; }
+is_recently_modified "$HOME/www/unreadable-project/node_modules"
+EOF
+
+	[ "$status" -eq 0 ]
+}
+
+@test "is_recently_modified: treats exhausted total activity budget as uncertain and protected" {
+	mkdir -p "$HOME/www/budget-project/node_modules"
+	touch -t 202001010000 "$HOME/www/budget-project/node_modules"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+_PURGE_ACTIVITY_DEADLINE_EPOCH=1
+is_recently_modified "$HOME/www/budget-project/node_modules"
+[[ "$_PURGE_ACTIVITY_STATE" == "uncertain" ]] || exit 1
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "purge_target_activity_still_safe catches activity after menu review" {
+    mkdir -p "$HOME/www/changed-project/node_modules"
+    touch "$HOME/www/changed-project/node_modules/active.js"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+if purge_target_activity_still_safe "$HOME/www/changed-project/node_modules" false; then
+    exit 90
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "purge_target_activity_still_safe honors an explicit recent selection" {
+    mkdir -p "$HOME/www/recent-project/node_modules"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+purge_target_activity_still_safe "$HOME/www/recent-project/node_modules" true
+EOF
+
+    [ "$status" -eq 0 ]
 }
 
 @test "purge targets are configured correctly" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         echo \"\${PURGE_TARGETS[@]}\"
     ")
-	[[ "$result" == *"node_modules"* ]]
-	[[ "$result" == *"target"* ]]
+	[[ "$result" == *"node_modules"* ]] || return 1
+	[[ "$result" == *"target"* ]] || return 1
+	[[ "$result" == *".terragrunt-cache"* ]]
 }
 
 @test "get_dir_size_kb: calculates directory size" {
 	mkdir -p "$HOME/www/test-project/node_modules"
 	dd if=/dev/zero of="$HOME/www/test-project/node_modules/file.bin" bs=1024 count=1024 2>/dev/null
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         get_dir_size_kb '$HOME/www/test-project/node_modules'
     ")
@@ -622,7 +1005,7 @@ EOF
 }
 
 @test "get_dir_size_kb: handles non-existent paths gracefully" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         get_dir_size_kb '$HOME/www/non-existent'
     ")
@@ -632,7 +1015,7 @@ EOF
 @test "get_dir_size_kb: returns TIMEOUT when size calculation hangs" {
 	mkdir -p "$HOME/www/stuck-project/node_modules"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/core/common.sh'
         source '$PROJECT_ROOT/lib/clean/project.sh'
         run_with_timeout() { return 124; }
@@ -642,8 +1025,21 @@ EOF
 	[[ "$result" == "TIMEOUT" ]]
 }
 
+@test "get_dir_size_kb: returns ERROR when du fails without timing out" {
+	mkdir -p "$HOME/www/error-project/node_modules"
+
+	result=$(/bin/bash -c "
+        source '$PROJECT_ROOT/lib/core/common.sh'
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        run_with_timeout() { return 2; }
+        get_dir_size_kb '$HOME/www/error-project/node_modules'
+    ")
+
+	[[ "$result" == "ERROR" ]]
+}
+
 @test "clean_project_artifacts: restores caller INT/TERM traps" {
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         set -euo pipefail
         export HOME='$HOME'
         source '$PROJECT_ROOT/lib/core/common.sh'
@@ -673,7 +1069,7 @@ EOF
 }
 
 @test "clean_project_artifacts: handles empty directory gracefully" {
-	run bash -c "
+	run /bin/bash -c "
         export HOME='$HOME'
         source '$PROJECT_ROOT/lib/core/common.sh'
         source '$PROJECT_ROOT/lib/clean/project.sh'
@@ -684,7 +1080,7 @@ EOF
 }
 
 @test "clean_project_artifacts: handles empty menu options under set -u" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/project.sh"
@@ -702,8 +1098,8 @@ EOF
 	[[ "$output" == *"No artifacts found to purge"* ]]
 }
 
-@test "clean_project_artifacts: dry-run does not count failed removals" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+@test "clean_project_artifacts: include-empty exposes zero-size artifacts (#869)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/project.sh"
@@ -712,9 +1108,69 @@ mkdir -p "$HOME/.cache/mole"
 echo "0" > "$HOME/.cache/mole/purge_stats"
 
 mkdir -p "$HOME/www/test-project/node_modules"
-echo "test data" > "$HOME/www/test-project/node_modules/file.js"
 touch "$HOME/www/test-project/package.json"
 touch -t 202001010101 "$HOME/www/test-project/node_modules" "$HOME/www/test-project/package.json" "$HOME/www/test-project"
+
+PURGE_SEARCH_PATHS=("$HOME/www")
+get_dir_size_kb() { echo 0; }
+
+export MOLE_PURGE_INCLUDE_EMPTY=1
+export MOLE_DRY_RUN=1
+clean_project_artifacts </dev/null
+
+stats_dir="${XDG_CACHE_HOME:-$HOME/.cache}/mole"
+echo "COUNT=$(cat "$stats_dir/purge_count" 2> /dev/null || echo missing)"
+echo "SIZE=$(cat "$stats_dir/purge_stats" 2> /dev/null || echo missing)"
+[[ -d "$HOME/www/test-project/node_modules" ]]
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"COUNT=1"* ]] || return 1
+	[[ "$output" == *"SIZE=0"* ]]
+}
+
+@test "clean_project_artifacts: skips size calculation errors instead of showing 0B (#869)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+mkdir -p "$HOME/www/test-project/node_modules"
+touch "$HOME/www/test-project/package.json"
+touch -t 202001010101 "$HOME/www/test-project/node_modules" "$HOME/www/test-project/package.json" "$HOME/www/test-project"
+
+PURGE_SEARCH_PATHS=("$HOME/www")
+get_dir_size_kb() { echo ERROR; }
+
+clean_project_artifacts </dev/null
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"No artifacts found to purge"* ]] || return 1
+	[[ "$output" != *"0B"* ]]
+}
+
+@test "clean_project_artifacts: dry-run does not count failed removals" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+mkdir -p "$HOME/.cache/mole"
+echo "0" > "$HOME/.cache/mole/purge_stats"
+# purge_count must be seeded too: without it this reads a previous test's file
+# through the shared HOME, or reports "missing" when run alone.
+echo "0" > "$HOME/.cache/mole/purge_count"
+
+mkdir -p "$HOME/www/test-project/node_modules"
+echo "test data" > "$HOME/www/test-project/node_modules/file.js"
+touch "$HOME/www/test-project/package.json"
+# The contained file has to be aged as well. Recency is judged from the newest
+# entry inside the artifact, so a fresh file.js marks the whole node_modules as
+# recent, the non-interactive branch skips it, and the failed-removal path this
+# test exists for is never reached.
+touch -t 202001010101 "$HOME/www/test-project/node_modules/file.js" \
+    "$HOME/www/test-project/node_modules" "$HOME/www/test-project/package.json" "$HOME/www/test-project"
 
 PURGE_SEARCH_PATHS=("$HOME/www")
 safe_remove() { return 1; }
@@ -729,8 +1185,119 @@ echo "SIZE=$(cat "$stats_dir/purge_stats" 2> /dev/null || echo missing)"
 EOF
 
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"COUNT=0"* ]]
+	[[ "$output" == *"COUNT=0"* ]] || return 1
 	[[ "$output" == *"SIZE=0"* ]]
+}
+
+@test "clean_project_artifacts accepts configured artifacts outside HOME (#1205)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" BATS_TEST_TMPDIR="$BATS_TEST_TMPDIR" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+external_root="$BATS_TEST_TMPDIR/var-www"
+artifact="$external_root/site/node_modules"
+mkdir -p "$artifact" "$HOME/.cache/mole"
+touch "$external_root/site/package.json"
+
+PURGE_SEARCH_PATHS=("$external_root")
+scan_purge_targets() { printf '%s\n' "$artifact" > "$2"; }
+get_dir_size_kb() { echo 1; }
+is_recently_modified() { return 1; }
+safe_remove() {
+    printf 'REMOVE:%s\n' "$1"
+    return 0
+}
+
+export MOLE_DRY_RUN=1
+clean_project_artifacts </dev/null
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"REMOVE:$BATS_TEST_TMPDIR/var-www/site/node_modules"* ]]
+}
+
+@test "clean_project_artifacts: non-interactive dry-run shows cloud marker and preserves artifact" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+cloud_root="$HOME/Library/CloudStorage"
+cloud_artifact="$cloud_root/TestProvider/SampleProject/target"
+mkdir -p "$cloud_artifact" "$HOME/.cache/mole"
+touch "$cloud_root/TestProvider/SampleProject/Cargo.toml"
+
+PURGE_SEARCH_PATHS=("$cloud_root")
+scan_purge_targets() { printf '%s\n' "$cloud_artifact" > "$2"; }
+get_dir_size_kb() { echo 4; }
+is_recently_modified() {
+	_PURGE_ACTIVITY_STATE=old
+	return 1
+}
+purge_target_activity_still_safe() { return 0; }
+safe_remove() {
+	printf 'REMOVE:%s\n' "$1"
+	return 0
+}
+
+export MOLE_DRY_RUN=1
+clean_project_artifacts </dev/null
+
+[[ -d "$cloud_artifact" ]] || exit 1
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"REMOVE:$HOME/Library/CloudStorage/TestProvider/SampleProject/target"* ]] || return 1
+	[[ "$output" == *"[cloud] ~/Library/CloudStorage/TestProvider/SampleProject/target"* ]] || return 1
+	[[ "$output" == *"4KB"* ]] || return 1
+}
+
+@test "clean_project_artifacts: non-interactive real run skips cloud and keeps local selection aligned after sorting" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/project.sh"
+
+cloud_root="$HOME/Library/CloudStorage"
+cloud_artifact="$cloud_root/TestProvider/CloudProject/target"
+local_root="$HOME/www"
+local_artifact="$local_root/LocalProject/node_modules"
+mkdir -p "$cloud_artifact" "$local_artifact" "$HOME/.cache/mole"
+touch "$cloud_root/TestProvider/CloudProject/Cargo.toml"
+touch "$local_root/LocalProject/package.json"
+
+PURGE_SEARCH_PATHS=("$cloud_root" "$local_root")
+scan_purge_targets() {
+	case "$1" in
+		"$cloud_root") printf '%s\n' "$cloud_artifact" > "$2" ;;
+		"$local_root") printf '%s\n' "$local_artifact" > "$2" ;;
+	esac
+}
+get_dir_size_kb() {
+	case "$1" in
+		"$cloud_artifact") echo 4 ;;
+		"$local_artifact") echo 8 ;;
+	esac
+}
+is_recently_modified() {
+	_PURGE_ACTIVITY_STATE=old
+	return 1
+}
+purge_target_activity_still_safe() { return 0; }
+safe_remove() {
+	printf 'REMOVE:%s\n' "$1"
+	return 0
+}
+
+unset MOLE_DRY_RUN
+clean_project_artifacts </dev/null
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Skipped 1 cloud-synced artifact in non-interactive mode"* ]] || return 1
+	[[ "$output" == *"REMOVE:$HOME/www/LocalProject/node_modules"* ]] || return 1
+	[[ "$output" != *"REMOVE:$HOME/Library/CloudStorage/TestProvider/CloudProject/target"* ]] || return 1
 }
 
 @test "clean_project_artifacts: scans and finds artifacts" {
@@ -746,7 +1313,7 @@ EOF
 	timeout_cmd="timeout"
 	command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
 
-	run bash -c "
+	run /bin/bash -c "
         export HOME='$HOME'
         $timeout_cmd 5 '$PROJECT_ROOT/bin/purge.sh' 2>&1 < /dev/null || true
     "
@@ -768,6 +1335,13 @@ EOF
 	[[ "$output" == *"mo purge"* ]]
 }
 
+@test "mo purge --help includes include-empty option" {
+	run env HOME="$HOME" "$PROJECT_ROOT/mole" purge --help
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"--include-empty"* ]] || return 1
+	[[ "$output" == *"Show zero-size project artifact directories"* ]]
+}
+
 @test "mo purge: accepts --debug flag" {
 	if ! command -v gtimeout >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
 		skip "gtimeout/timeout not available"
@@ -776,9 +1350,9 @@ EOF
 	timeout_cmd="timeout"
 	command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
 
-	run bash -c "
+	run /bin/bash -c "
         export HOME='$HOME'
-        $timeout_cmd 2 '$PROJECT_ROOT/mole' purge --debug < /dev/null 2>&1 || true
+        $timeout_cmd 10 '$PROJECT_ROOT/mole' purge --debug < /dev/null 2>&1 || true
     "
 	true
 }
@@ -791,12 +1365,29 @@ EOF
 	timeout_cmd="timeout"
 	command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
 
-	run bash -c "
+	run /bin/bash -c "
         export HOME='$HOME'
-        $timeout_cmd 2 '$PROJECT_ROOT/mole' purge --dry-run < /dev/null 2>&1 || true
+        $timeout_cmd 10 '$PROJECT_ROOT/mole' purge --dry-run < /dev/null 2>&1 || true
     "
 
 	[[ "$output" == *"DRY RUN MODE"* ]] || [[ "$output" == *"Dry run complete"* ]]
+}
+
+@test "mo purge: accepts --include-empty flag" {
+	if ! command -v gtimeout >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
+		skip "gtimeout/timeout not available"
+	fi
+
+	timeout_cmd="timeout"
+	command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
+
+	run /bin/bash -c "
+        export HOME='$HOME'
+        $timeout_cmd 10 '$PROJECT_ROOT/mole' purge --include-empty --dry-run < /dev/null 2>&1
+    "
+
+	[ "$status" -eq 0 ] || [ "$status" -eq 2 ]
+	[[ "$output" != *"Unknown option"* ]]
 }
 
 @test "mo purge: creates cache directory for stats" {
@@ -807,9 +1398,9 @@ EOF
 	timeout_cmd="timeout"
 	command -v timeout >/dev/null 2>&1 || timeout_cmd="gtimeout"
 
-	bash -c "
+	/bin/bash -c "
         export HOME='$HOME'
-        $timeout_cmd 2 '$PROJECT_ROOT/mole' purge < /dev/null 2>&1 || true
+        $timeout_cmd 10 '$PROJECT_ROOT/mole' purge < /dev/null 2>&1 || true
     "
 
 	[ -d "$HOME/.cache/mole" ] || [ -d "${XDG_CACHE_HOME:-$HOME/.cache}/mole" ]
@@ -820,7 +1411,7 @@ EOF
 	mkdir -p "$HOME/www/dotnet-app/bin/Debug"
 	touch "$HOME/www/dotnet-app/MyProject.csproj"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_dotnet_bin_dir '$HOME/www/dotnet-app/bin'; then
             echo 'FOUND'
@@ -836,7 +1427,7 @@ EOF
 	mkdir -p "$HOME/www/dotnet-app/bin"
 	touch "$HOME/www/dotnet-app/MyProject.csproj"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_dotnet_bin_dir '$HOME/www/dotnet-app/bin'; then
             echo 'FOUND'
@@ -853,7 +1444,7 @@ EOF
 	mkdir -p "$HOME/www/dotnet-app/obj"
 	touch "$HOME/www/dotnet-app/MyProject.csproj"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         if is_dotnet_bin_dir '$HOME/www/dotnet-app/obj'; then
             echo 'FOUND'
@@ -872,7 +1463,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/dotnet-app/bin' '$scan_output'; then
@@ -894,7 +1485,7 @@ EOF
 	local scan_output
 	scan_output="$(mktemp)"
 
-	result=$(bash -c "
+	result=$(/bin/bash -c "
         source '$PROJECT_ROOT/lib/clean/project.sh'
         scan_purge_targets '$HOME/www' '$scan_output'
         if grep -q '$HOME/www/ruby-app/bin' '$scan_output'; then
@@ -906,4 +1497,208 @@ EOF
 
 	rm -f "$scan_output"
 	[[ "$result" == "SKIPPED" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Regression tests: sort-order consistency in clean_project_artifacts
+#
+# Bug: after sorting artifacts by size (descending), item_display_paths was
+# not included in the reorder, so PURGE_CATEGORY_FULL_PATHS_ARRAY ended up
+# in the original discovery order (alphabetical) while every other parallel
+# array (menu_options, item_paths, item_sizes, …) was in size order.
+# Effect: the "Full path" footer showed the wrong project for the highlighted
+# item, and the confirmation dialog listed paths that did not match the
+# selection. See https://github.com/tw93/Mole/issues/647
+#
+# These tests run clean_project_artifacts under a pseudo-terminal (so the
+# interactive code path is taken and select_purge_categories is called).
+# The function is overridden to capture PURGE_CATEGORY_FULL_PATHS_ARRAY and
+# PURGE_CATEGORY_SIZES without performing any actual deletion.
+# ---------------------------------------------------------------------------
+
+# Run a bash script file under a pseudo-terminal so that [[ -t 0 ]] is true
+# inside the script. Required to exercise the interactive branch of
+# clean_project_artifacts, which only calls select_purge_categories when
+# stdin is a tty.
+_run_in_pty() {
+	local script_file="$1"
+	# A socket-backed runner stdin makes macOS script(1) fail before the child starts.
+	script -q /dev/null /bin/bash --noprofile --norc "$script_file" < /dev/null 2>/dev/null
+}
+
+@test "sort: PURGE_CATEGORY_FULL_PATHS_ARRAY[0] is the largest artifact after size-descending sort" {
+	# alpha = small (~5 KB), beta = large (~200 KB).
+	# Alphabetical discovery order puts alpha first; size order puts beta first.
+	# After the sort, PURGE_CATEGORY_FULL_PATHS_ARRAY[0] must be beta's path.
+	mkdir -p "$HOME/www/alpha/node_modules"
+	mkdir -p "$HOME/www/beta/node_modules"
+	echo '{}' > "$HOME/www/alpha/package.json"
+	echo '{}' > "$HOME/www/beta/package.json"
+	dd if=/dev/zero of="$HOME/www/alpha/node_modules/data" bs=1024 count=5   2>/dev/null
+	dd if=/dev/zero of="$HOME/www/beta/node_modules/data"  bs=1024 count=200 2>/dev/null
+
+	local capture_file script_file
+	capture_file=$(mktemp "$HOME/sort_capture.XXXXXX")
+	script_file=$(mktemp  "$HOME/sort_script.XXXXXX.sh")
+
+	cat > "$script_file" << SCRIPT
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.cache/mole"
+export XDG_CACHE_HOME="$HOME/.cache"
+export TERM="dumb"
+PURGE_SEARCH_PATHS=("$HOME/www")
+
+# Override the interactive selector: dump the full-path array to the capture
+# file then cancel (return 1) so nothing is deleted.
+select_purge_categories() {
+	printf '%s\n' "\${PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}" > "$capture_file"
+	PURGE_SELECTION_RESULT=""
+	return 1
+}
+
+clean_project_artifacts 2>/dev/null || true
+SCRIPT
+
+	_run_in_pty "$script_file"
+	rm -f "$script_file"
+
+	if [[ ! -s "$capture_file" ]]; then
+		rm -f "$capture_file"
+		fail "capture file is empty – select_purge_categories was never called (stdin was not a tty?)"
+	fi
+
+	local first_path
+	first_path=$(head -1 "$capture_file")
+	rm -f "$capture_file"
+
+	# With the bug item_display_paths is not sorted, so alpha (alphabetically
+	# first) appears at index 0 → [[ ... == *beta* ]] fails.
+	# After the fix beta (largest) is at index 0 → test passes.
+	[[ "$first_path" == *"beta"* ]]
+}
+
+@test "sort: PURGE_CATEGORY_FULL_PATHS_ARRAY and PURGE_CATEGORY_SIZES indices are consistent" {
+	mkdir -p "$HOME/www/alpha/node_modules"
+	mkdir -p "$HOME/www/beta/node_modules"
+	echo '{}' > "$HOME/www/alpha/package.json"
+	echo '{}' > "$HOME/www/beta/package.json"
+	dd if=/dev/zero of="$HOME/www/alpha/node_modules/data" bs=1024 count=5   2>/dev/null
+	dd if=/dev/zero of="$HOME/www/beta/node_modules/data"  bs=1024 count=200 2>/dev/null
+
+	local capture_file script_file
+	capture_file=$(mktemp "$HOME/sort_capture.XXXXXX")
+	script_file=$(mktemp  "$HOME/sort_script.XXXXXX.sh")
+
+	cat > "$script_file" << SCRIPT
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.cache/mole"
+export XDG_CACHE_HOME="$HOME/.cache"
+export TERM="dumb"
+PURGE_SEARCH_PATHS=("$HOME/www")
+
+select_purge_categories() {
+	echo "SIZES=\${PURGE_CATEGORY_SIZES:-}" > "$capture_file"
+	local i=0
+	for p in "\${PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}"; do
+		echo "PATH[\$i]=\$p" >> "$capture_file"
+		i=\$((i + 1))
+	done
+	PURGE_SELECTION_RESULT=""
+	return 1
+}
+
+clean_project_artifacts 2>/dev/null || true
+SCRIPT
+
+	_run_in_pty "$script_file"
+	rm -f "$script_file"
+
+	if [[ ! -s "$capture_file" ]]; then
+		rm -f "$capture_file"
+		fail "capture file is empty – select_purge_categories was never called (stdin was not a tty?)"
+	fi
+
+	local sizes_csv
+	sizes_csv=$(grep '^SIZES=' "$capture_file" | cut -d= -f2-)
+	IFS=',' read -r -a sizes <<< "$sizes_csv"
+
+	local path0 path1
+	path0=$(grep '^PATH\[0\]=' "$capture_file" | head -1 | cut -d= -f2-)
+	path1=$(grep '^PATH\[1\]=' "$capture_file" | head -1 | cut -d= -f2-)
+	rm -f "$capture_file"
+
+	# PURGE_CATEGORY_SIZES must be sorted descending (largest first).
+	[ "${sizes[0]}" -gt "${sizes[1]}" ]
+
+	# Index 0 → largest artifact → beta's path.
+	# With the bug path0 = alpha (discovery order) → [[ ... == *beta* ]] fails.
+	[[ "$path0" == *"beta"* ]] || return 1
+
+	# Index 1 → smaller artifact → alpha's path.
+	[[ "$path1" == *"alpha"* ]]
+}
+
+@test "sort: cloud marker stays aligned across menu and full-path arrays" {
+	mkdir -p "$HOME/www/local-project/node_modules"
+	mkdir -p "$HOME/Library/CloudStorage/TestProvider/cloud-project/node_modules"
+	echo '{}' > "$HOME/www/local-project/package.json"
+	echo '{}' > "$HOME/Library/CloudStorage/TestProvider/cloud-project/package.json"
+	dd if=/dev/zero of="$HOME/www/local-project/node_modules/data" bs=1024 count=200 2>/dev/null
+	dd if=/dev/zero of="$HOME/Library/CloudStorage/TestProvider/cloud-project/node_modules/data" bs=1024 count=5 2>/dev/null
+
+	local capture_file script_file
+	capture_file=$(mktemp "$HOME/sort_cloud_capture.XXXXXX")
+	script_file=$(mktemp "$HOME/sort_cloud_script.XXXXXX.sh")
+
+	cat > "$script_file" << SCRIPT
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/.cache/mole"
+export XDG_CACHE_HOME="$HOME/.cache"
+export TERM="dumb"
+PURGE_SEARCH_PATHS=("$HOME/www" "$HOME/Library/CloudStorage")
+
+select_purge_categories() {
+	local i=0
+	for option in "\$@"; do
+		echo "MENU[\$i]=\$option" >> "$capture_file"
+		i=\$((i + 1))
+	done
+	i=0
+	for path in "\${PURGE_CATEGORY_FULL_PATHS_ARRAY[@]}"; do
+		echo "PATH[\$i]=\$path" >> "$capture_file"
+		i=\$((i + 1))
+	done
+	PURGE_SELECTION_RESULT=""
+	return 1
+}
+
+clean_project_artifacts 2>/dev/null || true
+SCRIPT
+
+	_run_in_pty "$script_file"
+	rm -f "$script_file"
+
+	if [[ ! -s "$capture_file" ]]; then
+		rm -f "$capture_file"
+		fail "capture file is empty; select_purge_categories was never called"
+	fi
+
+	local menu0 menu1 path0 path1
+	menu0=$(grep '^MENU\[0\]=' "$capture_file" | cut -d= -f2-)
+	menu1=$(grep '^MENU\[1\]=' "$capture_file" | cut -d= -f2-)
+	path0=$(grep '^PATH\[0\]=' "$capture_file" | cut -d= -f2-)
+	path1=$(grep '^PATH\[1\]=' "$capture_file" | cut -d= -f2-)
+	rm -f "$capture_file"
+
+	[[ "$menu0" != *"[cloud]"* ]] || return 1
+	[[ "$path0" != *"[cloud]"* ]] || return 1
+	[[ "$menu0" == *"local-project"* ]] || return 1
+	[[ "$path0" == *"local-project"* ]] || return 1
+	[[ "$menu1" == *"[cloud]"* ]] || return 1
+	[[ "$path1" == *"[cloud]"* ]] || return 1
+	[[ "$menu1" == *"cloud-project"* ]] || return 1
+	[[ "$path1" == *"cloud-project"* ]] || return 1
 }
