@@ -13,15 +13,30 @@ export LANG=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/core/common.sh"
 
-# Set up cleanup trap for temporary files
-trap cleanup_temp_files EXIT INT TERM
+# Restores cursor and clears temp files even when set -e aborts (#915).
+cleanup() {
+    show_cursor 2> /dev/null || true
+    cleanup_temp_files
+}
+trap cleanup EXIT
+trap 'trap - EXIT; cleanup; exit 130' INT TERM
 source "$SCRIPT_DIR/../lib/core/log.sh"
 source "$SCRIPT_DIR/../lib/clean/project.sh"
+
+# Purge ends at safe_remove just like clean, so initialize the invoking user's
+# whitelist before project discovery or the interactive selection begins.
+load_mole_whitelist
 
 # Configuration
 CURRENT_SECTION=""
 
-# Section management
+# IMPORTANT: This file overrides start_section / end_section / note_activity
+# from lib/core/base.sh by virtue of being sourced after it. The purge variant
+# uses a blue ━━━ box header, has no fallback "Nothing to ..." message, and
+# writes every note_activity call straight to EXPORT_LIST_FILE (purge always
+# wants the export list, not just under DRY_RUN). See the cross-reference in
+# lib/core/base.sh and the clean variant in bin/clean.sh before changing any
+# of these three.
 start_section() {
     local section_name="$1"
     CURRENT_SECTION="$section_name"
@@ -33,11 +48,57 @@ end_section() {
     CURRENT_SECTION=""
 }
 
-# Note activity for export list
 note_activity() {
     if [[ -n "$CURRENT_SECTION" ]]; then
         printf '%s\n' "$CURRENT_SECTION" >> "$EXPORT_LIST_FILE"
     fi
+}
+
+# Keep the most specific tail of a long purge path visible on the live scan line.
+compact_purge_scan_path() {
+    local path="$1"
+    local max_path_len="${2:-0}"
+
+    if ! [[ "$max_path_len" =~ ^[0-9]+$ ]] || [[ "$max_path_len" -lt 4 ]]; then
+        max_path_len=4
+    fi
+
+    if [[ ${#path} -le $max_path_len ]]; then
+        echo "$path"
+        return
+    fi
+
+    local suffix_len=$((max_path_len - 3))
+    local suffix="${path: -$suffix_len}"
+    local path_tail=""
+    local remainder="$path"
+
+    while [[ "$remainder" == */* ]]; do
+        local segment="/${remainder##*/}"
+        remainder="${remainder%/*}"
+
+        if [[ -z "$path_tail" ]]; then
+            if [[ ${#segment} -le $suffix_len ]]; then
+                path_tail="$segment"
+            else
+                break
+            fi
+            continue
+        fi
+
+        if [[ $((${#segment} + ${#path_tail})) -le $suffix_len ]]; then
+            path_tail="${segment}${path_tail}"
+        else
+            break
+        fi
+    done
+
+    if [[ -n "$path_tail" ]]; then
+        echo "...${path_tail}"
+        return
+    fi
+
+    echo "...$suffix"
 }
 
 # Main purge function
@@ -127,24 +188,18 @@ perform_purge() {
             # Set up trap to exit cleanly (erase the spinner line via /dev/tty)
             trap 'printf "\r\033[2K" >/dev/tty 2>/dev/null; exit 0' INT TERM
 
-            # Truncate path to guaranteed fit
-            truncate_path() {
-                local path="$1"
-                if [[ ${#path} -le $max_path_len ]]; then
-                    echo "$path"
-                    return
-                fi
-                local side_len=$(((max_path_len - 3) / 2))
-                echo "${path:0:$side_len}...${path: -$side_len}"
-            }
-
+            local _parent_pid=$$
             while [[ -f "$stats_dir/purge_scanning" ]]; do
+                # Exit if parent process died (prevents orphaned spinner)
+                if ! kill -0 "$_parent_pid" 2> /dev/null; then
+                    break
+                fi
                 local current_path
                 current_path=$(cat "$stats_dir/purge_scanning" 2> /dev/null || echo "")
 
                 if [[ -n "$current_path" ]]; then
                     local display_path="${current_path/#$HOME/~}"
-                    display_path=$(truncate_path "$display_path")
+                    display_path=$(compact_purge_scan_path "$display_path" "$max_path_len")
                     last_path="$display_path"
                 fi
 
@@ -173,17 +228,13 @@ perform_purge() {
     fi
 
     clean_project_artifacts
-    local exit_code=$?
+    local purge_outcome="${PURGE_RUN_OUTCOME:-scan_failed}"
 
     # Clean up
     trap - INT TERM
     cleanup_monitor
 
-    # Exit codes:
-    # 0 = success, show summary
-    # 1 = user cancelled
-    # 2 = nothing to clean
-    if [[ $exit_code -ne 0 ]]; then
+    if [[ "$purge_outcome" != "completed" ]]; then
         return 0
     fi
 
@@ -241,6 +292,7 @@ show_help() {
     echo -e "${YELLOW}Options:${NC}"
     echo "  --paths         Edit custom scan directories"
     echo "  --dry-run       Preview purge actions without making changes"
+    echo "  --include-empty Show zero-size project artifact directories"
     echo "  --debug         Enable debug logging"
     echo "  --help          Show this help message"
     echo ""
@@ -252,9 +304,6 @@ show_help() {
 
 # Main entry point
 main() {
-    # Set up signal handling
-    trap 'show_cursor; exit 130' INT TERM
-
     # Parse arguments
     for arg in "$@"; do
         case "$arg" in
@@ -273,6 +322,9 @@ main() {
             "--dry-run" | "-n")
                 export MOLE_DRY_RUN=1
                 ;;
+            "--include-empty")
+                export MOLE_PURGE_INCLUDE_EMPTY=1
+                ;;
             *)
                 echo "Unknown option: $arg"
                 echo "Use 'mo purge --help' for usage information"
@@ -288,7 +340,14 @@ main() {
     fi
     hide_cursor
     perform_purge
-    show_cursor
 }
+
+if [[ "${MOLE_SKIP_MAIN:-0}" == "1" ]]; then
+    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+        return 0
+    else
+        exit 0
+    fi
+fi
 
 main "$@"
