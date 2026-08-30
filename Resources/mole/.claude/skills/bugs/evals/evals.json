@@ -1,0 +1,41 @@
+{
+  "skill_name": "bugs",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Mole 的 clean 新增了一个容器缓存删除保护：先用 lsof 判断目录空闲，随后 du 计算大小，最后 safe_remove。请深入 review 这个改动，重点看 dry-run、真实删除、超时、SIGINT、路径被替换和统计是否一致。只报告问题和验证方案，不修改代码。",
+      "expected_output": "A deletion-lifecycle review that traces discovery through the final sink, treats unknown state as refusal, checks dry-run parity, cancellation, identity rebinding, and accounting, and proposes red-green tests.",
+      "files": [],
+      "expectations": [
+        "Traces the complete mutation lifecycle rather than reviewing only the lsof helper",
+        "Requires live or unknown state to fail closed and signal statuses to stop later deletion",
+        "Checks parent and target identity again immediately before the sink",
+        "Checks dry-run and real candidate parity plus cleaned-byte accounting",
+        "Requires a pre-fix failing regression or source invariant"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "这个 Bats 用例单独跑会过，放进 scripts/test.sh 偶尔失败。它断言某个缓存目录不存在，文件里 setup_file 共用 HOME，生产代码通过 command substitution 调 xcrun。帮我判断测试还是产品有问题，并给出可靠修法。",
+      "expected_output": "A test-validity diagnosis that checks shared HOME contamination, command-substitution subshell state, PATH versus function mocks, and CI-equivalent Bats execution before changing production code.",
+      "files": [],
+      "expectations": [
+        "Treats shared setup_file HOME as the first isolation suspect",
+        "Explains that mutable shell counters do not persist through command substitution",
+        "Uses a test-owned file for cross-subshell call state when needed",
+        "Distinguishes PATH executable stubs from shell-function mocks",
+        "Preserves scripts/test.sh or --no-parallelize-within-files semantics"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "请帮 Mole 的 README 调整一段发布文案，并整理下一版 release notes，代码没有变化。",
+      "expected_output": "The bugs skill should decline this unrelated documentation and release-copy task and route it to the normal writing or release workflow.",
+      "files": [],
+      "expectations": [
+        "Does not apply the twelve bug archetypes as a generic checklist",
+        "Recognizes that documentation and release copy are outside this skill"
+      ]
+    }
+  ]
+}
